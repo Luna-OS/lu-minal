@@ -5,10 +5,11 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import type { DiffLine } from "../core/types.js";
-import { expandHome } from "../platform/paths.js";
+import { expandHome, fromMsysPath } from "../platform/paths.js";
 import { findProgram, spawnProgram } from "../platform/process.js";
 import { describeChange, makeDiff } from "./diff.js";
 import { GitIgnore, looksBinary, patternMatcher, readHead, SKIP_DIRS, toPosix, walkFiles } from "./glob.js";
+import { assessRead, assessWrite, writeNote, type WriteAssessment } from "./sensitive.js";
 import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 // ---- shared helpers -----------------------------------------------------------------------------
@@ -21,11 +22,16 @@ export function defineTool<A extends Record<string, unknown>>(tool: Tool<A>): To
   return tool as unknown as Tool;
 }
 
-/** An absolute path for what the model wrote: relative to `cwd`, "~" expanded, quotes dropped. */
-export function resolvePath(cwd: string, p: string): string {
+/**
+ * An absolute path for what the model wrote: relative to `cwd`, "~" expanded, quotes dropped. On
+ * Windows a Git Bash path ("/c/Users/ada/app", what `pwd` prints in the bash tool there) is read
+ * as the Windows path it names instead of a folder "c" on the current drive.
+ */
+export function resolvePath(cwd: string, p: string, platform: NodeJS.Platform = process.platform): string {
   let t = String(p ?? "").trim();
   if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) t = t.slice(1, -1);
-  return path.resolve(cwd, expandHome(t || "."));
+  const full = expandHome(fromMsysPath(t || ".", platform));
+  return (platform === "win32" ? path.win32 : path.posix).resolve(cwd, full);
 }
 
 /** Whether `abs` is `cwd` or inside it. */
@@ -209,8 +215,13 @@ export const readFileTool = defineTool<ReadArgs>({
     required: ["path"],
     additionalProperties: false,
   },
-  risk: "read",
+  // Reading is free, except in a secret store (~/.ssh, lu-minal's auth.json) or a network share.
+  risk: (args, ctx) => assessRead(resolvePath(ctx.cwd, args.path), { cwd: ctx.cwd }),
   describe: (args, ctx) => ({ verb: "read", target: displayPath(ctx.cwd, resolvePath(ctx.cwd, args.path)) }),
+  approval(args, ctx) {
+    const abs = resolvePath(ctx.cwd, args.path);
+    return { risk: "other", summary: `read ${displayPath(ctx.cwd, abs)} (a credentials store or network share)`, allowKey: `read_file:${abs}` };
+  },
   async run(args, ctx) {
     const p = str(args.path);
     if (!p?.trim()) return errorResult("read_file needs a `path`.");
@@ -275,8 +286,13 @@ function adaptToExisting(oldText: string | null, content: string): string {
   return next;
 }
 
-function outsideNote(ctx: ToolContext, abs: string): string {
-  return isInside(ctx.cwd, abs) ? "" : " (outside the project folder)";
+/**
+ * What writing `abs` risks: "edit" for an ordinary file in the project, "other" (always asks) for a
+ * file outside it once symlinks are followed, in a secret store, a home dotfile, or what git and
+ * agents run on their own (.git, .claude, .mcp.json, ...).
+ */
+function writeAssessment(ctx: ToolContext, abs: string): WriteAssessment {
+  return assessWrite(ctx.cwd, abs);
 }
 
 export const writeFileTool = defineTool<WriteArgs>({
@@ -294,20 +310,21 @@ export const writeFileTool = defineTool<WriteArgs>({
     required: ["path", "content"],
     additionalProperties: false,
   },
-  risk: (args, ctx) => (isInside(ctx.cwd, resolvePath(ctx.cwd, args.path)) ? "edit" : "other"),
+  risk: (args, ctx) => writeAssessment(ctx, resolvePath(ctx.cwd, args.path)).risk,
   describe(args, ctx) {
     const abs = resolvePath(ctx.cwd, args.path);
     return { verb: fs.existsSync(abs) ? "write" : "new", target: displayPath(ctx.cwd, abs) };
   },
   approval(args, ctx) {
     const abs = resolvePath(ctx.cwd, args.path);
-    const inside = isInside(ctx.cwd, abs);
+    const assessed = writeAssessment(ctx, abs);
+    const inside = assessed.risk === "edit";
     const old = readTextSync(abs);
     const content = typeof args.content === "string" ? args.content : "";
     const diff = makeDiff(old ?? "", adaptToExisting(old, content), { context: 1, maxLines: 60 });
     return {
-      risk: inside ? "edit" : "other",
-      summary: `${old === null ? "create" : "overwrite"} ${displayPath(ctx.cwd, abs)}${outsideNote(ctx, abs)}`,
+      risk: assessed.risk,
+      summary: `${old === null ? "create" : "overwrite"} ${displayPath(ctx.cwd, abs)}${writeNote(assessed)}`,
       detail: diffPreview(diff.lines),
       allowKey: inside ? "write_file" : `write_file:${abs}`,
     };
@@ -461,11 +478,12 @@ export const editFileTool = defineTool<EditArgs>({
     required: ["path", "old_string", "new_string"],
     additionalProperties: false,
   },
-  risk: (args, ctx) => (isInside(ctx.cwd, resolvePath(ctx.cwd, args.path)) ? "edit" : "other"),
+  risk: (args, ctx) => writeAssessment(ctx, resolvePath(ctx.cwd, args.path)).risk,
   describe: (args, ctx) => ({ verb: "edit", target: displayPath(ctx.cwd, resolvePath(ctx.cwd, args.path)) }),
   approval(args, ctx) {
     const abs = resolvePath(ctx.cwd, args.path);
-    const inside = isInside(ctx.cwd, abs);
+    const assessed = writeAssessment(ctx, abs);
+    const inside = assessed.risk === "edit";
     const shown = displayPath(ctx.cwd, abs);
     let detail: string | undefined;
     const text = readTextSync(abs);
@@ -474,8 +492,8 @@ export const editFileTool = defineTool<EditArgs>({
       if (plan.ok) detail = diffPreview(makeDiff(text, plan.next, { context: 1, maxLines: 60 }).lines);
     }
     return {
-      risk: inside ? "edit" : "other",
-      summary: `edit ${shown}${outsideNote(ctx, abs)}`,
+      risk: assessed.risk,
+      summary: `edit ${shown}${writeNote(assessed)}`,
       detail,
       allowKey: inside ? "edit_file" : `edit_file:${abs}`,
     };
@@ -566,7 +584,12 @@ export const listFilesTool = defineTool<ListArgs>({
     },
     additionalProperties: false,
   },
-  risk: "read",
+  // Names only: free, except inside a secret store or on a network share.
+  risk: (args, ctx) => assessRead(resolvePath(ctx.cwd, typeof args.path === "string" ? args.path : "."), { cwd: ctx.cwd }),
+  approval(args, ctx) {
+    const abs = resolvePath(ctx.cwd, typeof args.path === "string" ? args.path : ".");
+    return { risk: "other", summary: `list ${displayPath(ctx.cwd, abs)} (a credentials store or network share)`, allowKey: `list_files:${abs}` };
+  },
   describe(args, ctx) {
     const where = args.path ? displayPath(ctx.cwd, resolvePath(ctx.cwd, args.path)) : "";
     const target = [where && where !== "." ? where : "", args.pattern ?? ""].filter(Boolean).join(" ");
@@ -626,6 +649,8 @@ function grepWithRg(
   opts: { cwd: string; root: string; pattern: string; glob?: string; ignoreCase: boolean; max: number; signal: AbortSignal },
 ): Promise<{ hits: GrepHit[]; more: boolean; error: string | null } | null> {
   const args = ["--json", "--hidden", "--max-filesize", "2M", opts.ignoreCase ? "-i" : "-s"];
+  // Globs match names without regard to case where the file system does, as the built-in search does.
+  if (caseInsensitiveFs) args.push("--glob-case-insensitive");
   // ripgrep reads .gitignore files only inside git repositories; name the project's own explicitly
   // (its rules are relative to rg's working folder, which is where it lives).
   const ignoreFile = path.join(opts.cwd, ".gitignore");
@@ -766,7 +791,12 @@ export function createGrepTool(opts: { rg?: string | null } = {}): Tool {
       required: ["pattern"],
       additionalProperties: false,
     },
-    risk: "read",
+    // Contents below a folder: a search from ~ would read ~/.ssh and auth.json, so that asks.
+    risk: (args, ctx) => assessRead(resolvePath(ctx.cwd, typeof args.path === "string" ? args.path : "."), { recursive: true, cwd: ctx.cwd }),
+    approval(args, ctx) {
+      const abs = resolvePath(ctx.cwd, typeof args.path === "string" ? args.path : ".");
+      return { risk: "other", summary: `grep ${String(args.pattern ?? "")} in ${displayPath(ctx.cwd, abs)} (it reaches a credentials store)`, allowKey: `grep:${abs}` };
+    },
     describe(args, ctx) {
       const where = args.path ? ` in ${displayPath(ctx.cwd, resolvePath(ctx.cwd, args.path))}` : "";
       return { verb: "grep", target: `${args.pattern ?? ""}${where}` };

@@ -3,6 +3,7 @@
 // results, and the places git / gh are installed when they are not on the PATH (GUI apps on macOS
 // start with a minimal PATH, Windows installers don't always add theirs).
 import path from "node:path";
+import { registerSecret } from "../core/secrets.js";
 import { isMac, isWindows } from "../platform/paths.js";
 import { findProgram } from "../platform/process.js";
 import type { FetchLike } from "../providers/types.js";
@@ -53,7 +54,11 @@ export function envValue(env: NodeJS.ProcessEnv, name: string): string | null {
 
 /** "AUTHORIZATION: basic <base64(user:token)>" for an http.<url>.extraheader git option. */
 export function basicAuthHeader(user: string, token: string): string {
-  return `AUTHORIZATION: basic ${Buffer.from(`${user}:${token}`, "utf8").toString("base64")}`;
+  const encoded = Buffer.from(`${user}:${token}`, "utf8").toString("base64");
+  // Neither may show up in a tool's output or an error row.
+  registerSecret(token);
+  registerSecret(encoded);
+  return `AUTHORIZATION: basic ${encoded}`;
 }
 
 /** A clamped positive integer (page numbers, page sizes). */

@@ -63,9 +63,16 @@ export class Project {
   permissionMode: PermissionMode;
   /** Where the project came from ("github:owner/name", "forgejo:...", "local"). */
   origin: string;
+  /**
+   * Whether the user trusts the folder's own agent settings (.claude/settings.json with its hooks
+   * and permission rules, .mcp.json servers). A folder the user opened is trusted; a repository
+   * cloned from a host is not until the user says so (setTrusted), and Claude Code agents then
+   * start with only the user's own settings and lu-minal's MCP server.
+   */
+  trusted: boolean;
 
   constructor(
-    opts: { name?: string; cwd: string; permissionMode?: PermissionMode; origin?: string },
+    opts: { name?: string; cwd: string; permissionMode?: PermissionMode; origin?: string; trusted?: boolean },
     private readonly notifier: Notifier,
     private readonly runtime: ProjectRuntime,
   ) {
@@ -73,6 +80,13 @@ export class Project {
     this.name = opts.name?.trim() || path.basename(this.cwd) || this.cwd;
     this.permissionMode = opts.permissionMode ?? "auto-edit";
     this.origin = opts.origin ?? "local";
+    this.trusted = opts.trusted ?? this.origin === "local";
+  }
+
+  /** Trusts (or stops trusting) the folder's own agent settings; agents started later follow it. */
+  setTrusted(trusted: boolean): void {
+    this.trusted = trusted;
+    this.changed();
   }
 
   changed(): void {

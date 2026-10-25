@@ -77,17 +77,32 @@ function Screen({ onExit }: { onExit: () => void }) {
   const runInTerminal: TerminalRunner = useCallback(
     async (exe, args, opts) => {
       let code: number | null = null;
-      await suspendTerminal(
-        () =>
-          new Promise<void>((resolve) => {
-            const child = spawnProgram(exe, args, { stdio: "inherit", cwd: opts?.cwd ?? process.cwd(), env: opts?.env ?? process.env });
-            child.on("error", () => resolve());
-            child.on("exit", (exitCode) => {
-              code = exitCode;
-              resolve();
-            });
-          }),
-      );
+      // Ctrl+C in the child's terminal reaches lu-minal too (the whole foreground group on POSIX,
+      // every process on the console on Windows): ignore it here, the child handles it.
+      const ignoreSigint = () => undefined;
+      process.on("SIGINT", ignoreSigint);
+      try {
+        await suspendTerminal(
+          () =>
+            new Promise<void>((resolve) => {
+              let child: ReturnType<typeof spawnProgram>;
+              try {
+                child = spawnProgram(exe, args, { stdio: "inherit", cwd: opts?.cwd ?? process.cwd(), env: opts?.env ?? process.env });
+              } catch {
+                // spawnProgram refuses a batch file whose arguments cmd.exe would cut (a line break).
+                resolve();
+                return;
+              }
+              child.on("error", () => resolve());
+              child.on("exit", (exitCode) => {
+                code = exitCode;
+                resolve();
+              });
+            }),
+        );
+      } finally {
+        process.off("SIGINT", ignoreSigint);
+      }
       return code;
     },
     [suspendTerminal],

@@ -14,6 +14,8 @@ import { MCP_TOOL_TIMEOUT_MS } from "../agents/claude-code/cli.js";
 import type { Agent } from "../core/agent.js";
 import { newId } from "../core/emitter.js";
 import type { Project } from "../core/project.js";
+import { registerSecret } from "../core/secrets.js";
+import { writeFileAtomicSync } from "../platform/files.js";
 import { createToolContext, normalizeArgs, runToolCall } from "../tools/run.js";
 import type { Tool, ToolDisplay, ToolServices } from "../tools/types.js";
 import { APPROVE_TOOL, APPROVE_TOOL_NAME, approvalAnswer, askWithdrawable, assessClaudeTool, automaticAnswer } from "./approve.js";
@@ -150,6 +152,19 @@ function originAllowed(origin: string | undefined): boolean {
   }
 }
 
+/**
+ * The Host a request names must be this server's own loopback address: a page on another site
+ * whose name was re-pointed at 127.0.0.1 (DNS rebinding) sends its own name there.
+ */
+function hostAllowed(host: string | undefined, port: number | null): boolean {
+  if (host === undefined) return true; // HTTP/1.0 clients send none; the token still decides
+  const m = /^(?:\[([^\]]+)\]|([^:]+))(?::(\d+))?$/.exec(host.trim().toLowerCase());
+  if (!m) return false;
+  const name = m[1] ?? m[2];
+  if (name !== "127.0.0.1" && name !== "localhost" && name !== "::1") return false;
+  return port === null || m[3] === undefined || Number(m[3]) === port;
+}
+
 function header(req: http.IncomingMessage, name: string): string | null {
   const v = req.headers[name];
   if (Array.isArray(v)) return v[0] ?? null;
@@ -207,6 +222,10 @@ export class McpServer {
     // Approvals can wait a long time for the user: no socket inactivity timeout.
     server.timeout = 0;
     server.keepAliveTimeout = 30_000;
+    // Receiving a request is quick (the waiting happens after it): slow senders are cut off.
+    server.headersTimeout = 15_000;
+    server.requestTimeout = 120_000;
+    server.maxHeadersCount = 64;
     this.server = server;
     this.listening = new Promise<number>((resolve, reject) => {
       const onError = (err: Error) => {
@@ -253,6 +272,7 @@ export class McpServer {
     const old = this.agents.get(agent.id);
     if (old) this.forgetSessions(old);
     const token = crypto.randomBytes(32).toString("hex");
+    registerSecret(token);
     const dir = path.join(this.opts.stateDir, "mcp");
     const configFile = path.join(dir, `${agent.id.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
     const reg: Registration = {
@@ -360,21 +380,20 @@ export class McpServer {
     if (this.port === null) return;
     const dir = path.dirname(reg.configFile);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // The folder holds every agent's bearer token: only the user may list or open it, also when
+    // it existed before with looser modes.
+    if (process.platform !== "win32") {
+      try {
+        fs.chmodSync(dir, 0o700);
+      } catch {
+        // not ours to change (a shared state dir); the files themselves are 0600
+      }
+    }
     const content = `${JSON.stringify(this.configOf(reg), null, 2)}\n`;
-    // Temp file + rename: a starting `claude` never reads half a file.
-    const tmp = `${reg.configFile}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-    fs.writeFileSync(tmp, content, { mode: 0o600 });
-    try {
-      fs.renameSync(tmp, reg.configFile);
-    } catch (err) {
-      fs.rmSync(tmp, { force: true });
-      throw err;
-    }
-    try {
-      fs.chmodSync(reg.configFile, 0o600);
-    } catch {
-      // Windows keeps the folder's ACL (the user's own profile).
-    }
+    // Temp file + rename: a starting `claude` never reads half a file. On Windows a rename over a
+    // file a running `claude` or a virus scanner holds is retried, then written in place; the
+    // folder's ACL (the user's own profile) protects it there, mode 0600 elsewhere.
+    writeFileAtomicSync(reg.configFile, content, { mode: 0o600 });
   }
 
   private forgetSessions(reg: Registration): void {
@@ -398,6 +417,7 @@ export class McpServer {
     const match = /^\/mcp\/([^/]+)\/?$/.exec(url.pathname);
     if (!match) return sendText(res, 404, "Not found");
     if (!originAllowed(header(req, "origin") ?? undefined)) return sendText(res, 403, "Forbidden");
+    if (!hostAllowed(req.headers.host, this.port)) return sendText(res, 403, "Forbidden");
     let agentId: string;
     try {
       agentId = decodeURIComponent(match[1]);

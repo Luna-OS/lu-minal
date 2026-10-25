@@ -24,7 +24,7 @@ platform (Bun-compiled, see `scripts/build-binaries.ts`), and on macOS also as a
 | `src/agents/claude-code/` | Claude Code CLI: discovery, account, plan usage, stream-json events, the driver. |
 | `src/agents/acp/` | ACP agents (OpenCode, Gemini CLI, custom): JSON-RPC peer, presets, models, the driver. See [acp.md](acp.md). |
 | `src/agents/prompts.ts` | System prompts for leads and workers (the team protocol). |
-| `src/tools/` | Tools: files, shell, web fetch, team (messages, spawn, tasks), themes, Roblox. |
+| `src/tools/` | Tools: files, shell, web fetch, team (messages, spawn, tasks), themes, Roblox. Risk checks: `command-risk.ts` (which shell commands only read), `sensitive.ts` (secret stores, protected folders), `net-guard.ts` (local addresses). See [security.md](security.md). |
 | `src/mcp/` | A minimal MCP server (Streamable HTTP) that gives Claude Code agents the team/theme/Roblox tools and routes their permission prompts into lu-minal. |
 | `src/roblox/` | The Studio bridge (HTTP long-poll server) and plugin installer. `roblox/` has the plugin. |
 | `src/git/` | GitHub and Forgejo/Gitea repository lists and cloning. |
@@ -118,7 +118,14 @@ runs the official `claude` program:
   from `src/platform/paths.ts` (`%APPDATA%` / `%LOCALAPPDATA%` on Windows, `~/Library` on macOS,
   XDG on Linux).
 - Programs: find them with `findProgram` and start them with `spawnProgram` / `runProgram`
-  (`src/platform/process.ts`), which handle Windows `.cmd` shims and PATHEXT.
+  (`src/platform/process.ts`). They handle Windows `.cmd` shims, PATHEXT, any spelling of PATH
+  and quoted PATH entries; an npm shim whose argument cmd.exe can't carry (a line break, `%`) is
+  started through its node target.
+- Files: whole-file rewrites use `writeFileAtomicSync` / `writeFileAtomic` (`src/platform/files.ts`):
+  a temp file and a rename, retried on Windows while another process holds the target
+  (EPERM / EBUSY), then written in place; file modes are set on POSIX only.
+- Folders: compare them with `samePath` (case-insensitive on Windows); the file tools read Git
+  Bash paths (`/c/...`) as Windows paths.
 - The shell tool runs `bash` on macOS/Linux; on Windows it prefers Git Bash and falls back to
   PowerShell, and tells the model which one it got.
 - Line endings: tools keep a file's existing `\r\n` when editing it.

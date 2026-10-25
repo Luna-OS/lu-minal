@@ -3,6 +3,8 @@
 // environment variables the catalog names (OPENROUTER_API_KEY, MINIMAX_API_KEY, ...).
 import fs from "node:fs";
 import path from "node:path";
+import { registerSecret } from "../core/secrets.js";
+import { writeFileAtomicSync } from "../platform/files.js";
 import { configDir, isWindows } from "../platform/paths.js";
 
 /** One stored sign-in. */
@@ -120,18 +122,9 @@ export class AuthStore {
     this.cache = null;
     const dir = path.dirname(this.file);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const text = `${JSON.stringify(data, null, 2)}\n`;
-    const tmp = `${this.file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-    fs.writeFileSync(tmp, text, { mode: 0o600 });
-    try {
-      fs.renameSync(tmp, this.file);
-    } catch (err) {
-      // Windows refuses to replace a file that another process (an editor, a virus scanner) holds.
-      fs.rmSync(tmp, { force: true });
-      if (!isWindows) throw err;
-      fs.writeFileSync(this.file, text);
-    }
-    if (!isWindows) fs.chmodSync(this.file, 0o600);
+    // Windows may refuse the rename while an editor or a virus scanner holds the file: retried,
+    // then written in place. Mode 0600 on macOS / Linux.
+    writeFileAtomicSync(this.file, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
   }
 
   private update(change: (data: Record<string, unknown>) => void): void {
@@ -176,7 +169,10 @@ export class AuthStore {
   secretFor(id: string): string | null {
     const entry = this.get(id);
     if (!entry) return null;
-    return entry.type === "token" ? entry.token : entry.key;
+    const secret = entry.type === "token" ? entry.token : entry.key;
+    // Whatever lu-minal hands out is hidden from tool output and error rows from now on.
+    registerSecret(secret);
+    return secret;
   }
 }
 
@@ -209,7 +205,10 @@ export function keyFor(
   if (stored) return { key: stored, source: "auth" };
   for (const name of env) {
     const value = readEnv(processEnv, name);
-    if (value) return { key: value, source: "env" };
+    if (value) {
+      registerSecret(value);
+      return { key: value, source: "env" };
+    }
   }
   return null;
 }

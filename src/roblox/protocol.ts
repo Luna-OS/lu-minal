@@ -14,6 +14,14 @@ export const DEFAULT_ROBLOX_PORT = 44766;
  */
 export const PLUGIN_HEADER = "X-LuMinal-Plugin";
 
+/**
+ * The header with the secret the installer baked into the plugin (src/roblox/token.ts). With a
+ * token configured, the bridge refuses requests without it: another program on this machine (a
+ * second user, a stray script) can't pose as Studio, take the agents' commands or feed them
+ * results.
+ */
+export const TOKEN_HEADER = "X-LuMinal-Token";
+
 /** Every command the plugin implements. */
 export const ROBLOX_COMMANDS = [
   "ping",

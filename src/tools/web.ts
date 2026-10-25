@@ -3,7 +3,8 @@
 // injectable, so tests never touch the network.
 import type { FetchLike } from "../providers/types.js";
 import { clip, defineTool, plural } from "./fs.js";
-import type { Tool, ToolResult } from "./types.js";
+import { isPrivateUrl, resolvesPrivate, systemLookup, type LookupAll } from "./net-guard.js";
+import type { Tool, ToolContext, ToolResult } from "./types.js";
 
 const TIMEOUT_MS = 20_000;
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -257,9 +258,48 @@ function isTextual(type: string): boolean {
   return /^text\/|[/+](json|xml|javascript|ecmascript|x-www-form-urlencoded|yaml|toml|csv|markdown)\b|^application\/(x-)?(sh|sql|graphql)/i.test(type);
 }
 
-/** The web_fetch tool, fetching with `fetchImpl` (default: the global fetch). */
-export function createWebFetchTool(fetchImpl?: FetchLike): Tool {
+/** How many redirects web_fetch follows (each one is checked like the first URL). */
+const MAX_REDIRECTS = 5;
+
+function originOf(url: URL | string): string {
+  try {
+    return new URL(String(url)).origin;
+  } catch {
+    return String(url);
+  }
+}
+
+export interface WebFetchOptions {
+  /**
+   * Resolves host names to check whether a public-looking name points at this machine or the
+   * local network. Default: the system resolver with the global fetch; none (literal checks only)
+   * with an injected fetch, unless one is given.
+   */
+  lookup?: LookupAll | null;
+}
+
+/**
+ * The web_fetch tool, fetching with `fetchImpl` (default: the global fetch). Public http(s) URLs
+ * are a "network" action; this machine, the local network, cloud metadata endpoints and names
+ * that resolve there are "other" (always asked), also when a redirect or DNS leads there.
+ */
+export function createWebFetchTool(fetchImpl?: FetchLike, opts: WebFetchOptions = {}): Tool {
   const doFetch: FetchLike = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  const lookup: LookupAll | null = opts.lookup !== undefined ? opts.lookup : fetchImpl ? null : systemLookup;
+
+  /** Asks before a hop to a private address the first approval didn't cover. */
+  async function allowPrivate(target: URL, approved: Set<string>, ctx: ToolContext, why: string): Promise<boolean> {
+    const origin = originOf(target);
+    if (approved.has(origin)) return true;
+    const ok = await ctx.approve({
+      risk: "other",
+      summary: `fetch ${target.toString()} (${why})`,
+      allowKey: `web_fetch:${origin}`,
+    });
+    if (ok) approved.add(origin);
+    return ok;
+  }
+
   return defineTool<FetchArgs>({
     name: "web_fetch",
     description:
@@ -275,7 +315,7 @@ export function createWebFetchTool(fetchImpl?: FetchLike): Tool {
       required: ["url"],
       additionalProperties: false,
     },
-    risk: "network",
+    risk: (args) => (isPrivateUrl(String(args.url ?? "")) ? "other" : "network"),
     describe(args) {
       let target = String(args.url ?? "");
       try {
@@ -286,7 +326,11 @@ export function createWebFetchTool(fetchImpl?: FetchLike): Tool {
       }
       return { verb: "fetch", target: clip(target, 70) };
     },
-    approval: (args) => ({ risk: "network", summary: `fetch ${String(args.url ?? "")}`, allowKey: "web_fetch" }),
+    approval: (args) => {
+      const url = String(args.url ?? "");
+      if (!isPrivateUrl(url)) return { risk: "network", summary: `fetch ${url}`, allowKey: "web_fetch" };
+      return { risk: "other", summary: `fetch ${url} (this machine or the local network)`, allowKey: `web_fetch:${originOf(url)}` };
+    },
     async run(args, ctx): Promise<ToolResult> {
       let url: URL;
       try {
@@ -300,17 +344,47 @@ export function createWebFetchTool(fetchImpl?: FetchLike): Tool {
       const maxChars = Math.min(MAX_CHARS, Math.max(100, Math.floor(Number(args.max_chars) || DEFAULT_CHARS)));
       const timeout = AbortSignal.timeout(TIMEOUT_MS);
       const signal = anySignal([ctx.signal, timeout]);
+      // A private URL was asked about before run (risk "other"); public ones may still lead there.
+      const approved = new Set<string>(isPrivateUrl(url.toString()) ? [originOf(url)] : []);
       let res: Response;
+      let target = url;
       try {
-        res = await doFetch(url.toString(), {
-          method: "GET",
-          redirect: "follow",
-          signal,
-          headers: {
-            "User-Agent": "lu-minal (a coding agent; +https://github.com/Luna-OS/lu-minal)",
-            Accept: "text/html,application/xhtml+xml,application/json;q=0.9,text/plain;q=0.8,*/*;q=0.5",
-          },
-        });
+        for (let hop = 0; ; hop++) {
+          if (lookup && !approved.has(originOf(target)) && (await resolvesPrivate(target.hostname, lookup))) {
+            if (!(await allowPrivate(target, approved, ctx, "resolves to this machine or the local network"))) {
+              return { content: `Not fetched: ${target.host} is on this machine or the local network, and the user said no.`, isError: true, display: { detail: "local address denied" } };
+            }
+          }
+          res = await doFetch(target.toString(), {
+            method: "GET",
+            // Followed by hand, so every hop is checked like the first URL.
+            redirect: "manual",
+            signal,
+            headers: {
+              "User-Agent": "lu-minal (a coding agent; +https://github.com/Luna-OS/lu-minal)",
+              Accept: "text/html,application/xhtml+xml,application/json;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+            },
+          });
+          const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+          if (!location) break;
+          if (hop >= MAX_REDIRECTS) {
+            return { content: `${url} redirected more than ${MAX_REDIRECTS} times; stopped at ${target}.`, isError: true, display: { detail: "too many redirects" } };
+          }
+          let nextUrl: URL;
+          try {
+            nextUrl = new URL(location, target);
+          } catch {
+            return { content: `${target} redirected to an invalid address: ${location}`, isError: true, display: { detail: "bad redirect" } };
+          }
+          if (nextUrl.protocol !== "http:" && nextUrl.protocol !== "https:") {
+            return { content: `${target} redirected to ${nextUrl.protocol} (only http and https are fetched).`, isError: true, display: { detail: "not http(s)" } };
+          }
+          if (isPrivateUrl(nextUrl.toString()) && !(await allowPrivate(nextUrl, approved, ctx, "a redirect to this machine or the local network"))) {
+            return { content: `Not fetched: ${target} redirected to ${nextUrl}, on this machine or the local network, and the user said no.`, isError: true, display: { detail: "local redirect denied" } };
+          }
+          await res.body?.cancel().catch(() => undefined);
+          target = nextUrl;
+        }
       } catch (err) {
         if (ctx.signal.aborted) return { content: "Interrupted.", isError: true };
         if (timeout.aborted) {
@@ -330,7 +404,7 @@ export function createWebFetchTool(fetchImpl?: FetchLike): Tool {
         return { content: `Reading ${url} failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
       const type = (res.headers.get("content-type") ?? "").toLowerCase();
-      const finalUrl = res.url || url.toString();
+      const finalUrl = res.url || target.toString();
       let text = decode(body.bytes, charsetOf(type));
       // Untyped or mislabelled ("text/plain") documents that are plainly HTML read as HTML.
       const sniffHtml = (!type || type.startsWith("text/plain")) && /^\s*(<!doctype html|<html[\s>])/i.test(text);

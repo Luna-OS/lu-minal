@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  cloneArgs,
   CloneError,
   cloneRepo,
   createEmptyProject,
@@ -107,6 +108,21 @@ describe("clone helpers", () => {
   });
 });
 
+describe("cloneArgs", () => {
+  it("adds core.longpaths on Windows only, before the URL", () => {
+    expect(cloneArgs("https://x/y.git", "/p/y", "linux")).toEqual(["clone", "--progress", "--", "https://x/y.git", "/p/y"]);
+    expect(cloneArgs("https://x/y.git", "C:\\p\\y", "win32")).toEqual([
+      "clone",
+      "--progress",
+      "--config",
+      "core.longpaths=true",
+      "--",
+      "https://x/y.git",
+      "C:\\p\\y",
+    ]);
+  });
+});
+
 describe("cloneRepo with a fake git", () => {
   it("fails clearly when git is missing", async () => {
     const repo = repoInfo("https://github.com/luna/moon-app.git");
@@ -138,7 +154,7 @@ describe("cloneRepo with a fake git", () => {
     const target = path.join(dir, "projects", "moon-app");
     expect(result).toEqual({ dir: target, existed: false });
     const [call] = fake.log().filter((l) => l.args.includes("clone"));
-    expect(call.args).toEqual(["clone", "--progress", "--", "https://github.com/luna/moon-app.git", target]);
+    expect(call.args).toEqual(cloneArgs("https://github.com/luna/moon-app.git", target));
     expect(JSON.stringify(call.args)).not.toContain("ghp_secret");
     expect(JSON.stringify(call.args)).not.toContain(Buffer.from("x-access-token:ghp_secret").toString("base64"));
     // Appended after entries the environment already has (CI and sandboxes set some).

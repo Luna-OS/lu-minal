@@ -59,6 +59,18 @@ describe("path helpers", () => {
   });
 });
 
+describe("path helpers with Windows rules", () => {
+  it("reads Git Bash paths as the Windows paths they name", () => {
+    const cwd = "C:\\Users\\ada\\proj";
+    expect(resolvePath(cwd, "/c/Users/ada/proj/src/a.ts", "win32")).toBe("C:\\Users\\ada\\proj\\src\\a.ts");
+    expect(resolvePath(cwd, "/d/data/x.json", "win32")).toBe("D:\\data\\x.json");
+    expect(resolvePath(cwd, "src/a.ts", "win32")).toBe("C:\\Users\\ada\\proj\\src\\a.ts");
+    expect(resolvePath(cwd, "C:/Users/ada/proj/b.ts", "win32")).toBe("C:\\Users\\ada\\proj\\b.ts");
+    // Elsewhere "/c/x" is just a path.
+    expect(resolvePath("/home/ada/proj", "/c/x", "linux")).toBe("/c/x");
+  });
+});
+
 describe("read_file", () => {
   it("returns numbered lines and the line count", async () => {
     write("src/app.ts", "const a = 1;\nconst b = 2;\n");

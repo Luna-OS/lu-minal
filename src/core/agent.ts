@@ -4,6 +4,7 @@ import type { ModelRef } from "../providers/models.js";
 import { formatModelRef } from "../providers/models.js";
 import type { Attachment } from "./attachments.js";
 import { newId, type Notifier } from "./emitter.js";
+import { redactSecrets } from "./secrets.js";
 import { verdictFor } from "./permissions.js";
 import type {
   AgentRole,
@@ -196,12 +197,14 @@ export class Agent {
   }
 
   info(text: string): void {
-    this.append({ kind: "info", text });
+    this.append({ kind: "info", text: redactSecrets(text) });
   }
 
+  /** Logs an error (provider and CLI errors can echo a key: known secrets are redacted). */
   error(text: string): void {
-    this.lastError = text;
-    this.append({ kind: "error", text });
+    const shown = redactSecrets(text);
+    this.lastError = shown;
+    this.append({ kind: "error", text: shown });
   }
 
   clearLog(): void {
@@ -326,8 +329,10 @@ export class Agent {
    */
   async requestApproval(request: Omit<ApprovalRequest, "id" | "agentId">): Promise<ApprovalDecision> {
     const verdict = verdictFor(this.permissionMode, request.risk);
-    if (verdict === "allow" || this.allowed.has(request.allowKey)) return "allow";
+    // The mode's "no" wins over the "always" list: plan mode stays read-only even for actions the
+    // user allowed for good earlier in another mode.
     if (verdict === "deny") return "deny";
+    if (verdict === "allow" || this.allowed.has(request.allowKey)) return "allow";
     const full: ApprovalRequest = { ...request, id: newId("ask"), agentId: this.id };
     const entry = this.append({ kind: "approval", request: full });
     const decision = await new Promise<ApprovalDecision>((resolve) => {

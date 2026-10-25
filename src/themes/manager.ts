@@ -3,6 +3,7 @@
 // listeners when it (or the list) changes, and is what the theme tools reach as a ThemeApi.
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "../platform/files.js";
 import type { ThemeApi } from "../tools/types.js";
 import { BUILTIN_THEMES, DEFAULT_THEME_NAME, isBuiltinName } from "./builtin.js";
 import type { Theme } from "./types.js";
@@ -127,14 +128,7 @@ export class ThemeManager {
     if (isBuiltinName(t.name)) t.name = `${t.name}-custom`;
     await fs.promises.mkdir(this.dir, { recursive: true });
     const file = path.join(this.dir, `${t.name}.json`);
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.writeFile(tmp, themeToJson(t), "utf8");
-    try {
-      await fs.promises.rename(tmp, file);
-    } catch (err) {
-      await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
-      throw err;
-    }
+    await writeFileAtomic(file, themeToJson(t));
     this.loadCustoms();
     const saved = this.customs.find((c) => path.resolve(c.file) === path.resolve(file))?.theme ?? this.get(t.name);
     const before = this.currentTheme;

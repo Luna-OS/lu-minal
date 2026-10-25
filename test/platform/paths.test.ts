@@ -2,7 +2,18 @@
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cacheDir, configDir, defaultProjectsDir, expandHome, isMac, isWindows, stateDir, tildify } from "../../src/platform/paths.js";
+import {
+  cacheDir,
+  configDir,
+  defaultProjectsDir,
+  expandHome,
+  fromMsysPath,
+  isMac,
+  isWindows,
+  samePath,
+  stateDir,
+  tildify,
+} from "../../src/platform/paths.js";
 
 const platform = process.platform;
 const home = path.join(os.tmpdir(), "lu-minal-home-test", "ada");
@@ -115,5 +126,51 @@ describe("expandHome", () => {
   it("round-trips with tildify", () => {
     const p = path.join(home, "projects", "moon");
     expect(expandHome(tildify(p))).toBe(p);
+  });
+});
+
+describe("tildify with Windows rules", () => {
+  beforeEach(() => {
+    vi.stubEnv("LU_MINAL_HOME_DIR", "C:\\Users\\Ada");
+  });
+
+  it("ignores case and accepts either separator", () => {
+    expect(tildify("C:\\Users\\Ada\\code\\app", "win32")).toBe("~\\code\\app");
+    expect(tildify("c:\\users\\ada\\code", "win32")).toBe("~\\code");
+    expect(tildify("C:/Users/Ada/code/app", "win32")).toBe("~\\code/app");
+    expect(tildify("c:\\USERS\\ada", "win32")).toBe("~");
+    expect(tildify("C:\\Users\\Ada\\", "win32")).toBe("~");
+  });
+
+  it("leaves other folders, drives and look-alikes alone", () => {
+    expect(tildify("C:\\Users\\Adam\\x", "win32")).toBe("C:\\Users\\Adam\\x");
+    expect(tildify("D:\\Users\\Ada\\x", "win32")).toBe("D:\\Users\\Ada\\x");
+    expect(tildify("\\\\server\\share\\Users\\Ada", "win32")).toBe("\\\\server\\share\\Users\\Ada");
+  });
+});
+
+describe("samePath", () => {
+  it("ignores case and trailing separators on Windows only", () => {
+    expect(samePath("C:\\Code\\App\\", "c:/code/app", "win32")).toBe(true);
+    expect(samePath("C:\\Code\\App", "D:\\Code\\App", "win32")).toBe(false);
+    expect(samePath("\\\\srv\\Share\\x", "\\\\SRV\\share\\X\\", "win32")).toBe(true);
+    expect(samePath("/home/ada/App", "/home/ada/app", "linux")).toBe(false);
+    expect(samePath("/home/ada/app/", "/home/ada/./app", "linux")).toBe(true);
+    expect(samePath("/", "/", "darwin")).toBe(true);
+  });
+});
+
+describe("fromMsysPath", () => {
+  it("turns Git Bash paths into Windows paths on Windows", () => {
+    expect(fromMsysPath("/c/Users/ada/proj/src/a.ts", "win32")).toBe("C:\\Users\\ada\\proj\\src\\a.ts");
+    expect(fromMsysPath("/d", "win32")).toBe("D:\\");
+    expect(fromMsysPath("/cygdrive/e/data", "win32")).toBe("E:\\data");
+  });
+
+  it("leaves everything else alone", () => {
+    expect(fromMsysPath("/c/Users/ada", "linux")).toBe("/c/Users/ada");
+    expect(fromMsysPath("/usr/bin", "win32")).toBe("/usr/bin");
+    expect(fromMsysPath("C:\\x", "win32")).toBe("C:\\x");
+    expect(fromMsysPath("src/a.ts", "win32")).toBe("src/a.ts");
   });
 });

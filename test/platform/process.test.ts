@@ -1,9 +1,21 @@
 // Finding and running programs: findProgram, cmdQuote, spawnProgram / runProgram, killTree.
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cmdQuote, findProgram, killTree, runProgram, spawnProgram } from "../../src/platform/process.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  cmdQuote,
+  findProgram,
+  killTree,
+  openCommand,
+  resolveCmdShim,
+  runProgram,
+  spawnProgram,
+  windowsSpawnPlan,
+  withProgramPath,
+} from "../../src/platform/process.js";
 
 const isWindows = process.platform === "win32";
 const node = process.execPath;
@@ -223,5 +235,303 @@ describe("spawnProgram and killTree", () => {
     await closed;
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
     expect(() => killTree(child)).not.toThrow();
+  });
+});
+
+// ---- Windows rules, checked on every OS ---------------------------------------------------------
+
+/**
+ * How the C runtime (and so node.exe behind an npm shim) splits a command line: backslashes escape
+ * only before a quote, `""` inside quotes is one quote.
+ */
+function parseCrtCommandLine(line: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  for (;;) {
+    while (line[i] === " " || line[i] === "\t") i++;
+    if (i >= line.length) break;
+    let arg = "";
+    let quoted = false;
+    while (i < line.length) {
+      const c = line[i];
+      if (!quoted && (c === " " || c === "\t")) break;
+      if (c === "\\") {
+        let n = 0;
+        while (line[i] === "\\") {
+          n++;
+          i++;
+        }
+        if (line[i] === '"') {
+          arg += "\\".repeat(Math.floor(n / 2));
+          if (n % 2 === 1) {
+            arg += '"';
+            i++;
+          }
+        } else {
+          arg += "\\".repeat(n);
+        }
+        continue;
+      }
+      if (c === '"') {
+        if (quoted && line[i + 1] === '"') {
+          arg += '"';
+          i += 2;
+          continue;
+        }
+        quoted = !quoted;
+        i++;
+        continue;
+      }
+      arg += c;
+      i++;
+    }
+    out.push(arg);
+  }
+  return out;
+}
+
+/** The characters of `line` that cmd.exe sees outside quotes (where & | < > ^ ( ) are operators). */
+function outsideCmdQuotes(line: string): string {
+  let quoted = false;
+  let out = "";
+  for (const c of line) {
+    if (c === '"') quoted = !quoted;
+    else if (!quoted) out += c;
+  }
+  return out;
+}
+
+describe("cmdQuote round trip", () => {
+  const tricky = [
+    "plain",
+    "two words",
+    'say "hi"',
+    'a\\"b',
+    "C:\\My Projects\\",
+    "C:\\path\\with\\",
+    "ends with two\\\\",
+    "\\\\server\\share dir\\",
+    "x&y|z<a>b^c(d)",
+    "",
+    '"',
+    'quote at the end"',
+    "café ☾ ✦",
+  ];
+
+  it("keeps every argument intact for the program behind cmd.exe", () => {
+    const line = tricky.map(cmdQuote).join(" ");
+    expect(parseCrtCommandLine(line)).toEqual(tricky);
+  });
+
+  it("never leaves cmd.exe's operators outside quotes", () => {
+    for (const arg of tricky) {
+      expect(outsideCmdQuotes(cmdQuote(arg)), arg).not.toMatch(/[&|<>^()]/);
+    }
+  });
+
+  it("doubles backslashes only where the C runtime would read them as escapes", () => {
+    expect(cmdQuote("C:\\My Projects\\")).toBe('"C:\\My Projects\\\\"');
+    expect(cmdQuote('a\\"b c')).toBe('"a\\\\""b c"');
+    expect(cmdQuote("a\\b c")).toBe('"a\\b c"');
+  });
+});
+
+describe("findProgram with Windows rules", () => {
+  const win = { platform: "win32" as const };
+
+  it("skips npm's extensionless Git Bash script and takes the .cmd next to it", () => {
+    const bin = path.join(tmp, "win-npm");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\n");
+    fs.writeFileSync(path.join(bin, "claude.cmd"), "@echo off\r\n");
+    expect(findProgram("claude", { ...win, env: { PATH: bin, PATHEXT: ".COM;.EXE;.BAT;.CMD" } })).toBe(path.join(bin, "claude.cmd"));
+    // A configured path without the extension finds the shim too.
+    expect(findProgram("claude", { ...win, configured: path.join(bin, "claude"), env: { PATH: "" } })).toBe(path.join(bin, "claude.cmd"));
+  });
+
+  it("reads the PATH under any spelling, with quoted entries and unexpanded variables", () => {
+    const bin = path.join(tmp, "win-quoted");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "moon.exe"), "MZ");
+    expect(findProgram("moon", { ...win, env: { pAtH: `"${bin}"`, PATHEXT: ".EXE" } })).toBe(path.join(bin, "moon.exe"));
+    expect(findProgram("moon", { ...win, env: { Path: "%MOON_BIN%", MOON_BIN: bin, pathext: ".exe" } })).toBe(path.join(bin, "moon.exe"));
+  });
+
+  it("only offers what spawnProgram can start (PATHEXT may list .JS or .PS1)", () => {
+    const bin = path.join(tmp, "win-ps1");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "tool.ps1"), "Write-Output hi");
+    fs.writeFileSync(path.join(bin, "tool.js"), "console.log(1)");
+    expect(findProgram("tool", { ...win, env: { PATH: bin, PATHEXT: ".JS;.PS1;.EXE" } })).toBeNull();
+    // A dot in a name is not an extension ("python3.12").
+    fs.writeFileSync(path.join(bin, "python3.12.exe"), "MZ");
+    expect(findProgram("python3.12", { ...win, env: { PATH: bin, PATHEXT: ".EXE" } })).toBe(path.join(bin, "python3.12.exe"));
+  });
+});
+
+describe("npm shims on Windows", () => {
+  /** An npm-style global folder: <dir>\claude.cmd and the package's cli.js. */
+  function npmFolder(name: string, shim: string, opts: { nodeExe?: boolean } = {}): { dir: string; shim: string; script: string } {
+    const dir = path.join(tmp, name);
+    const script = path.join(dir, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+    fs.mkdirSync(path.dirname(script), { recursive: true });
+    fs.writeFileSync(script, "// cli");
+    if (opts.nodeExe) fs.writeFileSync(path.join(dir, "node.exe"), "MZ");
+    const file = path.join(dir, "claude.cmd");
+    fs.writeFileSync(file, shim);
+    return { dir, shim: file, script };
+  }
+
+  const NPM7 = [
+    "@ECHO off",
+    "GOTO start",
+    ":find_dp0",
+    "SET dp0=%~dp0",
+    "EXIT /b",
+    ":start",
+    "SETLOCAL",
+    "CALL :find_dp0",
+    "",
+    'IF EXIST "%dp0%\\node.exe" (',
+    '  SET "_prog=%dp0%\\node.exe"',
+    ") ELSE (",
+    '  SET "_prog=node"',
+    "  SET PATHEXT=%PATHEXT:;.JS;=;%",
+    ")",
+    "",
+    'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*',
+    "",
+  ].join("\r\n");
+
+  it("finds the script and the node of npm 7+'s shim", () => {
+    const withNode = npmFolder("npm7-node", NPM7, { nodeExe: true });
+    expect(resolveCmdShim(withNode.shim)).toEqual({ exe: path.join(withNode.dir, "node.exe"), args: [withNode.script] });
+    const plain = npmFolder("npm7-path", NPM7);
+    expect(resolveCmdShim(plain.shim, { findNode: () => "C:\\nodejs\\node.exe" })).toEqual({ exe: "C:\\nodejs\\node.exe", args: [plain.script] });
+    // No node anywhere: leave it to cmd.exe.
+    expect(resolveCmdShim(plain.shim, { findNode: () => null })).toBeNull();
+  });
+
+  it("reads npm 6's shim and one that points at a program", () => {
+    const npm6 = npmFolder(
+      "npm6",
+      [
+        '@IF EXIST "%~dp0\\node.exe" (',
+        '  "%~dp0\\node.exe"  "%~dp0\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*',
+        ") ELSE (",
+        "  @SETLOCAL",
+        "  @SET PATHEXT=%PATHEXT:;.JS;=;%",
+        '  node  "%~dp0\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*',
+        ")",
+      ].join("\r\n"),
+    );
+    expect(resolveCmdShim(npm6.shim, { findNode: () => "node.exe" })).toEqual({ exe: "node.exe", args: [npm6.script] });
+
+    const dir = path.join(tmp, "native-shim");
+    const exe = path.join(dir, "node_modules", "tool", "bin", "tool.exe");
+    fs.mkdirSync(path.dirname(exe), { recursive: true });
+    fs.writeFileSync(exe, "MZ");
+    const shim = path.join(dir, "tool.cmd");
+    fs.writeFileSync(shim, '@ECHO off\r\nSETLOCAL\r\n"%dp0%\\node_modules\\tool\\bin\\tool.exe"   %*\r\n');
+    expect(resolveCmdShim(shim)).toEqual({ exe, args: [] });
+  });
+
+  it("leaves other batch files alone", () => {
+    const file = path.join(tmp, "other.cmd");
+    fs.writeFileSync(file, "@echo off\r\necho %*\r\n");
+    expect(resolveCmdShim(file)).toBeNull();
+    expect(resolveCmdShim(path.join(tmp, "missing.cmd"))).toBeNull();
+  });
+
+  it("starts programs directly and batch files through cmd.exe, quoted", () => {
+    expect(windowsSpawnPlan("C:\\bin\\git.exe", ["status", "a b"])).toEqual({ file: "C:\\bin\\git.exe", args: ["status", "a b"], verbatim: false });
+    const plan = windowsSpawnPlan("C:\\Users\\Ada Lovelace\\npm\\claude.cmd", ["-p", "x&y"], { COMSPEC: "C:\\Windows\\system32\\cmd.exe" });
+    expect(plan).toEqual({
+      file: "C:\\Windows\\system32\\cmd.exe",
+      args: ["/d", "/s", "/c", '""C:\\Users\\Ada Lovelace\\npm\\claude.cmd" -p "x&y""'],
+      verbatim: true,
+    });
+  });
+
+  it("starts an npm shim's target when cmd.exe would cut or expand an argument", () => {
+    const npm = npmFolder("npm7-multiline", NPM7, { nodeExe: true });
+    const message = "line one\nline two with %PATH%";
+    expect(windowsSpawnPlan(npm.shim, ["-p", message, "--cloud", "session_1"])).toEqual({
+      file: path.join(npm.dir, "node.exe"),
+      args: [npm.script, "-p", message, "--cloud", "session_1"],
+      verbatim: false,
+    });
+    // A batch file that is no npm shim can't take a line break: say so instead of losing text.
+    const other = path.join(tmp, "plain.bat");
+    fs.writeFileSync(other, "@echo off\r\n");
+    expect(() => windowsSpawnPlan(other, ["a\nb"])).toThrow(/line break/);
+    // "%" alone still goes through cmd.exe (best effort).
+    expect(windowsSpawnPlan(other, ["100%"]).verbatim).toBe(true);
+  });
+});
+
+describe("killTree on Windows", () => {
+  function fakeChild() {
+    return Object.assign(new EventEmitter(), { pid: 4242, exitCode: null, signalCode: null, kill: vi.fn(() => true) });
+  }
+
+  it("runs taskkill by its full path for the whole tree", () => {
+    const child = fakeChild();
+    const spawnImpl = vi.fn(() => new EventEmitter() as unknown as ChildProcess);
+    killTree(child as unknown as ChildProcess, { platform: "win32", spawnImpl, env: { SystemRoot: "D:\\Win" } });
+    expect(spawnImpl).toHaveBeenCalledWith("D:\\Win\\System32\\taskkill.exe", ["/pid", "4242", "/T", "/F"], expect.objectContaining({ windowsHide: true }));
+  });
+
+  it("survives a taskkill that can't start (no unhandled error) and kills the process itself", async () => {
+    const child = fakeChild();
+    const spawnImpl = vi.fn(() => {
+      const killer = new EventEmitter();
+      setImmediate(() => killer.emit("error", Object.assign(new Error("spawn taskkill.exe ENOENT"), { code: "ENOENT" })));
+      return killer as unknown as ChildProcess;
+    });
+    killTree(child as unknown as ChildProcess, { platform: "win32", spawnImpl, env: {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it("leaves a process alone that already ended by a signal", () => {
+    const child = Object.assign(fakeChild(), { signalCode: "SIGTERM" });
+    const spawnImpl = vi.fn();
+    killTree(child as unknown as ChildProcess, { platform: "win32", spawnImpl });
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("openCommand", () => {
+  it("uses rundll32 by its full path on Windows and /usr/bin/open on macOS", () => {
+    const url = "https://openrouter.ai/auth?callback_url=http://localhost:3000/callback&code_challenge=x";
+    expect(openCommand(url, { platform: "win32", env: { SYSTEMROOT: "C:\\Windows" } })).toEqual({
+      exe: "C:\\Windows\\System32\\rundll32.exe",
+      args: ["url.dll,FileProtocolHandler", url],
+    });
+    expect(openCommand(url, { platform: "darwin", env: {} })).toEqual({ exe: "/usr/bin/open", args: [url] });
+  });
+
+  it("prefers wslview under WSL and xdg-open elsewhere", () => {
+    const find = (name: string) => `/usr/bin/${name}`;
+    expect(openCommand("x", { platform: "linux", env: { WSL_DISTRO_NAME: "Ubuntu" }, find }).exe).toBe("/usr/bin/wslview");
+    expect(openCommand("x", { platform: "linux", env: {}, find }).exe).toBe("/usr/bin/xdg-open");
+    expect(openCommand("x", { platform: "linux", env: {}, find: () => null }).exe).toBe("xdg-open");
+  });
+});
+
+describe("withProgramPath", () => {
+  it("appends the program's folder under Windows' own spelling of PATH", () => {
+    const env = withProgramPath({ Path: "C:\\Windows\\System32;C:\\Users\\ada\\AppData\\Roaming\\npm\\" }, "C:\\Users\\ada\\AppData\\Roaming\\npm\\claude.cmd", "win32");
+    expect(env.Path).toBe("C:\\Windows\\System32;C:\\Users\\ada\\AppData\\Roaming\\npm\\");
+    expect(Object.keys(env).filter((k) => k.toUpperCase() === "PATH")).toEqual(["Path"]);
+    const nvm = withProgramPath({ Path: "C:\\Windows" }, "C:\\nvm4w\\nodejs\\gemini.cmd", "win32");
+    expect(nvm.Path).toBe("C:\\Windows;C:\\nvm4w\\nodejs");
+  });
+
+  it("adds Homebrew's folders on macOS for an app started from the Dock", () => {
+    const env = withProgramPath({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" }, "/Users/ada/.nvm/versions/node/v22.11.0/bin/claude", "darwin");
+    expect(env.PATH).toBe("/usr/bin:/bin:/usr/sbin:/sbin:/Users/ada/.nvm/versions/node/v22.11.0/bin:/opt/homebrew/bin:/usr/local/bin");
+    expect(withProgramPath({ PATH: "/usr/bin" }, "claude", "linux").PATH).toBe("/usr/bin");
   });
 });

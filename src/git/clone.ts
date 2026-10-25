@@ -227,19 +227,30 @@ function cloneFailure(repo: RepoInfo, tail: string[], code: number | null): Clon
   return new CloneError(`Could not clone ${repo.fullName}: ${reason}`, lines, code);
 }
 
-/** A clone URL git may be given: no option-like or `transport::address` forms. */
+/** A clone URL git may be given: no option-like or `transport::address` forms, no control characters. */
 function checkCloneUrl(repo: RepoInfo): void {
   const url = repo.cloneUrl.trim();
-  if (!url || url.startsWith("-") || /^[a-z][a-z0-9+.-]*::/i.test(url)) {
+  // eslint-disable-next-line no-control-regex
+  if (!url || url.startsWith("-") || /^[a-z][a-z0-9+.-]*::/i.test(url) || /[\u0000-\u001f\u007f]/.test(url)) {
     throw new CloneError(`Could not clone ${repo.fullName}: the clone address "${url}" looks wrong`, [], null);
   }
+}
+
+/**
+ * `git clone`'s arguments (after any `-c` options). On Windows the clone gets core.longpaths, kept
+ * in its .git/config: Git for Windows otherwise stops at paths over 260 characters ("Filename too
+ * long"), which deep repositories reach under C:\Users\<name>\lu-minal-projects.
+ */
+export function cloneArgs(url: string, dir: string, platform: NodeJS.Platform = process.platform): string[] {
+  const windows = platform === "win32" ? ["--config", "core.longpaths=true"] : [];
+  return ["clone", "--progress", ...windows, "--", url, dir];
 }
 
 async function runClone(git: string, repo: RepoInfo, dir: string, cwd: string, opts: CloneOptions): Promise<void> {
   const version = await gitVersion(git);
   if (opts.signal?.aborted) throw abortError();
   const transport = gitConfigTransport(opts.gitConfig ?? [], version);
-  const args = [...transport.args, "clone", "--progress", "--", repo.cloneUrl.trim(), dir];
+  const args = [...transport.args, ...cloneArgs(repo.cloneUrl.trim(), dir)];
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...transport.env,

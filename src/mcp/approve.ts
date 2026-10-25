@@ -7,6 +7,9 @@ import path from "node:path";
 import { clip, describeClaudeTool, displayPath, firstLine, LUMINAL_TOOL_PREFIX } from "../agents/claude-code/display.js";
 import type { Agent } from "../core/agent.js";
 import type { ApprovalDecision, ApprovalRequest, PermissionMode, RiskKind } from "../core/types.js";
+import { isReadOnlyShellCommand, shellAllowKey } from "../tools/command-risk.js";
+import { assessRead, assessWrite, writeNote, type SensitiveOptions } from "../tools/sensitive.js";
+import { isPrivateUrl } from "../tools/net-guard.js";
 
 /** An approval request for one of Claude Code's tool calls. */
 export interface ClaudeApproval {
@@ -63,146 +66,72 @@ const READ_TOOLS = new Set([
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const EXEC_TOOLS = new Set(["Bash", "PowerShell", "KillShell", "KillBash", "Monitor", "TaskStop"]);
 
-/** Folders inside a project whose files change how tools behave: edits there always ask. */
-const SENSITIVE_DIRS = new Set([".git", ".claude"]);
-
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 // ---- read-only shell commands --------------------------------------------------------------------
 
-const READ_ONLY_PROGRAMS = new Set([
-  "ls",
-  "cat",
-  "head",
-  "tail",
-  "pwd",
-  "wc",
-  "rg",
-  "grep",
-  "egrep",
-  "fgrep",
-  "find",
-  "tree",
-  "which",
-  "stat",
-  "file",
-  "du",
-  "echo",
-  "sort",
-  "cut",
-  "tr",
-  "nl",
-  "basename",
-  "dirname",
-  "realpath",
-]);
-
-const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "blame", "ls-files", "rev-parse", "shortlog"]);
-
-/** find's actions that run programs or write files. */
-const FIND_WRITES = new Set(["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"]);
-
-/** Splits a shell command into pipeline segments of words, or null when it does more than a pipeline. */
-function pipelineWords(command: string): string[][] | null {
-  // Harmless redirections of diagnostics.
-  const text = command.replace(/\s+(?:2>\s*\/dev\/null|2>&1|>\s*\/dev\/null)(?=\s|$|\|)/g, " ");
-  const segments: string[][] = [[]];
-  let word = "";
-  let inWord = false;
-  let quote: "'" | '"' | null = null;
-  const endWord = () => {
-    if (inWord) segments[segments.length - 1].push(word);
-    word = "";
-    inWord = false;
-  };
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      else if (quote === '"' && (ch === "`" || (ch === "$" && text[i + 1] === "("))) return null;
-      else word += ch;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      inWord = true;
-      continue;
-    }
-    if (ch === "\\" && i + 1 < text.length) {
-      word += text[++i];
-      inWord = true;
-      continue;
-    }
-    if (/[;&<>`\n\r(){}]/.test(ch) || (ch === "$" && text[i + 1] === "(")) return null;
-    if (ch === "|") {
-      endWord();
-      if (!segments[segments.length - 1].length) return null; // "||" or a leading "|"
-      segments.push([]);
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      endWord();
-      continue;
-    }
-    word += ch;
-    inWord = true;
-  }
-  if (quote) return null;
-  endWord();
-  if (segments.some((s) => !s.length)) return null;
-  return segments;
-}
-
-function segmentIsReadOnly(words: string[]): boolean {
-  const [first, ...args] = words;
-  if (!first || /^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return false; // VAR=value cmd
-  const program = first.split(/[\\/]/).pop()!.replace(/\.exe$/i, "").toLowerCase();
-  if (program === "git") {
-    const rest = args[0] === "--no-pager" ? args.slice(1) : args;
-    if (!rest.length || !GIT_READ_ONLY.has(rest[0])) return false;
-    return !rest.some((a) => a.startsWith("--output") || a === "-o" || a.startsWith("--ext-diff"));
-  }
-  if (!READ_ONLY_PROGRAMS.has(program)) return false;
-  if (program === "find") return !args.some((a) => FIND_WRITES.has(a));
-  if (program === "rg") return !args.some((a) => a === "--pre" || a.startsWith("--pre="));
-  if (program === "sort") return !args.some((a) => a === "-o" || a.startsWith("--output") || /^-[a-zA-Z]*o/.test(a));
-  return true;
-}
-
 /**
  * Whether a shell command only reads: ls, cat, head, tail, pwd, rg, grep, find (without -exec /
- * -delete), git status / diff / log / show, ... alone or in a pipeline, with no redirections into
- * files, command substitution or command lists.
+ * -delete), git status / diff / log / show, ... alone, in a pipeline or a list, with no
+ * expansions, substitutions or redirections into files, and (with `cwd`) no path into a secret
+ * store. The rules live in src/tools/command-risk.ts, shared with the native bash tool.
  */
-export function isReadOnlyCommand(command: string): boolean {
-  const trimmed = command.trim();
-  if (!trimmed) return false;
-  const segments = pipelineWords(trimmed);
-  return Boolean(segments && segments.every(segmentIsReadOnly));
+export function isReadOnlyCommand(command: string, cwd?: string, platform: NodeJS.Platform = process.platform): boolean {
+  return isReadOnlyShellCommand(command, { cwd, sensitive: sensitiveFor(platform) });
 }
 
 // ---- assessing a call ----------------------------------------------------------------------------
 
-function isInside(file: string, cwd: string): boolean {
-  const rel = path.relative(cwd, path.resolve(cwd, file));
-  return !rel.startsWith("..") && !path.isAbsolute(rel);
+/** The secret-store rules for `platform` (another platform than this machine's: its path rules only). */
+function sensitiveFor(platform: NodeJS.Platform): SensitiveOptions {
+  return platform === process.platform ? {} : { platform };
 }
 
-function editRisk(file: string, cwd: string): { risk: RiskKind; outside: boolean } {
-  if (!file) return { risk: "edit", outside: false };
-  if (!isInside(file, cwd)) return { risk: "other", outside: true };
-  const top = path.relative(cwd, path.resolve(cwd, file)).split(/[\\/]/)[0];
-  return { risk: SENSITIVE_DIRS.has(top) ? "other" : "edit", outside: false };
+const pathFor = (platform: NodeJS.Platform) => (platform === "win32" ? path.win32 : path.posix);
+
+/**
+ * What an edit of `file` risks: "edit" for an ordinary file in the project; "other" (always asks)
+ * outside it (symlinks followed, so a link to ~/.bashrc is outside), in a secret store, in a home
+ * dotfile, or in what git and agents run on their own (.git, .claude, .mcp.json, ...) – matched the
+ * way Windows and macOS resolve names (".GIT", "GIT~1", ".git." are .git there).
+ */
+function editRisk(file: string, cwd: string, platform: NodeJS.Platform = process.platform) {
+  if (!file) return { risk: "edit" as RiskKind, outside: false, reason: null as string | null, abs: "" };
+  const abs = pathFor(platform).resolve(cwd, file);
+  return { ...assessWrite(cwd, abs, sensitiveFor(platform)), abs };
 }
 
-/** What a Claude Code tool call risks, under lu-minal's permission modes. */
-export function claudeToolRisk(toolName: string, input: Record<string, unknown>, cwd: string): RiskKind {
+/** Where a read tool looks: its file or folder, resolved against the project. */
+function readTarget(toolName: string, input: Record<string, unknown>, cwd: string, platform: NodeJS.Platform): { abs: string; recursive: boolean } | null {
+  const p = pathFor(platform);
+  if (toolName === "Read") return str(input.file_path) ? { abs: p.resolve(cwd, str(input.file_path)), recursive: false } : null;
+  if (toolName === "NotebookRead") return str(input.notebook_path) ? { abs: p.resolve(cwd, str(input.notebook_path)), recursive: false } : null;
+  // Grep reads file contents below its folder (the project by default).
+  if (toolName === "Grep") return { abs: p.resolve(cwd, str(input.path) || "."), recursive: true };
+  return null;
+}
+
+/**
+ * What a Claude Code tool call risks, under lu-minal's permission modes. `platform` picks the path
+ * rules (tests); it defaults to this machine's. Reading is free, except reads of secret stores
+ * (~/.ssh, lu-minal's auth.json, ...) and network shares, which ask like any other risky action.
+ */
+export function claudeToolRisk(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  platform: NodeJS.Platform = process.platform,
+): RiskKind {
   if (toolName.startsWith(LUMINAL_TOOL_PREFIX)) return "read";
-  if (READ_TOOLS.has(toolName)) return "read";
-  if (EDIT_TOOLS.has(toolName)) return editRisk(str(input.file_path) || str(input.notebook_path), cwd).risk;
-  if (toolName === "Bash") return isReadOnlyCommand(str(input.command)) ? "read" : "exec";
+  if (READ_TOOLS.has(toolName)) {
+    const target = readTarget(toolName, input, cwd, platform);
+    return target ? assessRead(target.abs, { ...sensitiveFor(platform), recursive: target.recursive, cwd }) : "read";
+  }
+  if (EDIT_TOOLS.has(toolName)) return editRisk(str(input.file_path) || str(input.notebook_path), cwd, platform).risk;
+  if (toolName === "Bash") return isReadOnlyCommand(str(input.command), cwd, platform) ? "read" : "exec";
   if (EXEC_TOOLS.has(toolName)) return "exec";
-  if (toolName === "WebFetch") return "network";
+  // This machine, the local network and cloud metadata endpoints are not the open web.
+  if (toolName === "WebFetch") return isPrivateUrl(str(input.url)) ? "other" : "network";
   return "other";
 }
 
@@ -225,19 +154,19 @@ export function assessClaudeTool(toolName: string, input: Record<string, unknown
 
   if (toolName === "Bash" || toolName === "PowerShell") {
     const command = str(input.command).trim();
-    const words = command.split(/\s+/).filter(Boolean).slice(0, 2).join(" ");
     const description = str(input.description).trim();
     return {
       risk,
       summary: `run ${firstLine(command, 60) || "a command"}`,
       detail: clip(description ? `${command}\n(${description})` : command, 2000),
-      allowKey: `${toolName}:${words}`,
+      // "Bash:npm test" for one simple command; a list, pipe or substitution only as itself.
+      allowKey: shellAllowKey(toolName, command, toolName === "PowerShell" ? "powershell" : "bash"),
     };
   }
 
   if (EDIT_TOOLS.has(toolName)) {
     const file = str(input.file_path) || str(input.notebook_path);
-    const { outside } = editRisk(file, cwd);
+    const assessed = editRisk(file, cwd);
     const where = displayPath(file, cwd) || "a file";
     let verb = "edit";
     if (toolName === "Write") {
@@ -264,19 +193,37 @@ export function assessClaudeTool(toolName: string, input: Record<string, unknown
     }
     return {
       risk,
-      summary: `${verb} ${where}${outside ? " (outside the project)" : ""}`,
+      summary: `${verb} ${where}${file ? writeNote(assessed) : ""}`,
       detail: detail || undefined,
-      allowKey: toolName,
+      // "always" for an ordinary edit in the project never covers one outside it or in .git.
+      allowKey: assessed.risk === "edit" ? toolName : `${toolName}:${assessed.abs}`,
     };
   }
 
   if (toolName === "WebFetch") {
     const prompt = str(input.prompt).trim();
+    const url = str(input.url);
+    let origin = url;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      // shown as given
+    }
     return {
       risk,
-      summary: plain,
-      detail: [str(input.url), prompt ? `(${firstLine(prompt, 120)})` : ""].filter(Boolean).join("\n") || undefined,
-      allowKey: toolName,
+      summary: risk === "network" ? plain : `${plain} (this machine or the local network)`,
+      detail: [url, prompt ? `(${firstLine(prompt, 120)})` : ""].filter(Boolean).join("\n") || undefined,
+      allowKey: risk === "network" ? toolName : `${toolName}:${origin}`,
+    };
+  }
+
+  const read = READ_TOOLS.has(toolName) ? readTarget(toolName, input, cwd, process.platform) : null;
+  if (read && risk !== "read") {
+    return {
+      risk,
+      summary: `${plain || `use ${toolName}`} (a credentials store or network share)`,
+      detail: read.abs,
+      allowKey: `${toolName}:${read.abs}`,
     };
   }
 

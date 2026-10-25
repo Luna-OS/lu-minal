@@ -5,8 +5,9 @@
 import type { ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { killTree, spawnProgram } from "../platform/process.js";
+import { killTree, pathDirs, spawnProgram } from "../platform/process.js";
 import type { RiskKind } from "../core/types.js";
+import { isReadOnlyShellCommand, shellAllowKey, type ShellKind } from "./command-risk.js";
 import { clip, defineTool, displayPath, resolvePath } from "./fs.js";
 import type { Tool, ToolResult } from "./types.js";
 
@@ -35,7 +36,8 @@ const defaultExists = (file: string): boolean => {
 /** Looks `names` up on the PATH of `env`, with the path flavour of `platform`. */
 function onPath(names: string[], platform: NodeJS.Platform, env: NodeJS.ProcessEnv, exists: (f: string) => boolean): string[] {
   const p = platform === "win32" ? path.win32 : path.posix;
-  const dirs = (env.PATH ?? env.Path ?? "").split(platform === "win32" ? ";" : ":").filter(Boolean);
+  // Windows: any spelling of PATH, quoted entries, unexpanded %VARIABLES%.
+  const dirs = pathDirs(env, platform);
   const out: string[] = [];
   for (const dir of dirs) {
     for (const name of names) {
@@ -46,8 +48,24 @@ function onPath(names: string[], platform: NodeJS.Platform, env: NodeJS.ProcessE
   return out;
 }
 
+/**
+ * Before the command: no progress bars, and UTF-8 both ways (without a BOM, which Windows
+ * PowerShell would otherwise put in front of the output).
+ */
 const POWERSHELL_PREAMBLE =
-  "$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ";
+  "$ProgressPreference='SilentlyContinue'; " +
+  "try { $OutputEncoding = New-Object System.Text.UTF8Encoding $false; [Console]::OutputEncoding = $OutputEncoding } catch {}; ";
+
+/**
+ * After it: the command's own exit code. `-Command` alone exits with 1 for any failure, so an
+ * `npm test` that exits 2 or a `git diff --exit-code` would all read "exit code 1".
+ */
+const POWERSHELL_POSTAMBLE = "\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }";
+
+/** The arguments that make PowerShell run `command` and exit with its status. */
+export function powershellArgs(command: string): string[] {
+  return ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", POWERSHELL_PREAMBLE + command + POWERSHELL_POSTAMBLE];
+}
 
 /**
  * The shell the bash tool uses on `platform`: bash (or sh) on macOS / Linux; on Windows Git Bash
@@ -102,7 +120,7 @@ function findShell(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, exists: (f
     onPath(["bash.exe"], platform, env, exists).find((f) => !isWslLauncher(f));
   if (gitBash) return { kind: "bash", exe: gitBash, args: (c) => ["-c", c], name: "Git Bash" };
 
-  const psArgs = (c: string) => ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", POWERSHELL_PREAMBLE + c];
+  const psArgs = powershellArgs;
   const pwsh =
     onPath(["pwsh.exe"], platform, env, exists)[0] ??
     roots.map((r) => w.join(r, "PowerShell", "7", "pwsh.exe")).find((f) => exists(f));
@@ -118,215 +136,26 @@ function findShell(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, exists: (f
 
 // ---- read-only commands -------------------------------------------------------------------------
 
-const READ_ONLY = new Set([
-  "ls",
-  "cat",
-  "head",
-  "tail",
-  "wc",
-  "pwd",
-  "echo",
-  "which",
-  "where",
-  "rg",
-  "grep",
-  "egrep",
-  "fgrep",
-  "find",
-  "tree",
-  "stat",
-  "file",
-  "du",
-  "df",
-  "date",
-  "whoami",
-  "uname",
-  "basename",
-  "dirname",
-  "realpath",
-  "type",
-  "dir",
-  "cd",
-  "true",
-  "get-childitem",
-  "gci",
-  "get-content",
-  "gc",
-  "get-location",
-  "gl",
-  "select-string",
-  "sls",
-  "test-path",
-  "resolve-path",
-  "get-item",
-  "gi",
-]);
-
-const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "blame", "shortlog"]);
-const FIND_WRITES = new Set(["-exec", "-execdir", "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
-const GIT_BRANCH_WRITES = /^(?:-[dDmMcCf]|--delete|--move|--copy|--force|--set-upstream-to|-u|--unset-upstream|--edit-description)/;
-const NULL_TARGETS = new Set(["/dev/null", "nul", "$null", "NUL"]);
-
-interface Parsed {
-  /** Each simple command's words, quotes removed. */
-  segments: string[][];
-  /** Something that runs or writes regardless of the commands (redirects, substitutions, "&"). */
-  unsafe: boolean;
+/** The command syntax a shell speaks, for the read-only rules (command-risk.ts). */
+function syntaxOf(kind: ShellInfo["kind"] | undefined): ShellKind {
+  return kind === "powershell" ? "powershell" : kind === "cmd" ? "cmd" : "bash";
 }
 
 /**
- * Splits a command line at unquoted `;`, `&&`, `||`, `|`, `|&` and newlines, notes redirects to
- * files, command substitution (`$( )`, backticks, `<( )`) and background jobs.
+ * "read" for commands that plainly only look (ls, cat, git status, rg, ...), else "exec". `shell`
+ * picks the quoting rules (default: POSIX); with `cwd`, relative paths are checked too, so a
+ * command that reads a secret store (~/.ssh, lu-minal's auth.json) is not "read".
  */
-function parseCommand(command: string): Parsed {
-  const segments: string[][] = [];
-  let words: string[] = [];
-  let word = "";
-  let inWord = false;
-  let quote: "'" | '"' | null = null;
-  let unsafe = false;
-  const endWord = () => {
-    if (inWord) words.push(word);
-    word = "";
-    inWord = false;
-  };
-  const endSegment = () => {
-    endWord();
-    if (words.length) segments.push(words);
-    words = [];
-  };
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    const next = command[i + 1];
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      else word += ch;
-      continue;
-    }
-    if (quote === '"') {
-      if (ch === '"') quote = null;
-      else if (ch === "`" || (ch === "$" && next === "(")) unsafe = true;
-      else if (ch === "\\" && next !== undefined) word += command[++i];
-      else word += ch;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      inWord = true;
-      continue;
-    }
-    if (ch === "\\" && next !== undefined) {
-      word += next;
-      inWord = true;
-      i++;
-      continue;
-    }
-    if (ch === "`" || (ch === "$" && next === "(") || ((ch === "<" || ch === ">") && next === "(")) {
-      unsafe = true;
-      word += ch;
-      inWord = true;
-      continue;
-    }
-    if (ch === " " || ch === "\t") {
-      endWord();
-      continue;
-    }
-    if (ch === "\n" || ch === "\r" || ch === ";") {
-      endSegment();
-      continue;
-    }
-    if (ch === "&") {
-      if (next === "&") {
-        i++;
-        endSegment();
-      } else if (command[i - 1] === ">" || command[i - 1] === "<") {
-        // "2>&1" handled with the redirect below.
-        word += ch;
-        inWord = true;
-      } else {
-        unsafe = true; // a background job
-        endSegment();
-      }
-      continue;
-    }
-    if (ch === "|") {
-      if (next === "|" || next === "&") i++;
-      endSegment();
-      continue;
-    }
-    if (ch === ">" || ch === "<") {
-      // A redirect: fine when it duplicates a stream ("2>&1") or goes to the null device.
-      let j = i + 1;
-      if (ch === ">" && command[j] === ">") j++;
-      if (command[j] === "&") {
-        j++;
-        while (/[0-9-]/.test(command[j] ?? "")) j++;
-        // Drop a preceding fd number ("2") from the word.
-        if (/^\d+$/.test(word)) {
-          word = "";
-          inWord = false;
-        }
-        i = j - 1;
-        continue;
-      }
-      while (command[j] === " " || command[j] === "\t") j++;
-      let target = "";
-      while (j < command.length && !/[\s;&|<>]/.test(command[j])) target += command[j++];
-      target = target.replace(/^["']|["']$/g, "");
-      if (ch === "<") {
-        // Reading a file in is harmless; the target is not a command word.
-      } else if (!NULL_TARGETS.has(target) && !NULL_TARGETS.has(target.toLowerCase())) {
-        unsafe = true;
-      }
-      if (/^\d+$/.test(word)) {
-        word = "";
-        inWord = false;
-      }
-      i = j - 1;
-      continue;
-    }
-    word += ch;
-    inWord = true;
-  }
-  if (quote) unsafe = true; // unbalanced quotes: don't guess
-  endSegment();
-  return { segments, unsafe };
+export function classifyCommand(command: string, shell?: ShellInfo["kind"], cwd?: string): RiskKind {
+  return isReadOnlyShellCommand(command, { shell: syntaxOf(shell), cwd }) ? "read" : "exec";
 }
 
-function segmentReadOnly(words: string[]): boolean {
-  const [first, ...rest] = words;
-  if (!first) return true;
-  // "FOO=1 cmd" changes the environment of whatever runs; not plainly read-only.
-  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return false;
-  const name = path.posix.basename(first.replace(/\\/g, "/")).toLowerCase().replace(/\.exe$/, "");
-  if (name === "git") {
-    let args = rest;
-    while (args[0] === "--no-pager" || args[0] === "-P") args = args.slice(1);
-    const sub = args[0];
-    if (!sub || !GIT_READ_ONLY.has(sub)) return false;
-    const subArgs = args.slice(1);
-    if (subArgs.some((a) => a.startsWith("--output") || a === "--ext-diff")) return false;
-    if (sub === "branch") return subArgs.every((a) => a.startsWith("-") && !GIT_BRANCH_WRITES.test(a));
-    return true;
-  }
-  if (!READ_ONLY.has(name)) return false;
-  if (name === "find") return !rest.some((a) => FIND_WRITES.has(a));
-  if (name === "rg") return !rest.some((a) => a === "--pre" || a.startsWith("--pre="));
-  return true;
-}
-
-/** "read" for commands that plainly only look (ls, cat, git status, rg, ...), else "exec". */
-export function classifyCommand(command: string): RiskKind {
-  if (typeof command !== "string" || !command.trim()) return "exec";
-  const parsed = parseCommand(command);
-  if (parsed.unsafe || !parsed.segments.length) return "exec";
-  return parsed.segments.every(segmentReadOnly) ? "read" : "exec";
-}
-
-/** What "always allow" remembers for a command: "bash:<first two words>". */
-export function commandAllowKey(command: string): string {
-  const words = parseCommand(command).segments[0] ?? [];
-  return `bash:${words.slice(0, 2).join(" ")}`.trim();
+/**
+ * What "always allow" remembers for a command: "bash:<first two words>" for one simple command,
+ * "bash=<the whole command>" for lists, pipelines and anything with expansions or redirections.
+ */
+export function commandAllowKey(command: string, shell?: ShellInfo["kind"]): string {
+  return shellAllowKey("bash", command, syntaxOf(shell));
 }
 
 // ---- running ------------------------------------------------------------------------------------
@@ -345,7 +174,7 @@ export function stripAnsi(text: string): string {
 
 /** Normalizes line ends and keeps only the last state of "\r"-redrawn lines (progress bars). */
 function cleanOutput(text: string): string {
-  return stripAnsi(text)
+  return stripAnsi(text.replace(/^\uFEFF/, ""))
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => {
@@ -434,7 +263,8 @@ export function runCommand(opts: {
     let child: ChildProcess;
     // POSIX shells send stderr down the stdout pipe, so both arrive in the order they were written
     // (same line, so error messages keep their line numbers).
-    const command = opts.shell.kind === "bash" ? `exec 2>&1; ${opts.command}` : opts.command;
+    // A pasted command may carry Windows line ends; bash would take each "\r" as part of a word.
+    const command = opts.shell.kind === "bash" ? `exec 2>&1; ${opts.command.replace(/\r\n/g, "\n")}` : opts.command;
     try {
       child = spawnProgram(opts.shell.exe, opts.shell.args(command), {
         cwd: opts.cwd,
@@ -561,15 +391,18 @@ export function createBashTool(shell: ShellInfo = detectShell()): Tool {
       required: ["command"],
       additionalProperties: false,
     },
-    risk: (args) => classifyCommand(args.command),
+    // Checked where it runs: a workdir in ~/.ssh makes "cat id_rsa" a secret read.
+    risk: (args, ctx) => classifyCommand(args.command, shell.kind, args.workdir ? resolvePath(ctx.cwd, args.workdir) : ctx.cwd),
     describe: (args) => ({ verb: "run", target: commandTarget(args.command) }),
     approval: (args, ctx) => {
       const where = args.workdir ? ` (in ${displayPath(ctx.cwd, resolvePath(ctx.cwd, args.workdir))})` : "";
+      // Where it runs is part of what was allowed.
+      const key = commandAllowKey(String(args.command ?? ""), shell.kind);
       return {
         risk: "exec",
         summary: `run ${commandTarget(args.command)}${where}`,
         detail: String(args.command ?? ""),
-        allowKey: commandAllowKey(String(args.command ?? "")),
+        allowKey: args.workdir ? `${key} @${resolvePath(ctx.cwd, args.workdir)}` : key,
       };
     },
     async run(args, ctx): Promise<ToolResult> {

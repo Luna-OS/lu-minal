@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./files.js";
 
 /** The Moon terminal palette: the 16 ANSI colours plus background, text, cursor and selection. */
 export const MOON_ANSI = {
@@ -279,10 +280,9 @@ export async function installWindowsTerminalProfile(exePath: string, opts: Insta
   await fs.promises.mkdir(dir, { recursive: true });
   const file = path.join(dir, WINDOWS_TERMINAL_FRAGMENT_FILE);
   const json = `${JSON.stringify(windowsTerminalFragment(exePath, opts), null, 2)}\n`;
-  // Write next to it and rename, so Windows Terminal never reads half a file.
-  const tmp = `${file}.${process.pid}.tmp`;
-  await fs.promises.writeFile(tmp, json, "utf8");
-  await fs.promises.rename(tmp, file);
+  // Write next to it and rename, so Windows Terminal never reads half a file (retried while
+  // Windows Terminal itself has the fragment open).
+  await writeFileAtomic(file, json);
   return file;
 }
 

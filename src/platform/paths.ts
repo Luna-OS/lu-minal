@@ -42,12 +42,56 @@ export function defaultProjectsDir(): string {
   return path.join(home(), "lu-minal-projects");
 }
 
-/** "~/code/app" for display. */
-export function tildify(p: string): string {
+/**
+ * "~/code/app" for display. On Windows the comparison ignores case and takes "/" as a separator
+ * too ("c:/users/ada/code" is inside "C:\Users\Ada"), since both spellings reach the same folder.
+ */
+export function tildify(p: string, platform: NodeJS.Platform = process.platform): string {
   const h = home();
-  if (p === h) return "~";
-  if (p.startsWith(h + path.sep)) return `~${path.sep}${p.slice(h.length + 1)}`;
-  return p;
+  if (platform !== "win32") {
+    if (p === h) return "~";
+    if (p.startsWith(h + path.posix.sep)) return `~${path.posix.sep}${p.slice(h.length + 1)}`;
+    return p;
+  }
+  // Same-length normalisation (separators only), so indexes into `p` stay valid.
+  const norm = (s: string) => s.replace(/\//g, "\\");
+  const base = h.replace(/[\\/]+$/, "");
+  if (!base) return p;
+  const head = norm(p.slice(0, base.length));
+  if (head.toLowerCase() !== norm(base).toLowerCase()) return p;
+  const rest = p.slice(base.length);
+  if (rest === "" || /^[\\/]+$/.test(rest)) return "~";
+  if (rest[0] !== "\\" && rest[0] !== "/") return p;
+  return `~\\${rest.replace(/^[\\/]+/, "")}`;
+}
+
+/**
+ * Whether two paths name the same folder or file: resolved first, and on Windows without regard to
+ * case or a trailing separator ("c:\\Code\\App\\" and "C:\\code\\app" are the same there).
+ */
+export function samePath(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === "win32") {
+    const n = (p: string) => path.win32.resolve(p).replace(/[\\/]+$/, "").toLowerCase();
+    return n(a) === n(b);
+  }
+  const n = (p: string) => {
+    const r = path.posix.resolve(p);
+    return r.length > 1 ? r.replace(/\/+$/, "") : r;
+  };
+  return n(a) === n(b);
+}
+
+/**
+ * A Windows path for an MSYS / Git Bash style one: "/c/Users/ada/x" and "/cygdrive/c/x" become
+ * "C:\\Users\\ada\\x" and "C:\\x". The bash tool runs Git Bash on Windows, whose `pwd` prints such
+ * paths, and models hand them on to the file tools. Anything else (and every path on macOS and
+ * Linux) comes back unchanged.
+ */
+export function fromMsysPath(p: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return p;
+  const m = /^\/(?:cygdrive\/)?([A-Za-z])(\/.*)?$/.exec(p);
+  if (!m) return p;
+  return `${m[1].toUpperCase()}:\\${(m[2] ?? "").replace(/^\/+/, "").replace(/\//g, "\\")}`;
 }
 
 /** Expands a leading "~" (both separators, so "~/x" works on Windows too). */

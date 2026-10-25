@@ -8,7 +8,8 @@
 	How it works: lu-minal runs a small HTTP server on 127.0.0.1 (the "bridge"). This plugin says
 	hello, then long-polls GET /poll for commands, runs each one in pcall and posts the answer to
 	/result. Studio's output (LogService.MessageOut) goes to /log in batches. Every request carries
-	the X-LuMinal-Plugin header; the bridge refuses anything else.
+	the X-LuMinal-Plugin header (and X-LuMinal-Token, the secret the installer wrote in); the bridge
+	refuses anything else.
 
 	Install: run "lu-minal roblox install" (it writes this file into Studio's Plugins folder with
 	your port), restart Studio, allow HTTP requests to localhost when Studio asks, and click
@@ -22,6 +23,9 @@ local PLUGIN_VERSION = "0.1.0"
 -- The bridge's port. "lu-minal roblox install" writes the configured port here.
 local DEFAULT_PORT = 44766
 local HOST = "127.0.0.1"
+-- The secret this lu-minal shares with its plugin. "lu-minal roblox install" writes it here; the
+-- bridge then refuses requests without it, so no other program on this machine can pose as Studio.
+local BRIDGE_TOKEN = ""
 -- Lines the plugin prints itself; they are not sent back to lu-minal.
 local LOG_PREFIX = "[lu-minal]"
 
@@ -1551,6 +1555,9 @@ type Response = { ok: boolean, status: number, body: any, err: string? }
 
 local function request(method: string, path: string, body: string?): Response
 	local headers: { [string]: string } = { ["X-LuMinal-Plugin"] = PLUGIN_VERSION }
+	if BRIDGE_TOKEN ~= "" then
+		headers["X-LuMinal-Token"] = BRIDGE_TOKEN
+	end
 	local options: { [string]: any } = { Url = baseUrl() .. path, Method = method, Headers = headers }
 	if body ~= nil then
 		headers["Content-Type"] = "application/json"

@@ -5,6 +5,8 @@
 import path from "node:path";
 import type { DiffLine, PermissionMode, RiskKind } from "../../core/types.js";
 import { describeChange, makeDiff } from "../../tools/diff.js";
+import { isPrivateUrl } from "../../tools/net-guard.js";
+import { assessRead, assessWrite, writeNote } from "../../tools/sensitive.js";
 import { clip, displayPath, firstLine } from "../claude-code/display.js";
 
 type Obj = Record<string, unknown>;
@@ -100,6 +102,57 @@ export interface ToolCallView {
   name: string;
   rawInput: Obj;
   locations: unknown;
+}
+
+/** Every file a call names: its locations and the paths in its input (a move's destination too). */
+export function callPaths(call: Pick<ToolCallView, "locations" | "rawInput">): string[] {
+  const out: string[] = [];
+  if (Array.isArray(call.locations)) {
+    for (const l of call.locations) if (isObj(l) && typeof l.path === "string" && l.path) out.push(l.path);
+  }
+  const input = call.rawInput;
+  for (const p of [inputPath(input), str(input.destination), str(input.newPath), str(input.to), str(input.movePath)]) if (p) out.push(p);
+  return [...new Set(out)];
+}
+
+/**
+ * The approval for a call beyond its kind's risk (KIND_RISKS): an edit, delete or move outside the
+ * project (symlinks followed), into .git, agents' settings, a secret store or a home dotfile; a
+ * read or search in a secret store; a fetch of this machine or the local network – all "other",
+ * which always asks. `target` is what made it so (for a narrow "always" key), `note` the summary's
+ * explanation.
+ */
+export function assessAcpCall(view: ToolCallView, cwd: string): { risk: RiskKind; target: string | null; note: string } {
+  const base = riskFor(view.kind);
+  const paths = callPaths(view).map((p) => path.resolve(cwd, p));
+  if (view.kind === "edit" || view.kind === "delete" || view.kind === "move") {
+    for (const abs of paths) {
+      const a = assessWrite(cwd, abs);
+      if (a.risk !== "edit") return { risk: "other", target: abs, note: writeNote(a) };
+    }
+    return { risk: base, target: null, note: "" };
+  }
+  if (view.kind === "read" || view.kind === "search") {
+    for (const abs of paths) {
+      if (assessRead(abs, { recursive: view.kind === "search", cwd }) !== "read") {
+        return { risk: "other", target: abs, note: " (a credentials store or network share)" };
+      }
+    }
+    return { risk: base, target: null, note: "" };
+  }
+  if (view.kind === "fetch") {
+    const url = str(view.rawInput.url) || str(view.rawInput.uri);
+    if (url && isPrivateUrl(url)) {
+      let origin = url;
+      try {
+        origin = new URL(url).origin;
+      } catch {
+        // as given
+      }
+      return { risk: "other", target: origin, note: " (this machine or the local network)" };
+    }
+  }
+  return { risk: base, target: null, note: "" };
 }
 
 /** The verb and target of a tool row, from what the agent said about the call. */

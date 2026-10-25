@@ -2,7 +2,8 @@
 // defaults; unknown keys are kept so newer versions don't lose them.
 import fs from "node:fs";
 import path from "node:path";
-import { configDir, defaultProjectsDir } from "../platform/paths.js";
+import { writeFileAtomicSync } from "../platform/files.js";
+import { configDir, defaultProjectsDir, samePath } from "../platform/paths.js";
 import type { ModelRef } from "../providers/models.js";
 import type { PermissionMode } from "./types.js";
 
@@ -131,15 +132,16 @@ export function loadConfig(file = configFile()): Config {
   }
 }
 
-/** Writes the config atomically (temp file + rename). */
+/** Writes the config atomically (temp file + rename, retried while Windows holds the file). */
 export function saveConfig(config: Config, file = configFile()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+  writeFileAtomicSync(file, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-/** Remembers a folder as recently opened (newest first, at most 20). */
-export function rememberRecent(config: Config, folder: string): void {
-  config.recent = [folder, ...config.recent.filter((f) => f !== folder)].slice(0, 20);
+/**
+ * Remembers a folder as recently opened (newest first, at most 20). On Windows "c:\code\app"
+ * and "C:\Code\App\" are one folder, so a new spelling replaces the old one.
+ */
+export function rememberRecent(config: Config, folder: string, platform: NodeJS.Platform = process.platform): void {
+  config.recent = [folder, ...config.recent.filter((f) => !samePath(f, folder, platform))].slice(0, 20);
 }

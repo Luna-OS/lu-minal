@@ -8,8 +8,10 @@ import type { Hub } from "../../core/hub.js";
 import type { Project } from "../../core/project.js";
 import { formatModelRef } from "../../providers/models.js";
 import { installPlugin, robloxPluginsDir } from "../../roblox/install.js";
+import { bridgeToken } from "../../roblox/token.js";
 import { openExternal } from "../../platform/process.js";
-import { expandHome, tildify } from "../../platform/paths.js";
+import { tildify } from "../../platform/paths.js";
+import { resolvePath } from "../../tools/fs.js";
 import { COMMANDS, type CommandContext, type DialogLaunchers } from "../commands.js";
 import { formatCost, formatTokens, sparkline } from "../format.js";
 import type { UiServices } from "../store.js";
@@ -174,7 +176,7 @@ export function createLaunchers(
               // Enter on a typed path that isn't in the list attaches it as typed.
               if (key.return && !item && query.trim()) {
                 close();
-                getCtx().attach([path.resolve(project.cwd, expandHome(query.trim()))]);
+                getCtx().attach([resolvePath(project.cwd, query.trim())]);
                 return true;
               }
               return false;
@@ -204,9 +206,11 @@ export function createLaunchers(
           ];
           const status = s.connected
             ? `connected · ${s.place?.name ?? "a place"}${s.studioVersion ? ` · Studio ${s.studioVersion}` : ""}${s.pluginOutdated ? " · ▲ plugin outdated, install again" : ""}`
-            : s.listening
-              ? `waiting for Studio on port ${s.port} - open Studio and click Connect on the lu-minal toolbar`
-              : `not listening${s.error ? `: ${s.error}` : ""}`;
+            : s.needsReinstall
+              ? "▲ a Studio plugin without this lu-minal's token tried to connect - install the plugin again"
+              : s.listening
+                ? `waiting for Studio on port ${s.port} - open Studio and click Connect on the lu-minal toolbar`
+                : `not listening${s.error ? `: ${s.error}` : ""}`;
           return (
             <ListDialog
               theme={theme()}
@@ -218,7 +222,7 @@ export function createLaunchers(
               onSelect={async (item) => {
                 if (item.id === "install") {
                   try {
-                    const file = await installPlugin({ port: s.port });
+                    const file = await installPlugin({ port: s.port, token: bridgeToken() });
                     hub.toast(`Plugin installed: ${tildify(file)} - restart Studio or reload plugins.`, "success");
                   } catch (err) {
                     hub.toast(err instanceof Error ? err.message : String(err), "error");

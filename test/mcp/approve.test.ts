@@ -89,7 +89,7 @@ describe("claudeToolRisk", () => {
     expect(claudeToolRisk("Bash", { command: "git log -3" }, cwd)).toBe("read");
     expect(claudeToolRisk("Bash", { command: "npm install" }, cwd)).toBe("exec");
     expect(claudeToolRisk("PowerShell", { command: "Get-ChildItem" }, cwd)).toBe("exec");
-    expect(claudeToolRisk("WebFetch", { url: "https://x" }, cwd)).toBe("network");
+    expect(claudeToolRisk("WebFetch", { url: "https://x.example" }, cwd)).toBe("network");
     expect(claudeToolRisk("mcp__github__create_pull_request", {}, cwd)).toBe("other");
     expect(claudeToolRisk("ExitPlanMode", {}, cwd)).toBe("other");
     expect(claudeToolRisk("SomethingNew", {}, cwd)).toBe("other");
@@ -100,6 +100,22 @@ describe("claudeToolRisk", () => {
     expect(claudeToolRisk("ReadMcpResourceTool", { uri: "x" }, cwd)).toBe("read");
     expect(claudeToolRisk("Monitor", { command: "tail -f log" }, cwd)).toBe("exec");
     expect(claudeToolRisk("TaskStop", { task_id: "b1" }, cwd)).toBe("exec");
+  });
+
+  it("finds .git and .claude the way Windows and macOS resolve names", () => {
+    const win = "C:\\Users\\ada\\proj";
+    const edit = (file: string, platform: NodeJS.Platform, dir = win) => claudeToolRisk("Write", { file_path: file }, dir, platform);
+    expect(edit("C:\\Users\\ada\\proj\\.GIT\\hooks\\pre-commit", "win32")).toBe("other");
+    expect(edit("c:/users/ADA/proj/.Claude/settings.json", "win32")).toBe("other");
+    expect(edit(".git.\\hooks\\post-checkout", "win32")).toBe("other");
+    expect(edit(".git::$INDEX_ALLOCATION\\hooks\\x", "win32")).toBe("other");
+    expect(edit("GIT~1\\config", "win32")).toBe("other");
+    expect(edit("D:\\Users\\ada\\proj\\a.ts", "win32")).toBe("other");
+    expect(edit("C:\\USERS\\ADA\\PROJ\\src\\a.ts", "win32")).toBe("edit");
+    expect(edit("..foo\\a.ts", "win32")).toBe("edit");
+    expect(edit("/Users/ada/proj/.Git/config", "darwin", "/Users/ada/proj")).toBe("other");
+    // Linux file systems keep case: ".Git" is just a folder there.
+    expect(edit("/home/ada/proj/.Git/config", "linux", "/home/ada/proj")).toBe("edit");
   });
 
   it("asks for edits outside the project and in .git / .claude", () => {

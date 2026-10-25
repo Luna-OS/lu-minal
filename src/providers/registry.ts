@@ -55,6 +55,33 @@ export const OPENROUTER_HEADERS: Readonly<Record<string, string>> = {
   "X-Title": "lu-minal",
 };
 
+/**
+ * Where the well-known providers' keys may go: the catalog (models.dev, cached on disk) names each
+ * model's endpoint, and a tampered answer must not send an OpenAI or Anthropic key to another host.
+ * A base URL the user set in config.json is the user's own choice and isn't checked.
+ */
+export const KEY_HOSTS: Readonly<Record<string, readonly string[]>> = {
+  anthropic: ["anthropic.com"],
+  openai: ["openai.com"],
+  openrouter: ["openrouter.ai"],
+  google: ["googleapis.com"],
+  opencode: ["opencode.ai"],
+  groq: ["groq.com"],
+  xai: ["x.ai"],
+  mistral: ["mistral.ai"],
+};
+
+/** Whether `url`'s host is one of `domains` or below one of them. */
+function hostIn(url: string, domains: readonly string[]): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  return domains.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
 /** The key OpenCode Zen accepts for its free models (the OpenCode CLI sends the same). */
 export const OPENCODE_PUBLIC_KEY = "public";
 
@@ -562,6 +589,15 @@ export class ProviderRegistry {
       } else if (provider.auth === "api-key" || provider.auth === "oauth") {
         throw new ProviderNotReadyError(`${provider.name} needs an API key.`, provider.id, this.connectionHint(provider.id));
       }
+    }
+
+    const pinned = KEY_HOSTS[provider.id];
+    if (apiKey && pinned && !this.override(provider.id)?.baseURL && !hostIn(baseURL, pinned)) {
+      throw new ProviderNotReadyError(
+        `The model catalog sends ${provider.name} requests to ${baseURL}, which isn't ${pinned.join(" or ")}; lu-minal won't send your ${provider.name} key there.`,
+        provider.id,
+        `If that address is right, set providers.${provider.id}.baseURL in config.json.`,
+      );
     }
 
     const headers: Record<string, string> = {

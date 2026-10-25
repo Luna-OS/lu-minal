@@ -105,7 +105,7 @@ describe("web_fetch", () => {
     expect(res.content).not.toContain("<p>");
     expect(res.display?.detail).toMatch(/^\d+ chars$/);
     expect(tool.describe({ url: "https://example.org/moon/" }, ctx)).toEqual({ verb: "fetch", target: "example.org/moon/" });
-    expect(tool.risk).toBe("network");
+    expect(typeof tool.risk === "function" ? tool.risk({ url: "https://example.org/moon/" }, ctx) : tool.risk).toBe("network");
   });
 
   it("pretty-prints JSON", async () => {

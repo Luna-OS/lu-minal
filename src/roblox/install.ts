@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { writeFileAtomic } from "../platform/files.js";
 import { PLUGIN_SOURCE } from "./plugin-source.js";
 import { DEFAULT_ROBLOX_PORT } from "./protocol.js";
 
@@ -120,12 +121,23 @@ function validPort(port: number): boolean {
   return Number.isInteger(port) && port >= 1 && port <= 65535;
 }
 
-/** The plugin's source with `port` as its default port. */
-export function renderPlugin(port: number = DEFAULT_ROBLOX_PORT): string {
+/**
+ * The plugin's source with `port` as its default port and, when given, `token` as the secret it
+ * sends the bridge (hex, from src/roblox/token.ts).
+ */
+export function renderPlugin(port: number = DEFAULT_ROBLOX_PORT, token?: string | null): string {
   if (!validPort(port)) throw new Error(`The Roblox bridge port must be a whole number from 1 to 65535 (got ${port}).`);
   const line = /^local DEFAULT_PORT = \d+$/m;
   if (!line.test(PLUGIN_SOURCE)) throw new Error("The bundled Studio plugin has no DEFAULT_PORT line.");
-  return PLUGIN_SOURCE.replace(line, `local DEFAULT_PORT = ${port}`);
+  let source = PLUGIN_SOURCE.replace(line, `local DEFAULT_PORT = ${port}`);
+  if (token) {
+    // Only hex goes into the Luau string literal, so nothing can break out of it.
+    if (!/^[0-9a-f]{32,128}$/.test(token)) throw new Error("The Roblox bridge token must be 32 to 128 hex digits.");
+    const tokenLine = /^local BRIDGE_TOKEN = ""$/m;
+    if (!tokenLine.test(source)) throw new Error("The bundled Studio plugin has no BRIDGE_TOKEN line.");
+    source = source.replace(tokenLine, `local BRIDGE_TOKEN = "${token}"`);
+  }
+  return source;
 }
 
 /** The version of the plugin installed in `dir` (default: Studio's Plugins folder), or null. */
@@ -145,22 +157,16 @@ export function installedPluginVersion(opts: { dir?: string } = {}): string | nu
  * Plugins folder, created if missing) and returns the file's path. Throws with what to do when no
  * folder is known or it can't be written. Studio loads it at its next start (or "Reload Plugins").
  */
-export async function installPlugin(opts: { dir?: string; port?: number } = {}): Promise<string> {
-  const source = renderPlugin(opts.port ?? DEFAULT_ROBLOX_PORT);
+export async function installPlugin(opts: { dir?: string; port?: number; token?: string | null } = {}): Promise<string> {
+  const source = renderPlugin(opts.port ?? DEFAULT_ROBLOX_PORT, opts.token);
   const dir = opts.dir ?? robloxPluginsDir();
   if (!dir) throw new Error(noPluginsDirMessage());
   const file = path.join(dir, PLUGIN_FILE_NAME);
   try {
     await fs.promises.mkdir(dir, { recursive: true });
-    const tmp = path.join(dir, `.${PLUGIN_FILE_NAME}.${process.pid}.tmp`);
-    await fs.promises.writeFile(tmp, source, "utf8");
-    try {
-      await fs.promises.rename(tmp, file);
-    } catch {
-      // Windows refuses to replace a file another program holds open; write it in place instead.
-      await fs.promises.rm(tmp, { force: true });
-      await fs.promises.writeFile(file, source, "utf8");
-    }
+    // Studio watches the folder and may hold the old plugin open: on Windows the replace is retried,
+    // then written in place.
+    await writeFileAtomic(file, source);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     const reason = err instanceof Error ? err.message : String(err);

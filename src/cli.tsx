@@ -12,7 +12,7 @@ import { findClaude } from "./agents/claude-code/cli.js";
 import { claudeLoginArgs } from "./agents/claude-code/login.js";
 import { configFile, loadConfig } from "./core/config.js";
 import { errText, Hub } from "./core/hub.js";
-import { cacheDir, configDir, expandHome, stateDir } from "./platform/paths.js";
+import { cacheDir, configDir, expandHome, samePath, stateDir } from "./platform/paths.js";
 import { findProgram, openExternal, spawnProgram } from "./platform/process.js";
 import { launchCommand } from "./platform/install-info.js";
 import { installWindowsTerminalProfile, removeWindowsTerminalProfile } from "./platform/windows-terminal.js";
@@ -22,6 +22,7 @@ import { formatModelRef, parseModelRef } from "./providers/models.js";
 import { startOpenRouterLogin } from "./providers/openrouter.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
+import { bridgeToken } from "./roblox/token.js";
 import { ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
 
@@ -113,7 +114,14 @@ function print(line = ""): void {
 
 async function runInherit(exe: string, args: string[], env?: NodeJS.ProcessEnv): Promise<number | null> {
   return new Promise((resolve) => {
-    const child = spawnProgram(exe, args, { stdio: "inherit", env });
+    let child: ReturnType<typeof spawnProgram>;
+    try {
+      child = spawnProgram(exe, args, { stdio: "inherit", env });
+    } catch {
+      // spawnProgram refuses a batch file whose arguments cmd.exe would cut (a line break).
+      resolve(null);
+      return;
+    }
     child.on("error", () => resolve(null));
     child.on("exit", (code) => resolve(code));
   });
@@ -210,7 +218,7 @@ async function subcommand(args: Args): Promise<number | null> {
       }
       if (sub === "install") {
         try {
-          const file = await installPlugin({ port: loadConfig().roblox.port });
+          const file = await installPlugin({ port: loadConfig().roblox.port, token: bridgeToken() });
           print(`Installed the lu-minal plugin: ${file}`);
           print("Open Roblox Studio, allow HTTP requests to localhost when asked, and click Connect on the lu-minal toolbar.");
           return 0;
@@ -257,7 +265,11 @@ async function main(): Promise<void> {
     return;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("lu-minal needs an interactive terminal. Run lu-minal --help for the sub-commands.\n");
+    const mintty =
+      process.platform === "win32" && process.env.MSYSTEM
+        ? " In Git Bash's own window (mintty) Windows programs get no console: run `winpty lu-minal`, or start lu-minal in Windows Terminal."
+        : "";
+    process.stderr.write(`lu-minal needs an interactive terminal.${mintty} Run lu-minal --help for the sub-commands.\n`);
     process.exitCode = 1;
     return;
   }
@@ -319,10 +331,10 @@ async function main(): Promise<void> {
   const modelFlag = args.flags.get("model");
   const lead = typeof modelFlag === "string" ? parseModelRef(modelFlag) ?? undefined : undefined;
   const restored = saved ? await hub.restoreSession(saved) : 0;
-  const existing = hub.projects.findIndex((p) => p.cwd === folder);
+  const existing = hub.projects.findIndex((p) => samePath(p.cwd, folder));
   if (existing >= 0) {
     hub.switchTo(existing);
-  } else if (!restored || args.positional[0] || folder !== os.homedir()) {
+  } else if (!restored || args.positional[0] || !samePath(folder, os.homedir())) {
     // A folder of its own (or nothing restored): open it next to the restored tabs.
     try {
       await hub.openProject({ cwd: folder, lead });

@@ -18,7 +18,7 @@ import type { Project } from "../../core/project.js";
 import type { ApprovalDecision, DiffLine, LogEntry } from "../../core/types.js";
 import { workVerb } from "../../core/verbs.js";
 import { isWindows } from "../../platform/paths.js";
-import { killTree, spawnProgram } from "../../platform/process.js";
+import { killTree, spawnProgram, withProgramPath } from "../../platform/process.js";
 import type { ToolDisplay } from "../../tools/types.js";
 import { firstLine } from "../claude-code/display.js";
 import type { McpLink } from "../claude-code/driver.js";
@@ -33,6 +33,7 @@ import {
   planEntries,
   planSummary,
   resultDetail,
+  assessAcpCall,
   riskFor,
   rowStatus,
   stopReasonNote,
@@ -178,18 +179,8 @@ function track(child: ChildProcess): void {
   if (exitHooked) return;
   exitHooked = true;
   process.once("exit", () => {
-    for (const c of live) {
-      try {
-        if (!isWindows && c.pid) process.kill(-c.pid, "SIGTERM");
-        else c.kill();
-      } catch {
-        try {
-          c.kill();
-        } catch {
-          // already gone
-        }
-      }
-    }
+    // The whole tree (taskkill /T on Windows, where kill() would end only the agent itself).
+    for (const c of live) killTree(c);
   });
 }
 
@@ -858,7 +849,9 @@ export class AcpDriver implements AgentDriver {
   }
 
   private processEnv(): NodeJS.ProcessEnv {
-    return acpEnv(this.deps.preset, this.deps.env ?? process.env);
+    // npm-installed agents are node scripts: the node next to the program must be on the PATH even
+    // when lu-minal was started from the Dock / Finder with a bare one.
+    return withProgramPath(acpEnv(this.deps.preset, this.deps.env ?? process.env), this.deps.exe);
   }
 
   private spawn(): Conn {
@@ -1105,6 +1098,32 @@ export class AcpDriver implements AgentDriver {
   // ---- tool rows -------------------------------------------------------------------------------
 
   /**
+   * Whether a permission request is for one of lu-minal's own MCP tools, which ask on their own
+   * (runToolCall in the MCP server) and so are allowed here without a question. Stricter than the
+   * row's display name: titles are often written by the model (OpenCode's bash title is its
+   * `description`), so a command titled "luminal_send_message && rm -rf ~" must not pass. The call
+   * has no built-in action kind, its whole title or name is exactly how the agent names one of our
+   * tools, and the MCP server knows that tool.
+   */
+  private ownToolCall(row: ToolRow): boolean {
+    const bare = row.luminal;
+    if (!bare || (row.kind !== null && row.kind !== "other")) return false;
+    const prefix = this.deps.preset.toolPrefix;
+    const forms = [`mcp__${MCP_NAME}__${bare}`, `${MCP_NAME}__${bare}`, `${MCP_NAME}_${bare}`, `${bare} (${MCP_NAME} MCP Server)`];
+    forms.push(prefix ? `${prefix}${bare}` : bare);
+    const names = new Set(forms.map((f) => f.toLowerCase()));
+    const exact = [row.title, row.name].some((t) => t.trim() && names.has(t.trim().toLowerCase()));
+    if (!exact) return false;
+    const describe = this.deps.mcp?.describeTool;
+    if (!describe) return /^[a-z][a-z0-9_]*$/.test(bare);
+    try {
+      return describe.call(this.deps.mcp, this.agent.id, bare, row.rawInput) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * The bare name of one of lu-minal's own tools behind a call: "luminal_send_message" (OpenCode),
    * "send_message (luminal MCP Server)" (Gemini CLI's title), or a bare name the MCP server knows.
    */
@@ -1234,7 +1253,7 @@ export class AcpDriver implements AgentDriver {
     const row = this.toolCall(call);
     const kind = row?.kind ?? toolKind(call.kind);
     const cwd = this.deps.project.cwd;
-    if (row?.luminal) {
+    if (row && this.ownToolCall(row)) {
       // lu-minal's own tools decide their approvals themselves (runToolCall in the MCP server).
       const optionId = pickPermissionOption(options, "allow");
       return optionId ? { outcome: { outcome: "selected", optionId } } : cancelled;
@@ -1247,7 +1266,7 @@ export class AcpDriver implements AgentDriver {
       locations: row?.locations ?? call.locations,
     };
     const described = describeAcpTool(view, cwd, row?.diff?.isNew ?? false);
-    const summary = [described.verb, described.target].filter(Boolean).join(" ");
+    const summary = [described.verb, described.target].filter(Boolean).join(" ") + assessAcpCall(view, cwd).note;
     const detailParts: string[] = [];
     if (row?.diff) {
       detailParts.push(
@@ -1261,9 +1280,13 @@ export class AcpDriver implements AgentDriver {
       if (command) detailParts.push(command);
       else if (view.title && view.title !== summary) detailParts.push(view.title);
     }
-    const risk = riskFor(kind);
-    const allowKey =
-      kind === "execute"
+    // Edits outside the project or in .git, reads of secret stores, fetches of local addresses
+    // always ask, and "always" for them only ever covers that one file or origin.
+    const assessed = assessAcpCall(view, cwd);
+    const risk = assessed.risk;
+    const allowKey = assessed.target
+      ? `${this.deps.preset.id}:${kind ?? "other"}:${assessed.target}`
+      : kind === "execute"
         ? `${this.deps.preset.id}:run:${str(view.rawInput.command) || view.title}`
         : kind === "edit" || kind === "delete" || kind === "move"
           ? `${this.deps.preset.id}:edit`

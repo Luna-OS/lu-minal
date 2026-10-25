@@ -106,7 +106,12 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
    an empty prompt removes the last one.
 
 **Permission modes** (shift+tab): *edits on* (the default – edits run, commands ask), *ask first*,
-*do everything*, *plan only* (read-only).
+*do everything*, *plan only* (read-only). Reading credential stores, writing into `.git` or agent
+settings, and fetching local addresses always ask, even with edits on.
+
+**Trust:** a repository you clone starts untrusted – Claude Code agents there don't load its own
+`.claude` settings, CLAUDE.md or `.mcp.json` servers until you say so (lu-minal asks after the
+clone; `/trust` changes it). How lu-minal keeps agents in check: [docs/security.md](docs/security.md).
 
 **Models:** pick one per agent (ctrl+o), for example a Claude Opus lead with `minimax/MiniMax-M3`
 and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-speech`.

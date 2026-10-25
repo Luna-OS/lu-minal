@@ -144,18 +144,10 @@ function track(child: ChildProcess): void {
   if (exitHooked) return;
   exitHooked = true;
   process.once("exit", () => {
-    for (const c of live) {
-      try {
-        if (!isWindows && c.pid) process.kill(-c.pid, "SIGTERM");
-        else c.kill();
-      } catch {
-        try {
-          c.kill();
-        } catch {
-          // already gone
-        }
-      }
-    }
+    // The whole tree: on Windows a plain kill() would end only `claude` (or the cmd.exe in front of
+    // an npm shim) and leave its node, shells and MCP servers running; taskkill /T starts at once
+    // and outlives lu-minal.
+    for (const c of live) killTree(c);
   });
 }
 
@@ -405,6 +397,10 @@ export class ClaudeCodeDriver implements AgentDriver {
       allowedTools: server ? [`mcp__${server}`] : undefined,
       appendSystemPrompt: promptFile ? undefined : prompt,
       appendSystemPromptFile: promptFile ?? undefined,
+      // `claude -p` trusts the folder without asking: in a project nobody trusted yet (a fresh
+      // clone), its .claude settings (hooks, apiKeyHelper, allow rules) and .mcp.json servers
+      // would run on their own. Only the user's own settings and lu-minal's MCP server then.
+      ...(project.trusted ? {} : { settingSources: ["user" as const], strictMcpConfig: true }),
     });
     const options: SpawnOptions = {
       cwd: project.cwd,

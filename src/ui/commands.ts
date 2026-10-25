@@ -7,8 +7,7 @@ import type { Project } from "../core/project.js";
 import { PERMISSION_MODES, type PermissionMode } from "../core/types.js";
 import { parseModelRef } from "../providers/models.js";
 import type { UiServices } from "./store.js";
-import path from "node:path";
-import { expandHome } from "../platform/paths.js";
+import { resolvePath } from "../tools/fs.js";
 
 export interface CommandContext {
   hub: Hub;
@@ -96,7 +95,7 @@ export const COMMANDS: Command[] = [
       const p = args.trim();
       if (!p) return ctx.dialogs.attach();
       const base = ctx.project?.cwd ?? process.cwd();
-      ctx.attach([path.resolve(base, expandHome(p.replace(/^["']|["']$/g, "")))]);
+      ctx.attach([resolvePath(base, p)]);
     },
   },
   { name: "tasks", aliases: ["board"], description: "The project's shared task board", run: (ctx) => ctx.dialogs.tasks() },
@@ -139,6 +138,25 @@ export const COMMANDS: Command[] = [
   { name: "stats", aliases: ["statistics", "tokens"], description: "Token statistics: today, this week, all time, by model and project", run: (ctx) => ctx.dialogs.stats() },
   { name: "cloud", aliases: ["web", "remote"], description: "Claude on the web: start, message and teleport cloud sessions", run: (ctx) => ctx.dialogs.cloud() },
   { name: "roblox", aliases: ["studio"], description: "Connect Roblox Studio", run: (ctx) => ctx.dialogs.roblox() },
+  {
+    name: "trust",
+    args: "[on|off]",
+    description: "Trust this folder's own agent settings (.claude hooks and rules, CLAUDE.md, .mcp.json servers)",
+    run: (ctx, args) => {
+      const p = needProject(ctx);
+      if (!p) return;
+      const a = args.trim().toLowerCase();
+      const trusted = a === "on" || a === "yes" ? true : a === "off" || a === "no" ? false : !p.trusted;
+      void ctx.hub.setTrust(p, trusted).then(() =>
+        ctx.hub.toast(
+          trusted
+            ? `Trusted ${p.name}: Claude Code agents load its .claude settings, CLAUDE.md and .mcp.json servers.`
+            : `${p.name} is not trusted: Claude Code agents start with your own settings only.`,
+          trusted ? "warning" : "info",
+        ),
+      );
+    },
+  },
   {
     name: "perm",
     aliases: ["permissions", "mode"],

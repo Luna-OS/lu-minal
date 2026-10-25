@@ -51,7 +51,9 @@ export function cloudStartCommand(
   const args = ["--cloud", task];
   const script = platform === "win32" ? null : findProgram("script");
   if (!script) return { exe: claude, args, transcript: null };
-  const transcript = opts.transcript ?? path.join(os.tmpdir(), `lu-minal-cloud-${process.pid}-${Date.now()}.log`);
+  // In a folder of its own (mode 0700): a predictable name in a shared /tmp could be a symlink
+  // another user planted, and the transcript (the session link) is nobody else's business.
+  const transcript = opts.transcript ?? path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lu-minal-cloud-")), "session.log");
   if (platform === "darwin") {
     // BSD script: script [-q] file command ...
     return { exe: script, args: ["-q", transcript, claude, ...args], transcript };
@@ -76,7 +78,11 @@ export function sessionFromTranscript(transcript: string | null): { id: string; 
   } catch {
     return null;
   } finally {
-    fs.rm(transcript, { force: true }, () => undefined);
+    fs.rm(transcript, { force: true }, () => {
+      // The private folder cloudStartCommand made for it goes too.
+      const dir = path.dirname(transcript);
+      if (path.basename(dir).startsWith("lu-minal-cloud-")) fs.rm(dir, { recursive: true, force: true }, () => undefined);
+    });
   }
 }
 

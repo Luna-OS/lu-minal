@@ -39,10 +39,17 @@ export function cloudTools(): Tool[] {
       required: ["session", "text"],
       additionalProperties: false,
     },
-    risk: "network",
+    // Not "just network": the cloud agent acts with the user's claude.ai account (it edits, pushes
+    // branches, opens pull requests), so this asks like a command does and plan mode refuses it.
+    risk: "other",
     mcp: true,
     describe: (args) => ({ verb: "cloud", target: `→ ${args.session ?? "?"}` }),
-    approval: (args) => ({ risk: "network", summary: `message cloud session ${args.session}`, detail: args.text, allowKey: "cloud_send" }),
+    approval: (args) => ({
+      risk: "other",
+      summary: `message cloud session ${args.session}`,
+      detail: args.text,
+      allowKey: `cloud_send:${args.session ?? ""}`,
+    }),
     run: async (args, ctx) => {
       const cloud = ctx.services.cloud;
       if (!cloud) return { content: notAvailable, isError: true };

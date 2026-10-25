@@ -98,6 +98,9 @@ export function Header({ hub, project, rect, now }: { hub: Hub; project: Project
     { text: " · ", color: c.faint },
     { text: formatElapsed(now - project.createdAt), color: c.muted },
   ];
+  if (!project.trusted) {
+    left.push({ text: " · ", color: c.faint }, { text: "▲ untrusted (/trust)", color: c.warning });
+  }
   const right: Seg[] = [
     { text: `↓ ${formatTokens(t.tokens)}`, color: c.muted },
     { text: " · ", color: c.faint },
@@ -132,6 +135,8 @@ export function Footer({ hub, project, rect }: { hub: Hub; project: Project | un
   ];
   if (studio.connected) {
     left.push({ text: " · ", color: c.faint }, { text: `◆ studio${studio.place ? ` ${studio.place.name}` : ""}`, color: c.success });
+  } else if (studio.needsReinstall) {
+    left.push({ text: " · ", color: c.faint }, { text: "▲ studio: reinstall the plugin (/roblox)", color: c.warning });
   }
   const right: Seg[] = [
     { text: `Σ ${formatTokens(hub.stats.totalTokens())} `, color: c.faint },

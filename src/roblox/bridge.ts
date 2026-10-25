@@ -7,11 +7,11 @@
 // header, and requests that look like they come from a browser (an Origin or Sec-Fetch-Site header,
 // a Host that is not loopback) are refused with 403. A web page therefore can't pose as the plugin
 // (custom headers need a CORS preflight, which is never approved), and DNS rebinding fails on Host.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { PLUGIN_VERSION } from "./plugin-source.js";
-import { DEFAULT_ROBLOX_PORT, PLUGIN_HEADER, notConnectedMessage } from "./protocol.js";
+import { DEFAULT_ROBLOX_PORT, PLUGIN_HEADER, TOKEN_HEADER, notConnectedMessage } from "./protocol.js";
 import type { RobloxApi, RobloxLogLine, RobloxStatus } from "./types.js";
 
 export interface RobloxBridgeOptions {
@@ -25,6 +25,11 @@ export interface RobloxBridgeOptions {
   connectedWindowMs?: number;
   /** How many output lines to keep (default 500). */
   maxOutput?: number;
+  /**
+   * The secret the installed plugin sends in X-LuMinal-Token (src/roblox/token.ts). When set,
+   * requests without it are refused; without one, the plugin header alone is checked.
+   */
+  token?: string | null;
 }
 
 /** The bridge's status: the shared RobloxStatus plus what the plugin said about itself. */
@@ -33,7 +38,15 @@ export interface RobloxBridgeStatus extends RobloxStatus {
   pluginVersion: string | null;
   /** The plugin is older or newer than the one this lu-minal ships (reinstall it). */
   pluginOutdated: boolean;
+  /**
+   * A plugin without this lu-minal's token (installed before the token existed, or by another
+   * lu-minal) was turned away in the last half minute: reinstalling it connects it.
+   */
+  needsReinstall: boolean;
 }
+
+/** How long a plugin turned away for its token counts as "needs reinstalling". */
+const TOKEN_REFUSAL_MS = 30_000;
 
 interface PendingPoll {
   res: http.ServerResponse;
@@ -66,6 +79,8 @@ interface PendingCall {
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** Node lower-cases incoming header names. */
 const PLUGIN_HEADER_LOWER = PLUGIN_HEADER.toLowerCase();
+const TOKEN_HEADER_LOWER = TOKEN_HEADER.toLowerCase();
+const digest = (text: string) => createHash("sha256").update(text).digest();
 const MAX_LINE_CHARS = 8000;
 /** Sessions that stopped talking are forgotten after this long. */
 const SESSION_TTL_MS = 10 * 60_000;
@@ -126,6 +141,9 @@ export class RobloxBridge implements RobloxApi {
   private readonly pollTimeoutMs: number;
   private readonly connectedWindowMs: number;
   private readonly maxOutput: number;
+  private readonly tokenDigest: Buffer | null;
+  /** When a plugin was last turned away for a missing or wrong token (0: never). */
+  private tokenRefusedAt = 0;
 
   private server: http.Server | null = null;
   private starting: Promise<void> | null = null;
@@ -151,6 +169,7 @@ export class RobloxBridge implements RobloxApi {
     this.pollTimeoutMs = Math.max(10, opts.pollTimeoutMs ?? 25_000);
     this.connectedWindowMs = Math.max(10, opts.connectedWindowMs ?? 15_000);
     this.maxOutput = Math.max(1, opts.maxOutput ?? 500);
+    this.tokenDigest = opts.token ? digest(opts.token) : null;
   }
 
   // ---- lifecycle -------------------------------------------------------------------------------
@@ -188,7 +207,11 @@ export class RobloxBridge implements RobloxApi {
           err.code === "EADDRINUSE"
             ? `Port ${this.port} is already in use (is another lu-minal running?). Change roblox.port in the settings and reinstall the plugin.`
             : err.code === "EACCES"
-              ? `Not allowed to listen on port ${this.port}. Choose another roblox.port in the settings.`
+              ? `Not allowed to listen on port ${this.port}${
+                  process.platform === "win32"
+                    ? " (Windows keeps some port ranges for Hyper-V, WSL and Docker; `netsh interface ipv4 show excludedportrange protocol=tcp` lists them)"
+                    : ""
+                }. Choose another roblox.port in the settings and reinstall the plugin.`
               : `Could not listen on ${this.host}:${this.port}: ${err.message}`;
         this.listening = false;
         resolve();
@@ -259,6 +282,7 @@ export class RobloxBridge implements RobloxApi {
       error: this.error,
       pluginVersion: active?.pluginVersion ?? null,
       pluginOutdated: Boolean(active?.pluginVersion && active.pluginVersion !== PLUGIN_VERSION),
+      needsReinstall: !active && this.tokenRefusedAt > 0 && Date.now() - this.tokenRefusedAt < TOKEN_REFUSAL_MS,
     };
   }
 
@@ -466,6 +490,16 @@ export class RobloxBridge implements RobloxApi {
     if (req.method === "OPTIONS") return "Cross-origin requests are not allowed.";
     const marker = req.headers[PLUGIN_HEADER_LOWER];
     if (typeof marker !== "string" || !marker.trim()) return `Missing the ${PLUGIN_HEADER} header.`;
+    if (this.tokenDigest) {
+      const token = req.headers[TOKEN_HEADER_LOWER];
+      // Compared as digests in constant time: neither the length nor the content leaks by timing.
+      if (typeof token !== "string" || !timingSafeEqual(digest(token.trim()), this.tokenDigest)) {
+        const first = this.tokenRefusedAt === 0 || Date.now() - this.tokenRefusedAt >= TOKEN_REFUSAL_MS;
+        this.tokenRefusedAt = Date.now();
+        if (first) this.changed();
+        return "This plugin doesn't have this lu-minal's token: reinstall it with `lu-minal roblox install`.";
+      }
+    }
     return null;
   }
 

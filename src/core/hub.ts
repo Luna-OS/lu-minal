@@ -22,8 +22,9 @@ import {
   type CloudSession,
 } from "../cloud/claude-cloud.js";
 import { McpServer } from "../mcp/server.js";
-import { stateDir as defaultStateDir } from "../platform/paths.js";
-import { findProgram } from "../platform/process.js";
+import { writeFileAtomicSync } from "../platform/files.js";
+import { samePath, stateDir as defaultStateDir } from "../platform/paths.js";
+import { findProgram, withProgramPath } from "../platform/process.js";
 import { AuthStore, keyFor } from "../providers/auth.js";
 import { fallbackCatalog, loadCatalog, type Catalog } from "../providers/catalog.js";
 import type { ModelRef } from "../providers/models.js";
@@ -33,6 +34,7 @@ import { ProviderRegistry } from "../providers/registry.js";
 import type { ChatMessage, FetchLike } from "../providers/types.js";
 import { createChatClient } from "../providers/wire/index.js";
 import { RobloxBridge } from "../roblox/bridge.js";
+import { bridgeToken, bridgeTokenFile } from "../roblox/token.js";
 import type { ThemeManager } from "../themes/manager.js";
 import type { Theme } from "../themes/types.js";
 import { detectShell } from "../tools/exec.js";
@@ -92,6 +94,8 @@ export interface SavedSession {
     name: string;
     origin: string;
     permissionMode: PermissionMode;
+    /** Whether the folder's own agent settings may load (missing: trusted unless it was cloned). */
+    trusted?: boolean;
     createdAt: number;
     focused: string | null;
     tasks: TaskItem[];
@@ -155,7 +159,12 @@ export class Hub implements ProjectRuntime {
       config: this.config,
       claudeAccount: () => this.claudeAccount,
     });
-    this.roblox = new RobloxBridge({ port: this.config.roblox.port });
+    this.roblox = new RobloxBridge({
+      port: this.config.roblox.port,
+      // Only the plugin installed by this lu-minal (it carries the token) may connect; tests keep
+      // no config on disk and run without one.
+      token: opts.configPath ? bridgeToken(bridgeTokenFile(path.dirname(opts.configPath))) : null,
+    });
     this.roblox.subscribe(() => this.notifier.changed());
     this.mcp = new McpServer({
       stateDir: this.stateDir,
@@ -258,6 +267,8 @@ export class Hub implements ProjectRuntime {
     lead?: ModelRef;
     task?: string;
     permissionMode?: PermissionMode;
+    /** Load the folder's own agent settings (defaults to true for local folders, false for clones). */
+    trusted?: boolean;
   }): Promise<Project> {
     const cwd = path.resolve(opts.cwd);
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
@@ -269,6 +280,7 @@ export class Hub implements ProjectRuntime {
         name: opts.name,
         origin: opts.origin,
         permissionMode: opts.permissionMode ?? this.config.permissionMode,
+        trusted: opts.trusted,
       },
       this.notifier,
       this,
@@ -340,6 +352,11 @@ export class Hub implements ProjectRuntime {
       if (!preset || !exe) {
         agent.setStatus("error");
         throw new Error(this.registry.connectionHint(agent.model.provider));
+      }
+      if (!project.trusted) {
+        agent.info(
+          `${preset.name} loads this folder's own settings (its project config and MCP servers) even though you haven't trusted it; lu-minal can't switch that off.`,
+        );
       }
       agent.driver = new AcpDriver({
         agent,
@@ -416,7 +433,7 @@ export class Hub implements ProjectRuntime {
     return {
       list: () =>
         this.cloudSessions
-          .filter((s) => s.cwd === project.cwd)
+          .filter((s) => samePath(s.cwd, project.cwd))
           .map((s) => ({ id: s.id, url: s.url, task: s.task, startedAt: s.startedAt })),
       send: async (sessionId, text) => {
         const session = this.cloudSessions.find((s) => s.id === sessionId) ?? null;
@@ -504,6 +521,34 @@ export class Hub implements ProjectRuntime {
       date: new Date().toISOString().slice(0, 10),
       extraInstructions: agent.instructions,
     });
+  }
+
+  /**
+   * Trusts (or stops trusting) a project's own agent settings: its .claude settings (hooks,
+   * permission rules), CLAUDE.md and .mcp.json servers. Claude Code reads them when its process
+   * starts, so idle Claude Code agents restart now (resuming their sessions); busy ones follow the
+   * next time they start.
+   */
+  async setTrust(project: Project, trusted: boolean): Promise<void> {
+    if (project.trusted === trusted) return;
+    project.setTrusted(trusted);
+    const claude = project.agents.filter((a) => a.model.provider === "claude-code" && a.driver);
+    for (const agent of claude) {
+      if (agent.busy) {
+        agent.info(`${trusted ? "Trusted" : "No longer trusted"}: this agent picks it up the next time it starts.`);
+        continue;
+      }
+      await agent.driver?.dispose().catch(() => undefined);
+      agent.driver = null;
+      agent.info(trusted ? "Restarted with this folder's own settings (trusted)." : "Restarted without this folder's own settings.");
+      try {
+        await this.launch(project, agent);
+      } catch (err) {
+        agent.error(errText(err));
+      }
+    }
+    this.scheduleSave();
+    this.notifier.changed();
   }
 
   /** Moves an agent to another model (the driver restarts; Claude Code and ACP agents resume their session). */
@@ -604,7 +649,7 @@ export class Hub implements ProjectRuntime {
         return false;
       }
     }
-    await run(exe, claudeLoginArgs());
+    await run(exe, claudeLoginArgs(), { env: this.claudeEnv() });
     await this.refreshClaude();
     const ok = Boolean(this.claudeAccount?.loggedIn);
     this.toast(ok ? `Signed in to Claude${this.claudeAccount?.email ? ` as ${this.claudeAccount.email}` : ""}.` : "Claude sign-in did not finish.", ok ? "success" : "warning");
@@ -615,7 +660,7 @@ export class Hub implements ProjectRuntime {
   async logoutClaude(run: TerminalRunner): Promise<void> {
     const exe = findClaude(this.config.claudePath);
     if (!exe) return;
-    await run(exe, claudeLogoutArgs());
+    await run(exe, claudeLogoutArgs(), { env: this.claudeEnv() });
     await this.refreshClaude();
     this.planUsage = null;
     this.toast("Signed out of Claude.", "info");
@@ -635,7 +680,7 @@ export class Hub implements ProjectRuntime {
     }
     if (preset.login) {
       const loginExe = preset.login.command === preset.command ? exe : (findProgram(preset.login.command) ?? preset.login.command);
-      await run(loginExe, preset.login.args, { env: acpEnv(preset) });
+      await run(loginExe, preset.login.args, { env: withProgramPath(acpEnv(preset), loginExe) });
     } else {
       this.toast(preset.signIn, "info");
     }
@@ -732,6 +777,7 @@ export class Hub implements ProjectRuntime {
         name: p.name,
         origin: p.origin,
         permissionMode: p.permissionMode,
+        trusted: p.trusted,
         createdAt: p.createdAt,
         focused: p.focused?.name ?? null,
         tasks: p.tasks,
@@ -763,11 +809,10 @@ export class Hub implements ProjectRuntime {
   saveSession(): void {
     if (!this.opts.configPath || !this.ready) return;
     try {
-      fs.mkdirSync(this.stateDir, { recursive: true });
-      const file = this.sessionFile();
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.snapshotSession()));
-      fs.renameSync(tmp, file);
+      // Private: it holds conversation logs and the allow lists.
+      fs.mkdirSync(this.stateDir, { recursive: true, mode: 0o700 });
+      // Retried on Windows while a virus scanner / backup tool holds session.json, then written in place.
+      writeFileAtomicSync(this.sessionFile(), JSON.stringify(this.snapshotSession()), { mode: 0o600 });
     } catch {
       // Not worth bothering the user about; the next change tries again.
     }
@@ -794,9 +839,9 @@ export class Hub implements ProjectRuntime {
     }
     let restored = 0;
     for (const p of saved.projects) {
-      if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => x.cwd === path.resolve(p.cwd))) continue;
+      if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => samePath(x.cwd, p.cwd))) continue;
       const project = new Project(
-        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode },
+        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode, trusted: p.trusted },
         this.notifier,
         this,
       );

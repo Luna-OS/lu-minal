@@ -7,16 +7,17 @@ import type { Hub } from "../../core/hub.js";
 import { cloneRepo, createEmptyProject } from "../../git/clone.js";
 import { repoHosts } from "../../git/index.js";
 import type { RepoHost, RepoInfo } from "../../git/types.js";
-import { expandHome, tildify } from "../../platform/paths.js";
+import { samePath, tildify } from "../../platform/paths.js";
+import { resolvePath } from "../../tools/fs.js";
 import { formatAgo } from "../format.js";
 import type { UiServices } from "../store.js";
-import { InputDialog, MessageDialog } from "./InputDialog.js";
+import { ConfirmDialog, InputDialog, MessageDialog } from "./InputDialog.js";
 import { ListDialog, type ListItem } from "./ListDialog.js";
 import { openLoginDialog } from "./login.js";
 
-async function open(hub: Hub, cwd: string, origin?: string): Promise<void> {
+async function open(hub: Hub, cwd: string, origin?: string, trusted?: boolean): Promise<void> {
   try {
-    await hub.openProject({ cwd, origin });
+    await hub.openProject({ cwd, origin, trusted });
   } catch (err) {
     hub.toast(err instanceof Error ? err.message : String(err), "error");
   }
@@ -25,15 +26,16 @@ async function open(hub: Hub, cwd: string, origin?: string): Promise<void> {
 export function openNewTabDialog(hub: Hub, ui: UiServices): void {
   const hosts = repoHosts(hub.config, hub.auth);
   const cwd = process.cwd();
-  const openDirs = new Set(hub.projects.map((p) => p.cwd));
+  // Folders compare the way the OS does (case-insensitive on Windows).
+  const isOpen = (d: string) => hub.projects.some((p) => samePath(p.cwd, d));
   const items: ListItem[] = [];
-  if (!openDirs.has(cwd)) items.push({ id: `dir:${cwd}`, label: "This folder", hint: tildify(cwd), group: "Open" });
+  if (!isOpen(cwd)) items.push({ id: `dir:${cwd}`, label: "This folder", hint: tildify(cwd), group: "Open" });
   items.push({ id: "folder", label: "A folder…", hint: "type a path", group: "Open" });
   for (const host of hosts) {
     items.push({ id: `host:${host.instance}`, label: `${host.label} repository…`, hint: host.instance.replace(/^https?:\/\//, ""), group: "Clone" });
   }
   items.push({ id: "empty", label: "New empty project…", hint: tildify(hub.config.projectsDir), group: "Create" });
-  for (const dir of hub.config.recent.filter((d) => !openDirs.has(d)).slice(0, 8)) {
+  for (const dir of hub.config.recent.filter((d) => !isOpen(d)).slice(0, 8)) {
     if (fs.existsSync(dir)) items.push({ id: `dir:${dir}`, label: path.basename(dir), hint: tildify(dir), group: "Recent" });
   }
   ui.openDialog({
@@ -74,7 +76,8 @@ function askFolder(hub: Hub, ui: UiServices, closeParent: () => void): void {
         initial={tildify(process.cwd()) + path.sep}
         onCancel={close}
         onSubmit={(value) => {
-          const dir = path.resolve(expandHome(value));
+          // Strips the quotes of Explorer's "Copy as path", expands ~ and reads Git Bash /c/... paths.
+          const dir = resolvePath(process.cwd(), value);
           if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
             hub.toast(`Not a folder: ${dir}`, "warning");
             return;
@@ -235,9 +238,40 @@ async function cloneAndOpen(hub: Hub, ui: UiServices, host: RepoHost, repo: Repo
     });
     closeFn?.();
     if (existed) hub.toast(`${repo.fullName} was already cloned - opening it.`, "info");
-    await open(hub, dir, `${host.kind}:${repo.fullName}`);
+    // Asked before the lead starts: Claude Code reads a folder's own settings when it starts.
+    const trusted = await askTrust(hub, ui, repo, host);
+    await open(hub, dir, `${host.kind}:${repo.fullName}`, trusted);
   } catch (err) {
     closeFn?.();
     if (!controller.signal.aborted) hub.toast(err instanceof Error ? err.message : String(err), "error");
   }
+}
+
+/** Whether to load a cloned repository's own agent settings; "no" unless the user says yes. */
+function askTrust(hub: Hub, ui: UiServices, repo: RepoInfo, host: RepoHost): Promise<boolean> {
+  return new Promise((resolve) => {
+    ui.openDialog({
+      id: "trust",
+      render: (close) => (
+        <ConfirmDialog
+          theme={hub.theme}
+          title={`Trust ${repo.fullName}?`}
+          lines={[
+            `It came from ${host.label}. If you trust it, Claude Code agents load its own settings: .claude hooks and permission rules, CLAUDE.md and the MCP servers in .mcp.json. Hooks and MCP servers run programs on this computer.`,
+            "Without trust, agents start with your own settings only. /trust changes it later.",
+          ]}
+          yes="trust it"
+          no="not now"
+          onYes={() => {
+            close();
+            resolve(true);
+          }}
+          onNo={() => {
+            close();
+            resolve(false);
+          }}
+        />
+      ),
+    });
+  });
 }

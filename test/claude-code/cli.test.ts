@@ -53,6 +53,36 @@ describe("knownClaudeLocations", () => {
   });
 });
 
+describe("knownClaudeLocations for Node version managers", () => {
+  it("lists npm under nvm (newest Node first) and pnpm on macOS and Linux", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "lm-nvm-home-"));
+    try {
+      for (const v of ["v18.20.4", "v22.11.0", "v20.18.1", "system"]) fs.mkdirSync(path.join(home, ".nvm", "versions", "node", v), { recursive: true });
+      const mac = knownClaudeLocations(home, {}, "darwin");
+      const nvm = mac.filter((p) => p.includes(".nvm"));
+      expect(nvm).toEqual(["v22.11.0", "v20.18.1", "v18.20.4"].map((v) => path.posix.join(home, ".nvm", "versions", "node", v, "bin", "claude")));
+      expect(mac).toContain(path.posix.join(home, "Library", "pnpm", "claude"));
+      const linux = knownClaudeLocations(home, { NVM_BIN: "/opt/nvm/bin", PNPM_HOME: "/opt/pnpm" }, "linux");
+      expect(linux).toContain("/opt/nvm/bin/claude");
+      expect(linux).toContain("/opt/pnpm/claude");
+      expect(linux).toContain(path.posix.join(home, ".local", "share", "pnpm", "claude"));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("lists nvm-windows' and Program Files' node folders and pnpm on Windows", () => {
+    const list = knownClaudeLocations(
+      "C:\\Users\\luna",
+      { NVM_SYMLINK: "C:\\nvm4w\\nodejs", ProgramFiles: "C:\\Program Files", LOCALAPPDATA: "C:\\Users\\luna\\AppData\\Local" },
+      "win32",
+    );
+    expect(list).toContain("C:\\nvm4w\\nodejs\\claude.cmd");
+    expect(list).toContain("C:\\Program Files\\nodejs\\claude.cmd");
+    expect(list).toContain("C:\\Users\\luna\\AppData\\Local\\pnpm\\claude.cmd");
+  });
+});
+
 describe("findClaude", () => {
   const dirs: string[] = [];
   afterEach(() => {

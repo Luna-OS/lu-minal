@@ -76,11 +76,15 @@ is_musl() {
   case "${LU_MINAL_LIBC:-}" in
     musl) return 0 ;;
     glibc | gnu) return 1 ;;
+    *) ;;
   esac
+  # glibc answers GNU_LIBC_VERSION; musl's getconf does not know it. (Checked first: Debian's and
+  # Ubuntu's "musl" package puts /lib/ld-musl-*.so.1 on glibc systems too.)
+  if has getconf && getconf GNU_LIBC_VERSION >/dev/null 2>&1; then return 1; fi
+  if has ldd && ldd --version 2>&1 | grep -qi musl; then return 0; fi
   for f in /lib/ld-musl-*.so.1; do
     [ -e "$f" ] && return 0
   done
-  if has ldd && ldd --version 2>&1 | grep -qi musl; then return 0; fi
   return 1
 }
 
@@ -190,8 +194,8 @@ install_desktop_entry() {
     sed "s|^Exec=lu-minal|Exec=$(sed_escape "$exec_line")|; s|^TryExec=lu-minal|TryExec=$(sed_escape "$exe")|" \
       >"$apps/lu-minal.desktop"
   chmod 644 "$apps/lu-minal.desktop"
-  has update-desktop-database && update-desktop-database "$apps" >/dev/null 2>&1 || true
-  has gtk-update-icon-cache && gtk-update-icon-cache -q -t "$data/icons/hicolor" >/dev/null 2>&1 || true
+  if has update-desktop-database; then update-desktop-database "$apps" >/dev/null 2>&1 || true; fi
+  if has gtk-update-icon-cache; then gtk-update-icon-cache -q -t "$data/icons/hicolor" >/dev/null 2>&1 || true; fi
   ok "Added lu-minal to the applications menu ${C_DIM}($apps/lu-minal.desktop)${C_OFF}"
 }
 
@@ -254,6 +258,8 @@ path_hint() {
   case "$shell_name" in
     zsh) say "    echo 'export PATH=\"$dir:\$PATH\"' >> ~/.zshrc" ;;
     bash)
+      # The ~ is printed for the user to type, not expanded here.
+      # shellcheck disable=SC2088
       if [ "$(uname -s)" = Darwin ]; then rc="~/.bash_profile"; else rc="~/.bashrc"; fi
       say "    echo 'export PATH=\"$dir:\$PATH\"' >> $rc"
       ;;

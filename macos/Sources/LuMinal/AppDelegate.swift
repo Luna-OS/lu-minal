@@ -1,6 +1,6 @@
 // The app: the menu bar, one window per lu-minal session (Cmd+N, File > Open Folder..., folders
-// dropped on the Dock icon or opened with "Open With"), font size and the Option-as-Meta setting,
-// and the login-shell environment every session starts with.
+// dropped on the Dock icon or the app, `open -a LuMinal <folder>`), font size and the
+// Option-as-Meta setting, and the login-shell environment every session starts with.
 import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

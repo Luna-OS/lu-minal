@@ -72,6 +72,22 @@ describe("the Swift package and the app bundle", () => {
     expect(script).toContain("ditto -c -k --sequesterRsrc --keepParent");
   });
 
+  it("explains the privacy prompts the programs it runs can trigger", () => {
+    // macOS attributes a child process's requests (osascript, ~/Documents, ...) to the app; without a
+    // purpose string it may refuse them without asking.
+    for (const key of [
+      "NSAppleEventsUsageDescription",
+      "NSDesktopFolderUsageDescription",
+      "NSDocumentsFolderUsageDescription",
+      "NSDownloadsFolderUsageDescription",
+      "NSLocalNetworkUsageDescription",
+      "NSNetworkVolumesUsageDescription",
+      "NSRemovableVolumesUsageDescription",
+    ]) {
+      expect(value(key)?.[2], key).toMatch(/^Programs that lu-minal and its agents run/);
+    }
+  });
+
   it("is well-formed plist XML with balanced dict and array tags", () => {
     for (const tag of ["dict", "array", "plist"]) {
       const opens = plist.match(new RegExp(`<${tag}[ >]`, "g"))?.length ?? 0;
@@ -189,6 +205,27 @@ describe("the release workflow", () => {
     const listed = check.split(/\s+/).filter(Boolean);
     for (const t of RELEASE_TARGETS) expect(listed, t.asset).toContain(t.asset);
     expect(listed).toContain("lu-minal-macos-app.zip");
+  });
+
+  it("publishes only after the tagged commit passed the tests on all three systems", () => {
+    // ci.yml runs for branches only, so a tag push is tested by the release workflow itself.
+    expect(ci).toMatch(/push:\n\s+branches: \["\*\*"\]/);
+    expect(release).toMatch(/\n {2}test:\n[\s\S]*?os: \[ubuntu-latest, macos-latest, windows-latest\][\s\S]*?npm test/);
+    expect(release).toMatch(/needs: \[version, test, linux, windows, macos\]/);
+  });
+
+  it("signs the macOS binaries on macOS and checks the signatures", () => {
+    const script = read("scripts", "build-binaries.ts");
+    expect(script).toContain('if (t.os === "macos" && process.platform === "darwin") adhocSign(outfile);');
+    expect(script).toContain('spawnSync("codesign", ["--force", "--sign", "-", file]');
+    for (const workflow of [ci, release]) {
+      expect(workflow).toContain("codesign --verify --verbose=2 dist-bin/lu-minal-macos-arm64 dist-bin/lu-minal-macos-x64");
+    }
+  });
+
+  it("keys the SwiftPM cache by the Swift compiler", () => {
+    expect(ci).toContain("id: toolchain");
+    expect(ci).toMatch(/key: swiftpm-.*\$\{\{ steps\.toolchain\.outputs\.swift \}\}/);
   });
 
   it("publishes the binaries, the app and SHA256SUMS with contents: write", () => {

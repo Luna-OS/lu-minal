@@ -12,6 +12,7 @@ final class SessionWindowController: NSWindowController, NSWindowDelegate, Local
 
     private var started = false
     private var ended = false
+    private var closed = false
     private var defaultTitle: String
 
     /// True while lu-minal is running in this window.
@@ -99,8 +100,9 @@ final class SessionWindowController: NSWindowController, NSWindowDelegate, Local
         started = true
         let command = Launcher.command(folder: folder, environment: environment)
         // One turn of the run loop first, so the terminal has its real size when the PTY opens.
+        // (Not `isVisible`: a window minimized while the login shell was asked must still start.)
         DispatchQueue.main.async { [weak self] in
-            guard let self = self, self.window?.isVisible == true else { return }
+            guard let self = self, !self.closed else { return }
             self.terminalView.startProcess(
                 executable: command.executable,
                 args: command.args,
@@ -178,6 +180,7 @@ final class SessionWindowController: NSWindowController, NSWindowDelegate, Local
     }
 
     func windowWillClose(_ notification: Notification) {
+        closed = true
         stopProcess()
         // Forget the session on the next turn of the run loop, not while AppKit is still closing
         // the window (the app holds the last reference to this controller).

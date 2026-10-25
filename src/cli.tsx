@@ -25,6 +25,15 @@ import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
 import { ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
 
+// `lu-minal models | head` closes the pipe early: end quietly instead of crashing with EPIPE
+// (Node throws an unhandled 'error' event; the Bun binaries print a stack trace and exit 1).
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EPIPE") process.exit(0);
+    throw err;
+  });
+}
+
 /** The version: baked into the standalone binaries, read from package.json for npm installs. */
 function readVersion(): string {
   if (process.env.LU_MINAL_VERSION) return process.env.LU_MINAL_VERSION;

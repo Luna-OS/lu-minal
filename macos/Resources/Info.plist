@@ -45,6 +45,20 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License, Luna-OS</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Programs that lu-minal and its agents run in this window want to control another app.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Programs that lu-minal and its agents run in this window want to use files on your Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Programs that lu-minal and its agents run in this window want to use files in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Programs that lu-minal and its agents run in this window want to use files in your Downloads folder.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Programs that lu-minal and its agents run in this window want to reach devices on your local network (a local model server, for example).</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Programs that lu-minal and its agents run in this window want to use files on a network volume.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Programs that lu-minal and its agents run in this window want to use files on a removable volume.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSRequiresAquaSystemAppearance</key>

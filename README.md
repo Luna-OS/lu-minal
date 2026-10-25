@@ -70,7 +70,8 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
 | **npm** (any OS, Node 22+) | `npm i -g lu-minal` or `npx lu-minal` |
 | **macOS / Linux** | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` |
 | **Windows** (PowerShell) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` |
-| **macOS app** | `lu-minal-macos-app.dmg` (or `.zip`) from the [releases](https://github.com/Luna-OS/lu-minal/releases) – `LuMinal.app`, a native Swift window running lu-minal |
+| **macOS app** | `lu-minal-macos-app.dmg` (or `.zip`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest): **LuMinal.app**, a native Swift window running lu-minal |
+| **Standalone binary** | `lu-minal-linux-x64`, `lu-minal-macos-arm64`, `lu-minal-windows-x64.exe`, … from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), with `SHA256SUMS` (all files: [docs/install.md](docs/install.md)) |
 
 Then run `lu-minal` in a project folder. Details for every platform (Windows Terminal profile,
 the Linux desktop entry, terminals with true colour) are in [docs/install.md](docs/install.md).
@@ -175,6 +176,7 @@ npm test             # vitest
 npm run typecheck
 npm run build        # dist/ for npm
 npm run build:bin    # standalone binaries for every platform (needs Bun)
+npm run build:app    # macOS only: LuMinal.app in macos/build (needs Xcode)
 ```
 
 How it fits together: [docs/architecture.md](docs/architecture.md).

@@ -47,6 +47,12 @@ function fakeUname(system: string, machine: string): void {
   fs.chmodSync(path.join(fakeBin, "uname"), 0o755);
 }
 
+/** A fake program on the PATH that prints `out` (to stderr too, as musl's ldd does) and exits with `code`. */
+function fakeProgram(name: string, out: string, code = 0): void {
+  fs.writeFileSync(path.join(fakeBin, name), `#!/bin/sh\necho '${out}'\necho '${out}' >&2\nexit ${code}\n`);
+  fs.chmodSync(path.join(fakeBin, name), 0o755);
+}
+
 function run(env: Record<string, string>) {
   const r = spawnSync("sh", [INSTALL_SH], {
     encoding: "utf8",
@@ -105,6 +111,26 @@ describe.runIf(posix)("install.sh", () => {
     expect(r.out).toContain("lu-minal-linux-arm64-musl");
     expect(r.out).toContain("Installed lu-minal 1.2.3");
     expect(r.status).toBe(0);
+  });
+
+  it.runIf(canHash)("detects the C library: glibc's getconf wins, musl's ldd picks the musl build", () => {
+    fakeUname("Linux", "x86_64");
+    addAsset("lu-minal-linux-x64", "1.0.0");
+    addAsset("lu-minal-linux-x64-musl", "1.0.1");
+    writeSums(["lu-minal-linux-x64", "lu-minal-linux-x64-musl"]);
+    // glibc (even with Debian's musl package installed, which only adds /lib/ld-musl-*.so.1).
+    fakeProgram("getconf", "glibc 2.39");
+    fakeProgram("ldd", "ldd (GNU libc) 2.39");
+    let r = run({ LU_MINAL_NO_DESKTOP: "1" });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("Installed lu-minal 1.0.0");
+    // musl: getconf does not know GNU_LIBC_VERSION, ldd says musl.
+    fakeProgram("getconf", "getconf: GNU_LIBC_VERSION: unknown variable", 1);
+    fakeProgram("ldd", "musl libc (x86_64)", 1);
+    r = run({ LU_MINAL_NO_DESKTOP: "1" });
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("lu-minal-linux-x64-musl");
+    expect(r.out).toContain("Installed lu-minal 1.0.1");
   });
 
   it.runIf(canHash)("names macOS binaries macos-*", () => {

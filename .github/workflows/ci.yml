@@ -90,17 +90,22 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: npm ci
       - name: Toolchain
+        id: toolchain
         run: |
           sw_vers
           xcodebuild -version || true
           swift --version
+          # Part of the cache key: modules built by another Swift compiler cannot be reused.
+          echo "swift=$(swift --version 2>&1 | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: macos/.build
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}
-          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
       - name: Build the macOS binaries (arm64 and x64)
-        run: bun scripts/build-binaries.ts --target=macos --outdir=dist-bin --smoke
+        run: |
+          bun scripts/build-binaries.ts --target=macos --outdir=dist-bin --smoke
+          codesign --verify --verbose=2 dist-bin/lu-minal-macos-arm64 dist-bin/lu-minal-macos-x64
       - name: Build, bundle and sign LuMinal.app
         run: bash macos/scripts/bundle-app.sh --binary dist-bin/lu-minal-macos-arm64 --binary dist-bin/lu-minal-macos-x64 --out dist-app
       - name: Check the bundle

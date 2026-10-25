@@ -129,9 +129,9 @@ function Install-LuMinal {
 
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     if (Test-Path -LiteralPath $exe) {
-      # A running lu-minal.exe cannot be overwritten, but it can be renamed out of the way.
-      $previous = Join-Path $dir 'lu-minal.old.exe'
-      Remove-Item -LiteralPath $previous -Force -ErrorAction SilentlyContinue
+      # A running lu-minal.exe cannot be overwritten or deleted, but it can be renamed out of the
+      # way - to a new name each time, since an older copy may still be running too.
+      $previous = Join-Path $dir ('lu-minal.old-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.exe')
       try {
         Move-Item -LiteralPath $exe -Destination $previous -Force
       } catch {
@@ -139,7 +139,9 @@ function Install-LuMinal {
       }
     }
     Copy-Item -LiteralPath $download -Destination $exe -Force
-    Remove-Item -LiteralPath (Join-Path $dir 'lu-minal.old.exe') -Force -ErrorAction SilentlyContinue
+    # Old copies that are no longer running (the ones that are stay until the next update).
+    Get-ChildItem -LiteralPath $dir -Filter 'lu-minal.old*.exe' -ErrorAction SilentlyContinue |
+      Remove-Item -Force -ErrorAction SilentlyContinue
   } finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
   }

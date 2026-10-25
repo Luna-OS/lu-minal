@@ -1,7 +1,8 @@
 // Builds lu-minal's standalone binaries with Bun (`bun build --compile`), one per release target:
 // lu-minal-<os>-<arch>[-musl][.exe] in dist-bin/, plus SHA256SUMS. Cross-compiles every target from
 // any host; Windows version info (publisher, version, description) is only embedded when the
-// Windows binaries are built on Windows, so the release workflow builds those on windows-latest.
+// Windows binaries are built on Windows, and macOS binaries are only signed (ad-hoc, codesign)
+// when built on macOS, so the release workflow builds each of them on its own system.
 //
 //   bun scripts/build-binaries.ts                       all targets
 //   bun scripts/build-binaries.ts --target=host         this machine only
@@ -127,7 +128,7 @@ function writeChecksums(outdir: string): string {
 }
 
 function formatSize(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 async function buildTarget(bun: BunLike, t: ReleaseTarget, opts: Options): Promise<string> {
@@ -172,7 +173,20 @@ async function buildTarget(bun: BunLike, t: ReleaseTarget, opts: Options): Promi
   if (path.resolve(written) !== outfile && fs.existsSync(written)) fs.renameSync(written, outfile);
   if (!fs.existsSync(outfile)) throw new Error(`bun build reported success but ${outfile} is missing.`);
   if (t.os !== "windows" && process.platform !== "win32") fs.chmodSync(outfile, 0o755);
+  if (t.os === "macos" && process.platform === "darwin") adhocSign(outfile);
   return outfile;
+}
+
+/**
+ * Signs a macOS binary ad-hoc. Bun re-signs the arm64 binaries it writes, but an x64 binary keeps
+ * the signature of Bun's own runtime, which no longer matches once lu-minal is appended to it;
+ * macOS kills a binary whose signature does not match its pages.
+ */
+function adhocSign(file: string): void {
+  const run = spawnSync("codesign", ["--force", "--sign", "-", file], { encoding: "utf8" });
+  if (run.error || run.status !== 0) {
+    throw new Error(`codesign --force --sign - ${path.basename(file)} failed: ${run.error?.message ?? run.stderr}`);
+  }
 }
 
 function smokeTest(file: string, version: string): void {
@@ -199,6 +213,9 @@ async function main(): Promise<void> {
   );
   if (opts.targets.some((t) => t.os === "windows") && process.platform !== "win32") {
     process.stdout.write("note: Windows version info is only embedded when building on Windows.\n");
+  }
+  if (opts.targets.some((t) => t.os === "macos") && process.platform !== "darwin") {
+    process.stdout.write("note: macOS binaries are only signed when building on macOS (re-sign them there: codesign --force --sign -).\n");
   }
   const built: string[] = [];
   for (const t of opts.targets) {

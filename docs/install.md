@@ -55,7 +55,7 @@ chmod +x lu-minal-linux-x64 && mv lu-minal-linux-x64 ~/.local/bin/lu-minal
 
 ```powershell
 # Windows
-Invoke-WebRequest https://github.com/Luna-OS/lu-minal/releases/latest/download/lu-minal-windows-x64.exe -OutFile lu-minal.exe
+Invoke-WebRequest https://github.com/Luna-OS/lu-minal/releases/latest/download/lu-minal-windows-x64.exe -OutFile lu-minal.exe -UseBasicParsing
 (Get-FileHash lu-minal.exe -Algorithm SHA256).Hash   # compare with SHA256SUMS
 ```
 
@@ -139,7 +139,8 @@ lu-minal built in and true colour. Move it to `/Applications`.
 
 - One window per session: **Cmd+N** new session, **Cmd+O** open a project folder, **Cmd+W**
   close, **Cmd+Q** quit, **Cmd+=** / **Cmd+-** / **Cmd+0** font size, Cmd+C / Cmd+V copy and paste.
-- Drop a folder on the Dock icon, or use "Open With > lu-minal" in the Finder.
+- Drop a folder on the Dock icon (or on LuMinal.app in the Finder), or run
+  `open -a LuMinal ~/code/app`, to start a session there.
 - It starts lu-minal with your login shell's environment, so `claude`, Homebrew and nvm tools
   are found as in Terminal.
 - View > Use Option as Meta Key sends Alt shortcuts (off by default, so Option keeps typing
@@ -204,10 +205,14 @@ Set `LU_MINAL_HOME` to keep all of them in one folder (portable installs).
 npm ci
 bun scripts/build-binaries.ts                    # every platform into dist-bin/, plus SHA256SUMS
 bun scripts/build-binaries.ts --target=host      # just this machine
-bun scripts/build-binaries.ts --target=linux-arm64,windows-x64 --smoke
+bun scripts/build-binaries.ts --target=host,windows-x64 --smoke   # --smoke runs this machine's binary
 bun scripts/build-binaries.ts --list             # the targets
 ```
 
-Bun cross-compiles every target from any machine; Windows version information is embedded only
-when the Windows binaries are built on Windows (the release workflow does that). Releases are
-built by `.github/workflows/release.yml` when a `v*` tag is pushed.
+Bun cross-compiles every target from any machine. Windows version information is embedded only
+when the Windows binaries are built on Windows, and the macOS binaries are signed (ad-hoc, with
+`codesign`) only when they are built on a Mac. Built elsewhere, the arm64 one still has a valid
+signature from Bun, but the x64 one does not, so sign it on a Mac
+(`codesign --force --sign - lu-minal-macos-x64`) before macOS runs it. The release workflow builds
+each on its own system. Releases are built by `.github/workflows/release.yml` when a `v*` tag is
+pushed.

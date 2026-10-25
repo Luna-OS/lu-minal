@@ -13,8 +13,8 @@ and true colour works out of the box (Terminal.app before macOS 26 only has 256 
 - **View > Use Option as Meta Key** makes Option send Alt shortcuts (`alt+1` ... `alt+9` for tabs).
   It is off by default, because on many keyboard layouts Option types `@`, `[`, `]`, `{` and `}`.
   Every lu-minal shortcut also has a slash command.
-- Folders dropped on the Dock icon, or opened with "Open With > lu-minal" in the Finder, start a
-  session there. So does `open -a LuMinal --args ~/code/app`.
+- Folders dropped on the Dock icon (or on LuMinal.app in the Finder) start a session there. So do
+  `open -a LuMinal ~/code/app` and `open -a LuMinal --args ~/code/app`.
 - When lu-minal exits, the window says so: press any key to close it, or Cmd+N for a new session.
 
 ## Install

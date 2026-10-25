@@ -33,6 +33,24 @@ jobs:
           fi
           echo "version=$pkg" >> "$GITHUB_OUTPUT"
 
+  # CI does not run for tags (it is limited to branches), so the tagged commit is tested here.
+  test:
+    name: Test (${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
   linux:
     name: Linux binaries
     needs: version
@@ -92,12 +110,12 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: npm ci
+      # build-binaries.ts signs the macOS binaries ad-hoc when it runs on macOS.
       - run: bun scripts/build-binaries.ts --target=macos --outdir=dist-bin --smoke
-      - name: Sign the binaries (ad-hoc)
+      - name: Check the signatures
         run: |
-          codesign --force --sign - dist-bin/lu-minal-macos-arm64 dist-bin/lu-minal-macos-x64
           codesign --verify --verbose=2 dist-bin/lu-minal-macos-arm64 dist-bin/lu-minal-macos-x64
-          dist-bin/lu-minal-macos-arm64 --version
+          codesign --display --verbose=2 dist-bin/lu-minal-macos-arm64
       - name: Build LuMinal.app (zip and disk image)
         run: >-
           bash macos/scripts/bundle-app.sh
@@ -118,7 +136,7 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: [version, linux, windows, macos]
+    needs: [version, test, linux, windows, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

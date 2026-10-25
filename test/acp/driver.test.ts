@@ -12,6 +12,8 @@ import { Project, type ProjectRuntime } from "../../src/core/project.js";
 import type { LogEntry, PermissionMode } from "../../src/core/types.js";
 
 const FAKE = fileURLToPath(new URL("../fixtures/fake-acp-agent.mjs", import.meta.url));
+/** What clientInfo reports without a version from the Hub: package.json's, never "dev". */
+const PKG_VERSION = (JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -184,7 +186,7 @@ describe("AcpDriver", () => {
     expect(init.params).toMatchObject({
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      clientInfo: { name: "lu-minal" },
+      clientInfo: { name: "lu-minal", version: PKG_VERSION },
     });
     const [created] = t.calls("session/new");
     expect(fs.realpathSync(created.params.cwd)).toBe(fs.realpathSync(t.dir));

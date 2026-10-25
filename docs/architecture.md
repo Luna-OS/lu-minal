@@ -7,9 +7,10 @@ from the [models.dev](https://models.dev) catalog (OpenCode Zen's free models, O
 OpenAI, Gemini, ...). They talk to each other over the project's bus, share a task board, can switch
 the app's theme, and can drive Roblox Studio through a small bridge.
 
-It runs the same on **Windows, macOS and Linux**: as `npx lu-minal`, as a standalone binary per
-platform (Bun-compiled, see `scripts/build-binaries.ts`), and on macOS also as a native Swift app
-(`macos/`) that hosts the terminal in a Moon-styled window.
+It runs the same on **Windows, macOS and Linux**: as a standalone binary per platform
+(Bun-compiled, see `scripts/build-binaries.ts`), built from source with Node (`npm run build`,
+`dist/cli.js`), and on macOS also as a native Swift app (`macos/`) that hosts the terminal in a
+Moon-styled window.
 
 ## Module map
 

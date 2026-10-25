@@ -218,7 +218,7 @@ describe.runIf(posix)("install.sh", () => {
     fakeUname("FreeBSD", "amd64");
     r = run({});
     expect(r.status).toBe(1);
-    expect(r.out).toContain("npm i -g lu-minal");
+    expect(r.out).toContain("Build it from source instead (Node 22+): https://github.com/Luna-OS/lu-minal#from-source");
     fakeUname("Linux", "riscv64");
     r = run({});
     expect(r.status).toBe(1);

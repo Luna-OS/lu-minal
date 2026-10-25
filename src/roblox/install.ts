@@ -165,8 +165,8 @@ export async function installPlugin(opts: { dir?: string; port?: number; token?:
   try {
     await fs.promises.mkdir(dir, { recursive: true });
     // Studio watches the folder and may hold the old plugin open: on Windows the replace is retried,
-    // then written in place.
-    await writeFileAtomic(file, source);
+    // then written in place. Readable only by the user: it carries the bridge token.
+    await writeFileAtomic(file, source, { mode: 0o600 });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     const reason = err instanceof Error ? err.message : String(err);

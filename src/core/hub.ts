@@ -1,6 +1,7 @@
 // The Hub is the app: it owns the open projects (tabs), the provider registry, the theme, the
 // Claude account and plan usage, the MCP server for Claude Code agents and the Roblox bridge, and it
 // decides how each agent runs (ProjectRuntime). The UI reads it and calls its actions.
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { AcpDriver } from "../agents/acp/driver.js";
@@ -40,6 +41,7 @@ import type { Theme } from "../themes/types.js";
 import { detectShell } from "../tools/exec.js";
 import { toolsForAgent } from "../tools/index.js";
 import type { CloudApi, ToolServices } from "../tools/types.js";
+import { VERSION } from "../version.js";
 import { Agent, type SavedAgentState } from "./agent.js";
 import { attachmentsDir, pruneAttachments } from "./attachments.js";
 import { distrusted, rememberRecent, rememberTrust, saveConfig, type Config } from "./config.js";
@@ -122,6 +124,8 @@ export class Hub implements ProjectRuntime {
   readonly themes: ThemeManager;
   readonly registry: ProviderRegistry;
   readonly roblox: RobloxBridge;
+  /** The token the bridge accepts, for the plugin the /roblox dialog installs (null in tests). */
+  readonly robloxToken: string | null;
   readonly mcp: McpServer;
   readonly stateDir: string;
   readonly stats: StatsStore;
@@ -159,16 +163,24 @@ export class Hub implements ProjectRuntime {
       config: this.config,
       claudeAccount: () => this.claudeAccount,
     });
-    this.roblox = new RobloxBridge({
-      port: this.config.roblox.port,
-      // Only the plugin installed by this lu-minal (it carries the token) may connect; tests keep
-      // no config on disk and run without one.
-      token: opts.configPath ? bridgeToken(bridgeTokenFile(path.dirname(opts.configPath))) : null,
-    });
+    // Only the plugin installed by this lu-minal (it carries the token) may connect; tests keep no
+    // config on disk and run without one.
+    let token: string | null = null;
+    if (opts.configPath) {
+      try {
+        token = bridgeToken(bridgeTokenFile(path.dirname(opts.configPath)));
+      } catch (err) {
+        // Can't be saved: a token for this run only (never none, which would let anyone in).
+        token = randomBytes(32).toString("hex");
+        this.toast(`Roblox: could not save the plugin token (${errText(err)}); install the plugin again after every start.`, "warning");
+      }
+    }
+    this.robloxToken = token;
+    this.roblox = new RobloxBridge({ port: this.config.roblox.port, token });
     this.roblox.subscribe(() => this.notifier.changed());
     this.mcp = new McpServer({
       stateDir: this.stateDir,
-      version: process.env.LU_MINAL_VERSION ?? "dev",
+      version: VERSION,
       resolve: (agentId) => {
         for (const project of this.projects) {
           const agent = project.agents.find((a) => a.id === agentId);
@@ -371,7 +383,7 @@ export class Hub implements ProjectRuntime {
         mcp: this.mcp,
         // The team-only prompt, as for Claude Code; the driver renames mcp__luminal__* to the agent's names.
         systemPrompt: () => this.promptFor(project, agent, "claude-code"),
-        version: process.env.LU_MINAL_VERSION,
+        version: VERSION,
       });
     } else {
       agent.driver = new NativeDriver({
@@ -618,7 +630,8 @@ export class Hub implements ProjectRuntime {
     this.notifier.changed();
   }
 
-  async refreshLocalModels(): Promise<void> {
+  /** `refreshAcp`: the ACP agent whose model list is asked for again, cache or not (after a sign-in). */
+  async refreshLocalModels(opts: { refreshAcp?: string } = {}): Promise<void> {
     const models = await listOllamaModels(this.config.providers.ollama?.baseURL, this.opts.fetchImpl).catch(() => []);
     this.registry.setLocalModels("ollama", models);
     if (!this.opts.offline) {
@@ -629,7 +642,7 @@ export class Hub implements ProjectRuntime {
           if (preset.models !== "opencode") return;
           const exe = this.registry.acpProgram(preset.id);
           if (!exe) return;
-          const list = await listAcpModels(preset, { exe, cacheDir: this.opts.cacheDir }).catch(() => []);
+          const list = await listAcpModels(preset, { exe, cacheDir: this.opts.cacheDir, refresh: opts.refreshAcp === preset.id }).catch(() => []);
           if (list.length) this.registry.setLocalModels(preset.id, list);
         }),
       );
@@ -685,7 +698,8 @@ export class Hub implements ProjectRuntime {
     } else {
       this.toast(preset.signIn, "info");
     }
-    void this.refreshLocalModels();
+    // The sign-in may have added providers (`opencode auth login`): ask for the models again.
+    void this.refreshLocalModels({ refreshAcp: preset.id });
     return true;
   }
 

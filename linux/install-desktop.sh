@@ -31,7 +31,7 @@ if [ -z "$exe" ]; then
   if [ -z "$exe" ] && [ -x "$HOME/.local/bin/lu-minal" ]; then exe="$HOME/.local/bin/lu-minal"; fi
 fi
 if [ -z "$exe" ]; then
-  echo "lu-minal is not on your PATH. Install it first (install.sh or npm i -g lu-minal), or pass its path." >&2
+  echo "lu-minal is not on your PATH. Install it first (install.sh, or from source: https://github.com/Luna-OS/lu-minal#from-source), or pass its path." >&2
   exit 1
 fi
 case "$exe" in

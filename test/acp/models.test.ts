@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acpDefaultModel, listAcpModels, parseOpenCodeModels, staticAcpModels } from "../../src/agents/acp/models.js";
+import { acpDefaultModel, forgetAcpModels, listAcpModels, parseOpenCodeModels, staticAcpModels } from "../../src/agents/acp/models.js";
 import { findAcpAgent, GEMINI_CLI_ID, OPENCODE_CLI_ID } from "../../src/agents/acp/presets.js";
 
 // `opencode models --verbose` output as OpenCode 1.19.4 prints it (shortened).
@@ -131,6 +131,38 @@ describe("listAcpModels", () => {
     const empty = async () => ({ code: 1, stdout: "Error: not configured\n", stderr: "" });
     expect((await listAcpModels(opencode, { exe: "opencode", run: empty })).map((m) => m.id)).toEqual(["default"]);
     expect((await listAcpModels(opencode, { exe: null })).map((m) => m.id)).toEqual(["default"]);
+  });
+
+  it("runs `opencode models` with the program's folder on the PATH (npm shims need their node)", async () => {
+    const exe = path.join(tempDir(), "bin", "opencode");
+    let seen: NodeJS.ProcessEnv | null = null;
+    const run = async (_exe: string, _args: string[], o: { env: NodeJS.ProcessEnv }) => {
+      seen = o.env;
+      return { code: 0, stdout: "opencode/big-pickle\n", stderr: "" };
+    };
+    await listAcpModels(opencode, { exe, run, env: { PATH: "/usr/bin" } });
+    const env = seen as NodeJS.ProcessEnv | null;
+    const key = Object.keys(env ?? {}).find((k) => k.toUpperCase() === "PATH")!;
+    expect(env?.[key]?.split(path.delimiter)).toContain(path.dirname(exe));
+    // The preset's own tweaks still apply.
+    expect(env?.OPENCODE_PERMISSION).toBeTruthy();
+  });
+
+  it("forgets the cached list (after a sign-in), so the next call asks again", async () => {
+    const cacheDir = tempDir();
+    let runs = 0;
+    const run = async () => {
+      runs++;
+      return { code: 0, stdout: "opencode/big-pickle\n", stderr: "" };
+    };
+    await listAcpModels(opencode, { exe: "opencode", cacheDir, run });
+    await listAcpModels(opencode, { exe: "opencode", cacheDir, run });
+    expect(runs).toBe(1);
+    forgetAcpModels(opencode, cacheDir);
+    await listAcpModels(opencode, { exe: "opencode", cacheDir, run });
+    expect(runs).toBe(2);
+    // Nothing cached (or no folder at all) is fine too.
+    forgetAcpModels(opencode, path.join(cacheDir, "missing"));
   });
 
   it("gives static agents their list without running anything", async () => {

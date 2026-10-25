@@ -110,7 +110,7 @@ GitHub or Forgejo is not until the user says so) starts Claude Code with `--sett
 - `auth.json` (keys and tokens) is written atomically with mode 0600 in a 0700 folder, also on
   updates, and copied to `auth.json.bak` (0600) before a broken file is replaced. Windows relies on
   the profile folder's ACL. The MCP configs (one bearer token per agent) are 0600 in a 0700 folder,
-  and so is the Roblox bridge token.
+  and so is the Roblox bridge token; the Studio plugin that carries it is written 0600 too.
 - Keys are never written to `config.json`, `session.json`, `stats.json` or command lines. Git tokens
   reach git through `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` (git 2.31+), never
   the clone URL or `.git/config`. Only git older than 2.31 gets them as `-c`, where other users of

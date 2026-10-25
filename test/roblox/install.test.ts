@@ -153,6 +153,16 @@ describe("installPlugin", () => {
     expect(installedPluginVersion({ dir })).toBe(PLUGIN_VERSION);
   });
 
+  it.runIf(process.platform !== "win32")("writes the plugin readable only by the user, since it carries the token", async () => {
+    const dir = tempDir();
+    const file = await installPlugin({ dir, token: "ab".repeat(32) });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    // Also when it replaces a plugin someone else could read.
+    fs.chmodSync(file, 0o644);
+    await installPlugin({ dir, token: "cd".repeat(32) });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  });
+
   it("uses LU_MINAL_ROBLOX_PLUGINS when no folder is given", async () => {
     const dir = tempDir();
     vi.stubEnv("LU_MINAL_ROBLOX_PLUGINS", dir);

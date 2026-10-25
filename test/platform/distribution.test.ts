@@ -228,9 +228,26 @@ describe("the release workflow", () => {
     expect(ci).toMatch(/key: swiftpm-.*\$\{\{ steps\.toolchain\.outputs\.swift \}\}/);
   });
 
+  it("gives only the publish job a write token, and no checkout keeps one in .git/config", () => {
+    // npm ci (install scripts), the tests and the bundlers run in the other jobs.
+    expect(release).toMatch(/\npermissions:\n {2}contents: read\n/);
+    const jobs = release.slice(release.indexOf("\njobs:\n")).split(/\n(?= {2}[\w-]+:\n)/).slice(1);
+    expect(jobs.map((j) => j.trim().split(":")[0])).toEqual(["version", "test", "linux", "windows", "macos", "publish"]);
+    for (const job of jobs) {
+      const name = job.trim().split(":")[0];
+      if (name === "publish") expect(job).toMatch(/\n {4}permissions:\n {6}contents: write\n/);
+      else expect(job, name).not.toContain("contents: write");
+    }
+    const checkouts = release.match(/- uses: actions\/checkout@v4\n.*\n.*\n/g) ?? [];
+    expect(checkouts.length).toBe((release.match(/actions\/checkout@/g) ?? []).length);
+    for (const c of checkouts) expect(c).toMatch(/- uses: actions\/checkout@v4\n {8}with:\n {10}persist-credentials: false\n/);
+    // The one third-party action that gets the write token is pinned to a commit.
+    expect(release).toMatch(/softprops\/action-gh-release@[0-9a-f]{40} # v2\.\d+\.\d+\n/);
+  });
+
   it("publishes the binaries, the app and SHA256SUMS with contents: write", () => {
     expect(release).toMatch(/permissions:\n\s+contents: write/);
-    expect(release).toContain("softprops/action-gh-release@v2");
+    expect(release).toContain("softprops/action-gh-release@");
     expect(release).toContain("sha256sum lu-minal-* > SHA256SUMS");
     expect(release).toContain("lu-minal-macos-app.zip");
     expect(release).toContain("lu-minal-macos-app.dmg");
@@ -245,6 +262,63 @@ describe("the release workflow", () => {
     expect(ci).toContain("oven-sh/setup-bun@v2");
     expect(ci).not.toMatch(/\t/);
     expect(release).not.toMatch(/\t/);
+  });
+});
+
+describe("the install instructions", () => {
+  /** Every file that tells users how to install lu-minal, plus the sources (hints, help texts). */
+  function instructionFiles(): string[] {
+    const out = ["README.md", "install.sh", "install.ps1", "linux/install-desktop.sh", "macos/README.md"];
+    const walk = (rel: string, keep: (name: string) => boolean) => {
+      for (const e of fs.readdirSync(path.join(ROOT, rel), { withFileTypes: true })) {
+        const r = `${rel}/${e.name}`;
+        if (e.isDirectory()) walk(r, keep);
+        else if (keep(e.name)) out.push(r);
+      }
+    };
+    walk("docs", (n) => n.endsWith(".md"));
+    walk("macos/Sources", (n) => n.endsWith(".swift"));
+    walk("src", (n) => /\.tsx?$/.test(n));
+    return out;
+  }
+
+  it("never send anyone to the npm registry, where lu-minal is not published", () => {
+    // npm refuses the name (it is "luminal" without the dash, which exists), so v0.1.0 has no npm package.
+    for (const file of instructionFiles()) {
+      expect(read(file), file).not.toMatch(/npm (i|install) (-g|--global) lu-minal|npx lu-minal/);
+    }
+  });
+
+  it("offer a build from source instead", () => {
+    expect(read("README.md")).toContain(
+      "| **From source** (any OS, Node 22+) | `git clone https://github.com/Luna-OS/lu-minal && cd lu-minal && npm ci && npm run build && npm link` |",
+    );
+    expect(read("docs", "install.md")).toContain("npm link");
+    for (const file of ["install.sh", "install.ps1", "linux/install-desktop.sh", "macos/Sources/LuMinal/Launcher.swift", "macos/README.md"]) {
+      expect(read(file), file).toMatch(/https:\/\/github\.com\/(Luna-OS\/lu-minal|\$REPO)#from-source/);
+    }
+    // The README's "From source" section the installers point to.
+    expect(read("README.md")).toMatch(/\n#+ From source\n/);
+  });
+
+  it("build dist/ whenever a package is made (npm pack, npm publish)", () => {
+    const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string>; bin: Record<string, string>; files: string[] };
+    expect(pkg.scripts.prepack).toBe("npm run build");
+    expect(pkg.bin["lu-minal"]).toBe("dist/cli.js");
+    expect(pkg.files).toContain("dist");
+  });
+});
+
+describe("the docs", () => {
+  it("link only to files that exist", () => {
+    const docs = ["README.md", "macos/README.md", ...fs.readdirSync(path.join(ROOT, "docs")).filter((n) => n.endsWith(".md")).map((n) => `docs/${n}`)];
+    for (const doc of docs) {
+      for (const [, target] of read(doc).matchAll(/\]\(([^)\s]+)\)/g)) {
+        if (/^[a-z]+:/i.test(target) || target.startsWith("#")) continue;
+        const file = path.join(ROOT, path.dirname(doc), decodeURIComponent(target.split("#")[0]));
+        expect(fs.existsSync(file), `${doc} links to ${target}`).toBe(true);
+      }
+    }
   });
 });
 

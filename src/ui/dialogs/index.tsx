@@ -340,12 +340,28 @@ function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
   const [confirmReset, setConfirmReset] = React.useState(false);
   const c = hub.theme.colors;
   const s = hub.stats.summary();
-  const tok = (u: { input: number; output: number }) => formatTokens(u.input + u.output).padStart(8);
+  // A table: label, total, read, written, cost, turns.
   const cut = (t: string, w: number) => (t.length > w ? `${t.slice(0, w - 1)}…` : t);
-  const row = (label: string, u: { input: number; output: number; costUsd: number; turns: number }, w = 26) =>
-    `${cut(label, w).padEnd(w)}${tok(u)}  ↑ ${formatTokens(u.input).padStart(7)}  ↓ ${formatTokens(u.output).padStart(7)}  ${formatCost(u.costUsd).padStart(9)}  ${String(u.turns).padStart(5)} turns`;
+  const W = 26;
+  const cols = (label: string, a: string, b: string, d: string, e: string, f: string) =>
+    `${cut(label, W).padEnd(W)}${a.padStart(9)}${b.padStart(9)}${d.padStart(9)}${e.padStart(10)}${f.padStart(7)}`;
+  const row = (label: string, u: { input: number; output: number; costUsd: number; turns: number }) =>
+    cols(label, formatTokens(u.input + u.output), formatTokens(u.input), formatTokens(u.output), formatCost(u.costUsd), String(u.turns));
+  const header = { text: cols("", "total", "read", "written", "cost", "turns"), color: c.faint };
+  const section = <T extends { input: number; output: number; costUsd: number; turns: number }>(
+    title: string,
+    list: T[],
+    label: (x: T) => string,
+    limit: number,
+  ): Array<string | { text: string; color?: string }> => [
+    "",
+    { text: title, color: c.accent },
+    ...(list.length ? list.slice(0, limit).map((x) => row(label(x), x)) : [{ text: "–", color: c.faint }]),
+    ...(list.length > limit ? [{ text: `… and ${list.length - limit} more`, color: c.faint }] : []),
+  ];
   const lines: Array<string | { text: string; color?: string }> = [
-    { text: "Tokens (↑ read, ↓ written)", color: c.accent },
+    { text: "Tokens", color: c.accent },
+    header,
     row("Today", s.today),
     row("Last 7 days", s.week),
     row("Last 30 days", s.month),
@@ -354,16 +370,9 @@ function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
     "",
     { text: "Last 14 days", color: c.accent },
     { text: `${sparkline(s.daily.map((d) => d.input + d.output))}   ${s.daily[0]?.day ?? ""} → today`, color: c.accent2 },
-    "",
-    { text: "By model", color: c.accent },
-    ...s.models.slice(0, 8).map((m) => row(m.model, m)),
-    ...(s.models.length > 8 ? [{ text: `… and ${s.models.length - 8} more`, color: c.faint }] : []),
-    "",
-    { text: "By provider", color: c.accent },
-    ...s.providers.map((p) => row(p.provider, p)),
-    "",
-    { text: "By project", color: c.accent },
-    ...s.projects.slice(0, 6).map((p) => row(p.name, p)),
+    ...section("By model", s.models, (m) => m.model, 8),
+    ...section("By provider", s.providers, (p) => p.provider, 8),
+    ...section("By project", s.projects, (p) => p.name, 6),
     "",
     {
       text: `Agents started: ${Object.entries(s.agents).map(([k, v]) => `${k} ${v}`).join(" · ") || "none"}`,

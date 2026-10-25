@@ -13,6 +13,13 @@ import type { Row, Seg } from "../log-lines.js";
 import { RowView } from "../components/RowView.js";
 import { DialogBox } from "./ListDialog.js";
 
+/** 1_000_000 → "1M", 262_144 → "262k", 1_048_576 → "1M". */
+export function formatWindow(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 100_000) / 10}M`;
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}k`;
+  return String(tokens);
+}
+
 /** "in 4h 56m" within a day, otherwise "Fri 01:00" (local time). */
 export function formatResetAt(at: number, now = Date.now()): string {
   const ms = at - now;
@@ -105,7 +112,7 @@ export function usageRows(hub: Hub, width: number, now = Date.now()): Row[] {
     const windowSize = contextWindowOf(hub, a);
     const title = `${a.name} · ${shortModel(a)}${projects.length > 1 ? ` · ${p.name}` : ""}`;
     if (windowSize) {
-      rows.push(...meter(`ctx:${a.id}`, title, a.contextTokens / windowSize, `${a.contextTokens.toLocaleString("en-US")} of ${formatTokens(windowSize).replace(/\.0(?=[kM])/, "")} tokens`, width, theme));
+      rows.push(...meter(`ctx:${a.id}`, title, a.contextTokens / windowSize, `${a.contextTokens.toLocaleString("en-US")} of ${formatWindow(windowSize)} tokens`, width, theme));
     } else {
       rows.push(
         { key: `ctx:${a.id}:t`, segs: [{ text: title, color: c.text, bold: true }] },
@@ -126,7 +133,18 @@ export function usageRows(hub: Hub, width: number, now = Date.now()): Row[] {
     } else if (!acc.loggedIn) {
       rows.push({ key: "plan:x", segs: [{ text: "Not signed in - /login claude", color: c.warning }] }, { key: "plan:s", segs: [] });
     } else if (!usage || (!usage.session && !usage.week)) {
-      rows.push({ key: "plan:x", segs: [{ text: hub.usageError ?? "Reading the limits… (r refreshes)", color: c.faint }] }, { key: "plan:s", segs: [] });
+      rows.push(
+        {
+          key: "plan:x",
+          segs: [
+            {
+              text: hub.usageError ?? "The limits show up with a Claude agent's first answer (Claude Code reports them with every reply).",
+              color: c.faint,
+            },
+          ],
+        },
+        { key: "plan:s", segs: [] },
+      );
     } else {
       if (usage.session) rows.push(...windowMeter("plan:session", "Current session", usage.session, width, theme, now));
       if (usage.week || usage.models.length) rows.push(heading("weekly", "Weekly limits", theme));
@@ -206,9 +224,9 @@ export function UsageDialog({ hub, onClose }: { hub: Hub; onClose: () => void })
   const size = useWindowSize();
   const [scroll, setScroll] = useState(0);
   const width = Math.min(84, size.columns - 2);
-  const height = Math.max(10, size.rows - 2);
   const inner = width - 4;
   const rows = usageRows(hub, inner);
+  const height = Math.min(Math.max(10, rows.length + 4), Math.max(8, size.rows - 4));
   const room = height - 4;
   const max = Math.max(0, rows.length - room);
   const top = Math.min(scroll, max);

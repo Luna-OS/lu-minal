@@ -60,12 +60,16 @@ export function statusSegs(agent: Agent, project: Project, theme: Theme, frame: 
       ];
     case "starting":
       return [{ text: `${SPINNER[frame % SPINNER.length]} starting ${agent.modelLabel}…`, color: c.faint }];
-    case "error":
+    case "error": {
+      // The error itself is the last log row already; the status line only says what to do.
+      const last = agent.log[agent.log.length - 1];
+      const shown = last?.kind === "error";
       return [
         { text: "✗ ", color: c.error },
-        { text: agent.lastError ? firstLine(agent.lastError) : "error", color: c.error },
-        { text: " · send a message to retry", color: c.faint },
+        { text: shown || !agent.lastError ? "needs attention" : firstLine(agent.lastError), color: c.error },
+        { text: " · send a message to retry · ctrl+o model", color: c.faint },
       ];
+    }
     case "stopped":
       return [{ text: "■ stopped", color: c.faint }];
     default: {

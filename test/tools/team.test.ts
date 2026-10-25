@@ -70,13 +70,13 @@ describe("team tools", () => {
       const res = await call(sendMessageTool, vega, { to: "lead", text: "Room is done, see src/room.ts" });
       expect(res.isError).toBeFalsy();
       expect(res.content).toBe("Delivered to luna.");
-      expect(res.display).toMatchObject({ target: "-> luna", detail: "delivered" });
+      expect(res.display).toMatchObject({ target: "→ luna", detail: "delivered" });
       expect(drivers.get("luna")!.inputs).toEqual([{ from: "vega", text: "Room is done, see src/room.ts" }]);
       expect(project.messages.at(-1)).toMatchObject({ from: "vega", to: "luna" });
 
       await call(sendMessageTool, luna, { to: "@Vega", text: "thanks, now the tests" });
       expect(drivers.get("vega")!.inputs.at(-1)).toEqual({ from: "luna", text: "thanks, now the tests" });
-      expect(sendMessageTool.describe({ to: "vega", text: "x" }, {} as ToolContext)).toEqual({ verb: "message", target: "-> vega" });
+      expect(sendMessageTool.describe({ to: "vega", text: "x" }, {} as ToolContext)).toEqual({ verb: "message", target: "→ vega" });
     });
 
     it("broadcasts with * to everyone but the sender", async () => {

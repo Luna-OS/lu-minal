@@ -56,7 +56,7 @@ export const sendMessageTool = defineTool<SendArgs>({
   },
   risk: "read",
   mcp: true,
-  describe: (args) => ({ verb: "message", target: `-> ${text(args.to) || "?"}` }),
+  describe: (args) => ({ verb: "message", target: `→ ${text(args.to) || "?"}` }),
   async run(args, ctx) {
     const to = text(args.to).replace(/^@/, "");
     const body = text(args.text);
@@ -74,7 +74,7 @@ export const sendMessageTool = defineTool<SendArgs>({
     }
     return {
       content: `Delivered to ${got.join(", ")}.`,
-      display: { target: `-> ${got.length === 1 ? got[0] : to}`, detail: got.length === 1 ? "delivered" : `delivered to ${got.length}` },
+      display: { target: `→ ${got.length === 1 ? got[0] : to}`, detail: got.length === 1 ? "delivered" : `delivered to ${got.length}` },
     };
   },
 });

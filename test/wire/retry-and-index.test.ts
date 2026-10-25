@@ -143,3 +143,21 @@ describe("createChatClient", () => {
     expect(typeof parseSSE).toBe("function");
   });
 });
+
+describe("quota exhaustion", () => {
+  it("does not retry a free-tier quota that is used up", async () => {
+    const { ProviderError } = await import("../../src/providers/types.js");
+    const { isQuotaExhausted, isRetryable } = await import("../../src/providers/retry.js");
+    const free = new ProviderError(
+      "Free usage limit reached. Free models work in OpenCode (https://opencode.ai)",
+      429,
+      null,
+      '{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}',
+    );
+    expect(isQuotaExhausted(free)).toBe(true);
+    expect(isRetryable(free)).toBe(false);
+    const busy = new ProviderError("Too many requests", 429, 1000);
+    expect(isQuotaExhausted(busy)).toBe(false);
+    expect(isRetryable(busy)).toBe(true);
+  });
+});

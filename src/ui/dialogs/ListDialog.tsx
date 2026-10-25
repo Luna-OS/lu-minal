@@ -218,7 +218,10 @@ export function ListDialog(props: ListDialogProps) {
   });
 
   const width = Math.min(props.width ?? 84, size.columns - 2);
-  const height = Math.min(Math.max(12, selectable.length + 7), Math.max(8, size.rows - 4), 30);
+  // Rows the list needs: every item plus a heading per group, plus the chrome around it.
+  const groups = new Set(filtered.map((i) => i.group).filter(Boolean)).size;
+  const chrome = 4 + (props.filter === false && !props.onQuery ? 0 : 1) + (props.hints ? 1 : 0) + (props.loading || props.error ? 1 : 0);
+  const height = Math.min(Math.max(10, filtered.length + groups + chrome), Math.max(8, size.rows - 4), 32);
   const innerW = width - 4;
   const listH = height - 2 - 1 - (props.filter === false && !props.onQuery ? 0 : 1) - (props.hints ? 1 : 0) - 1;
 

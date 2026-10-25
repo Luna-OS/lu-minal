@@ -6,7 +6,7 @@ import type { Agent, AgentDriver, AgentInput } from "../../core/agent.js";
 import type { AgentStatus } from "../../core/types.js";
 import type { Project } from "../../core/project.js";
 import type { ResolvedModel } from "../../providers/models.js";
-import { abortError, streamWithRetry, type RetryOptions } from "../../providers/retry.js";
+import { abortError, isQuotaExhausted, streamWithRetry, type RetryOptions } from "../../providers/retry.js";
 import {
   ProviderError,
   type AssistantMessage,
@@ -104,9 +104,11 @@ export function describeError(err: unknown): string {
             ? " Check the model id (/model)."
             : err.status === 413 || /context|too long|maximum.*tokens/i.test(err.message)
               ? " The conversation may be too long for this model; /clear it or pick a model with a bigger context."
-              : err.status === 429
-                ? " Rate limited; try again in a moment."
-                : "";
+              : err.status === 429 && isQuotaExhausted(err)
+                ? " The free quota for your connection is used up. Try OpenRouter's free models (/login openrouter), add a key for this provider, or pick another model (/model)."
+                : err.status === 429
+                  ? " Rate limited; try again in a moment."
+                  : "";
     return `${err.status} ${err.message}${hint}`;
   }
   if (err instanceof Error) return err.message || err.name;

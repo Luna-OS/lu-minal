@@ -102,6 +102,8 @@ export function MessageDialog(props: {
   lines: Array<string | { text: string; color?: string }>;
   hints?: string;
   hintsColor?: string;
+  /** Mention the arrow keys when the text scrolls (off while onKey takes every key). */
+  scrollHint?: boolean;
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
@@ -128,7 +130,7 @@ export function MessageDialog(props: {
   });
   const hints = props.hints ?? "enter / esc close";
   return (
-    <DialogBox theme={props.theme} width={width} height={height} title={props.title} hints={maxTop ? `↑↓ scroll · ${hints}` : hints} hintsColor={props.hintsColor}>
+    <DialogBox theme={props.theme} width={width} height={height} title={props.title} hints={maxTop && props.scrollHint !== false ? `↑↓ scroll · ${hints}` : hints} hintsColor={props.hintsColor}>
       {rows.slice(first, first + room).map((r, i) => (
         <Text key={first + i} color={r.color ?? c.muted} wrap="truncate">
           {r.text || " "}

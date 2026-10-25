@@ -460,6 +460,8 @@ function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
       lines={lines}
       hints={confirmReset ? "Reset all statistics? y = yes, any other key = no" : "x reset · enter / esc close"}
       hintsColor={confirmReset ? c.warning : undefined}
+      // While the question shows, every key answers it: the arrows don't scroll then.
+      scrollHint={!confirmReset}
       onKey={(input) => {
         if (confirmReset) {
           setConfirmReset(false);

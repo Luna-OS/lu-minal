@@ -501,14 +501,13 @@ export class AcpDriver implements AgentDriver {
   /** Usage and the stop reason of a finished prompt; a refusal ends the turn as an error. */
   private promptResult(result: unknown): "idle" | "error" {
     const r = isObj(result) ? result : {};
-    const usage = isObj(r.usage) ? r.usage : null;
-    if (usage) {
-      const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
-      const input = n(usage.inputTokens) + n(usage.cachedReadTokens) + n(usage.cachedWriteTokens);
-      const output = n(usage.outputTokens) + n(usage.thoughtTokens);
-      // The prompt's turn (the session's cost arrives separately, in usage_update).
-      if (input || output) this.agent.addUsage({ input, output, turn: true });
-    }
+    const usage = isObj(r.usage) ? r.usage : {};
+    const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+    const input = n(usage.inputTokens) + n(usage.cachedReadTokens) + n(usage.cachedWriteTokens);
+    const output = n(usage.outputTokens) + n(usage.thoughtTokens);
+    // The prompt's turn, with or without token counts (some agents report only their cost, which
+    // arrives separately in usage_update).
+    this.agent.addUsage({ input, output, turn: true });
     const note = stopReasonNote(r.stopReason, this.name);
     if (!note) return "idle";
     if (note.level === "error") {

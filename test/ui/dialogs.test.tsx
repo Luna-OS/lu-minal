@@ -91,6 +91,16 @@ describe("the statistics dialog", () => {
     expect(lines.filter((l) => /│ –\s+│/.test(l)).length).toBeGreaterThan(0);
   });
 
+  it("doesn't offer the arrows while the reset question takes every key", async () => {
+    const t = setup();
+    t.launchers.stats();
+    const r = show(t.ui, { columns: 80, rows: 24 });
+    await r.waitFor((s) => s.includes("↑↓ scroll"), "the scroll hint");
+    await r.press("x");
+    await r.waitFor((s) => s.includes("Reset all statistics?"), "the reset question");
+    expect(r.screen()).not.toContain("↑↓ scroll");
+  });
+
   it("keeps every model, provider and project row at 120x36, each on its own line", async () => {
     const t = setup();
     fillStats(t.hub);

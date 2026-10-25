@@ -53,7 +53,7 @@ Usage
 
 Options
   --model <provider/model>       the lead's model (e.g. claude-code/opus, opencode/big-pickle)
-  --theme <name>                 start with this theme (default: moon)
+  --theme <name>                 use this theme for this run (default: the saved theme)
   --no-sky                       no animated sky
   --offline                      don't download the model catalog
   -v, --version                  print the version

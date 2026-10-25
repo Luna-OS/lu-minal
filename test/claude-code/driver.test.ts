@@ -597,6 +597,10 @@ describe("ClaudeCodeDriver", () => {
     t.agent.deliver({ from: "you", text: `replay 1 ${plain}` });
     await t.idle();
     expect(turns.filter(Boolean)).toHaveLength(4);
+    // An error before any model request (all-zero usage, nothing streamed) is no turn.
+    t.agent.deliver({ from: "you", text: "fail-early" });
+    await waitFor(() => t.agent.status !== "working" && t.agent.turnStartedAt === null, "the failed turn");
+    expect(turns.filter(Boolean)).toHaveLength(4);
   });
 
   it("replays real permission prompts and an interrupted turn as tool rows", async () => {

@@ -820,7 +820,9 @@ export class ClaudeCodeDriver implements AgentDriver {
         ? { input: ev.usage.input + ev.usage.cacheRead + ev.usage.cacheWrite, output: ev.usage.output }
         : {};
     // Without partial messages, the result's usage is the only report of the turn.
-    agent.addUsage({ ...usage, costUsd: cost, turn: !this.streamedUsage && Boolean(ev.usage) });
+    // An error before any model request (sign-in, API) reports all zeros: that is no turn.
+    const counted = ev.usage ? ev.usage.input + ev.usage.output + ev.usage.cacheRead + ev.usage.cacheWrite > 0 : false;
+    agent.addUsage({ ...usage, costUsd: cost, turn: !this.streamedUsage && counted });
     this.streamedUsage = false;
     if (ev.sessionId) agent.sessionId = ev.sessionId;
 

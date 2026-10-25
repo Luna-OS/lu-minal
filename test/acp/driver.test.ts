@@ -168,6 +168,9 @@ describe("AcpDriver", () => {
     await t.say("hello");
     expect(turns.length).toBeGreaterThan(1);
     expect(turns.filter(Boolean)).toHaveLength(1);
+    // A prompt answered without token counts is a turn all the same.
+    await t.say("max");
+    expect(turns.filter(Boolean)).toHaveLength(2);
   });
 
   it("runs a turn: handshake, session with lu-minal's MCP server, streamed text, usage", async () => {

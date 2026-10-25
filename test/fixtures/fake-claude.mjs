@@ -9,6 +9,7 @@
 //   "luminal"                a call of lu-minal's own MCP tool send_message
 //   "deny"                   a result that reports a permission denial
 //   "fail"                   an error result (not signed in)
+//   "fail-early"             an error result with all-zero usage and nothing streamed (no model request)
 //   "slow" / "hang"          starts streaming and waits; "slow" stops on an interrupt, "hang" never
 //                            (SIGINT ends a "hang" process, as Node does by default)
 //   "sigint"                 like "hang", but SIGINT ends the turn (an error result) and the
@@ -268,6 +269,10 @@ async function handleUser(content) {
         result: "I could not run that.",
         permission_denials: [{ tool_name: "Bash", tool_use_id: "toolu_other", tool_input: { command: "rm -rf build" } }],
       });
+      return;
+    }
+    case "fail-early": {
+      result({ subtype: "error_during_execution", is_error: true, result: "API Error: 401", usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 } });
       return;
     }
     case "fail": {

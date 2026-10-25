@@ -9,7 +9,7 @@ import { installPlugin, robloxPluginsDir } from "../../roblox/install.js";
 import { openExternal } from "../../platform/process.js";
 import { tildify } from "../../platform/paths.js";
 import { COMMANDS, type CommandContext, type DialogLaunchers } from "../commands.js";
-import { formatCost, formatElapsed, formatTokens } from "../format.js";
+import { formatCost, formatElapsed, formatTokens, sparkline } from "../format.js";
 import type { UiServices } from "../store.js";
 import { formatResetIn } from "../components/MoonGauge.js";
 import { ConfirmDialog, InputDialog, MessageDialog } from "./InputDialog.js";
@@ -171,6 +171,12 @@ export function createLaunchers(
             />
           );
         },
+      });
+    },
+    stats: () => {
+      ui.openDialog({
+        id: "stats",
+        render: (close) => <StatsDialog hub={hub} onClose={close} />,
       });
     },
     roblox: () => {
@@ -380,4 +386,68 @@ export function createLaunchers(
     },
   };
   return launchers;
+}
+
+function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
+  const [confirmReset, setConfirmReset] = React.useState(false);
+  const c = hub.theme.colors;
+  const s = hub.stats.summary();
+  const tok = (u: { input: number; output: number }) => formatTokens(u.input + u.output).padStart(8);
+  const cut = (t: string, w: number) => (t.length > w ? `${t.slice(0, w - 1)}…` : t);
+  const row = (label: string, u: { input: number; output: number; costUsd: number; turns: number }, w = 26) =>
+    `${cut(label, w).padEnd(w)}${tok(u)}  ↑ ${formatTokens(u.input).padStart(7)}  ↓ ${formatTokens(u.output).padStart(7)}  ${formatCost(u.costUsd).padStart(9)}  ${String(u.turns).padStart(5)} turns`;
+  const lines: Array<string | { text: string; color?: string }> = [
+    { text: "Tokens (↑ read, ↓ written)", color: c.accent },
+    row("Today", s.today),
+    row("Last 7 days", s.week),
+    row("Last 30 days", s.month),
+    { text: row("All time", s.allTime), color: c.text },
+    { text: s.since ? `counting since ${s.since}` : "nothing counted yet", color: c.faint },
+    "",
+    { text: "Last 14 days", color: c.accent },
+    { text: `${sparkline(s.daily.map((d) => d.input + d.output))}   ${s.daily[0]?.day ?? ""} → today`, color: c.accent2 },
+    "",
+    { text: "By model", color: c.accent },
+    ...s.models.slice(0, 8).map((m) => row(m.model, m)),
+    ...(s.models.length > 8 ? [{ text: `… and ${s.models.length - 8} more`, color: c.faint }] : []),
+    "",
+    { text: "By provider", color: c.accent },
+    ...s.providers.map((p) => row(p.provider, p)),
+    "",
+    { text: "By project", color: c.accent },
+    ...s.projects.slice(0, 6).map((p) => row(p.name, p)),
+    "",
+    {
+      text: `Agents started: ${Object.entries(s.agents).map(([k, v]) => `${k} ${v}`).join(" · ") || "none"}`,
+      color: c.muted,
+    },
+    { text: `Lines written by agents: +${s.lines.added.toLocaleString("en-US")} -${s.lines.removed.toLocaleString("en-US")}`, color: c.muted },
+  ];
+  if (confirmReset) {
+    lines.push("", { text: "Reset all statistics? y = yes, any other key = no", color: c.warning });
+  }
+  return (
+    <MessageDialog
+      theme={hub.theme}
+      title="Statistics"
+      lines={lines}
+      hints="x reset · enter / esc close"
+      onKey={(input) => {
+        if (confirmReset) {
+          setConfirmReset(false);
+          if (input === "y") {
+            hub.stats.reset();
+            hub.toast("Statistics reset.", "info");
+          }
+          return true;
+        }
+        if (input === "x") {
+          setConfirmReset(true);
+          return true;
+        }
+        return false;
+      }}
+      onClose={onClose}
+    />
+  );
 }

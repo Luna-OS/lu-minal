@@ -27,11 +27,12 @@ import type { Theme } from "../themes/types.js";
 import { detectShell } from "../tools/exec.js";
 import { toolsForAgent } from "../tools/index.js";
 import type { ToolServices } from "../tools/types.js";
-import { Agent } from "./agent.js";
+import { Agent, type SavedAgentState } from "./agent.js";
 import { rememberRecent, saveConfig, type Config } from "./config.js";
 import { newId, Notifier } from "./emitter.js";
 import { Project, type ProjectRuntime } from "./project.js";
-import type { ClaudeAccount, PermissionMode, PlanUsage, ProviderBalance } from "./types.js";
+import { StatsStore } from "./stats.js";
+import type { ClaudeAccount, PermissionMode, PlanUsage, ProviderBalance, TaskItem, TeamMessage } from "./types.js";
 
 export type ToastLevel = "info" | "success" | "warning" | "error";
 
@@ -63,13 +64,20 @@ export interface HubOptions {
   servers?: boolean;
 }
 
-interface SavedSession {
+/** What survives closing lu-minal: every tab, its agents with their logs and conversations. */
+export interface SavedSession {
+  version: 2;
+  savedAt: number;
   active: number;
   projects: Array<{
     cwd: string;
     name: string;
     origin: string;
     permissionMode: PermissionMode;
+    createdAt: number;
+    focused: string | null;
+    tasks: TaskItem[];
+    messages: TeamMessage[];
     agents: Array<{
       name: string;
       role: "lead" | "worker";
@@ -77,6 +85,10 @@ interface SavedSession {
       model: ModelRef;
       sessionId: string | null;
       instructions: string | null;
+      spawnedBy: string;
+      state: SavedAgentState;
+      /** The native driver's conversation (Claude Code resumes by sessionId instead). */
+      conversation: unknown;
     }>;
   }>;
 }
@@ -90,6 +102,7 @@ export class Hub implements ProjectRuntime {
   readonly roblox: RobloxBridge;
   readonly mcp: McpServer;
   readonly stateDir: string;
+  readonly stats: StatsStore;
 
   projects: Project[] = [];
   activeIndex = 0;
@@ -113,6 +126,9 @@ export class Hub implements ProjectRuntime {
     this.auth = opts.auth;
     this.themes = opts.themes;
     this.stateDir = opts.stateDir ?? defaultStateDir();
+    this.stats = new StatsStore(opts.configPath ? path.join(this.stateDir, "stats.json") : null);
+    // Every change may be worth saving; the save itself is debounced.
+    this.notifier.subscribe(() => this.scheduleSave());
     this.registry = new ProviderRegistry({
       catalog: { providers: [], models: [], fetchedAt: null, source: "fallback" },
       auth: this.auth,
@@ -199,7 +215,9 @@ export class Hub implements ProjectRuntime {
     this.disposed = true;
     for (const t of this.timers) clearInterval(t);
     if (this.saveTimer) clearTimeout(this.saveTimer);
+    // Save before the drivers stop, while their conversations are still there.
     this.saveSession();
+    this.stats.flush();
     await Promise.all(this.projects.map((p) => p.dispose().catch(() => undefined)));
     await Promise.all([this.mcp.stop().catch(() => undefined), this.roblox.stop().catch(() => undefined)]);
   }
@@ -273,6 +291,7 @@ export class Hub implements ProjectRuntime {
   // ---- ProjectRuntime --------------------------------------------------------------------------
 
   async launch(project: Project, agent: Agent): Promise<void> {
+    this.watchUsage(project, agent);
     if (agent.model.provider === "claude-code") {
       const exe = findClaude(this.config.claudePath);
       if (!exe) {
@@ -310,6 +329,22 @@ export class Hub implements ProjectRuntime {
     }
     await agent.driver.start();
     this.scheduleSave();
+  }
+
+  /** Feeds an agent's usage and diffs into the statistics. */
+  private watchUsage(project: Project, agent: Agent): void {
+    if (!agent.onUsage) this.stats.agentStarted(agent.model.provider);
+    agent.onUsage = (u) =>
+      this.stats.record({
+        at: Date.now(),
+        provider: agent.model.provider,
+        model: agent.model.model,
+        project: { cwd: project.cwd, name: project.name },
+        input: u.input,
+        output: u.output,
+        costUsd: u.costUsd,
+      });
+    agent.onLines = (added, removed) => this.stats.addLines(added, removed);
   }
 
   defaultWorkerModel(project: Project, spawner: Agent | null): ModelRef {
@@ -505,73 +540,118 @@ export class Hub implements ProjectRuntime {
   }
 
   private scheduleSave(): void {
-    if (this.saveTimer || !this.opts.configPath) return;
+    if (this.saveTimer || !this.opts.configPath || this.disposed || !this.ready) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       this.saveSession();
-    }, 1500);
+    }, 4000);
     this.saveTimer.unref();
   }
 
-  /** Remembers the open tabs and their agents for `lu-minal --continue`. */
-  saveSession(): void {
-    if (!this.opts.configPath || !this.projects.length) return;
-    const session: SavedSession = {
+  /** The session as it would be saved now. */
+  snapshotSession(): SavedSession {
+    return {
+      version: 2,
+      savedAt: Date.now(),
       active: this.activeIndex,
       projects: this.projects.map((p) => ({
         cwd: p.cwd,
         name: p.name,
         origin: p.origin,
         permissionMode: p.permissionMode,
-        agents: p.agents.map((a) => ({
-          name: a.name,
-          role: a.role,
-          label: a.label,
-          model: a.model,
-          sessionId: a.sessionId,
-          instructions: a.instructions,
-        })),
+        createdAt: p.createdAt,
+        focused: p.focused?.name ?? null,
+        tasks: p.tasks,
+        messages: p.messages.slice(-100),
+        agents: p.agents.map((a) => {
+          let conversation: unknown = null;
+          try {
+            conversation = a.driver?.snapshot?.() ?? null;
+          } catch {
+            conversation = null;
+          }
+          return {
+            name: a.name,
+            role: a.role,
+            label: a.label,
+            model: a.model,
+            sessionId: a.sessionId,
+            instructions: a.instructions,
+            spawnedBy: a.spawnedBy,
+            state: a.saveState(),
+            conversation,
+          };
+        }),
       })),
     };
+  }
+
+  /** Writes the open tabs, their agents, logs and conversations, so closing lu-minal loses nothing. */
+  saveSession(): void {
+    if (!this.opts.configPath || !this.ready) return;
     try {
       fs.mkdirSync(this.stateDir, { recursive: true });
-      fs.writeFileSync(this.sessionFile(), `${JSON.stringify(session, null, 2)}\n`);
+      const file = this.sessionFile();
+      const tmp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.snapshotSession()));
+      fs.renameSync(tmp, file);
     } catch {
-      // Not worth bothering the user about.
+      // Not worth bothering the user about; the next change tries again.
     }
   }
 
-  /** Reopens the tabs of the last session. Returns how many came back. */
-  async restoreSession(): Promise<number> {
-    let saved: SavedSession;
+  /** The saved session, or null when there is none (or it can't be read). */
+  readSavedSession(): SavedSession | null {
     try {
-      saved = JSON.parse(fs.readFileSync(this.sessionFile(), "utf8")) as SavedSession;
+      const saved = JSON.parse(fs.readFileSync(this.sessionFile(), "utf8")) as SavedSession;
+      return saved && Array.isArray(saved.projects) ? saved : null;
     } catch {
-      return 0;
+      return null;
     }
+  }
+
+  /**
+   * Reopens the tabs of the last session: every agent comes back with its log, counters and
+   * conversation (Claude Code agents resume their session). Returns how many tabs came back.
+   */
+  async restoreSession(saved: SavedSession | null = this.readSavedSession()): Promise<number> {
+    if (!saved) return 0;
     let restored = 0;
-    for (const p of saved.projects ?? []) {
-      if (!p.cwd || !fs.existsSync(p.cwd)) continue;
+    for (const p of saved.projects) {
+      if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => x.cwd === path.resolve(p.cwd))) continue;
       const project = new Project(
         { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode },
         this.notifier,
         this,
       );
+      if (p.createdAt) project.createdAt = p.createdAt;
+      project.tasks = Array.isArray(p.tasks) ? p.tasks : [];
+      project.messages = Array.isArray(p.messages) ? p.messages : [];
       this.projects.push(project);
       const lead = p.agents.find((a) => a.role === "lead");
       const ordered = lead ? [lead, ...p.agents.filter((a) => a !== lead)] : p.agents;
       for (const a of ordered) {
         const agent = new Agent(
-          { name: a.name, role: a.role, label: a.label ?? undefined, model: a.model, instructions: a.instructions ?? undefined },
+          {
+            name: a.name,
+            role: a.role,
+            label: a.label ?? undefined,
+            model: a.model,
+            instructions: a.instructions ?? undefined,
+            spawnedBy: a.spawnedBy,
+          },
           this.notifier,
           project.permissionMode,
         );
-        agent.sessionId = a.sessionId;
+        agent.sessionId = a.sessionId ?? null;
+        if (a.state) agent.restoreState(a.state);
+        // A placeholder sink tells launch() this agent was counted as started in an earlier run.
+        agent.onUsage = () => undefined;
         project.agents.push(agent);
-        project.focusedId ??= agent.id;
+        if (a.name === p.focused || !project.focusedId) project.focusedId = agent.id;
         try {
           await this.launch(project, agent);
-          if (a.sessionId) agent.info("Resumed the earlier conversation.");
+          if (a.conversation && agent.driver?.restore) agent.driver.restore(a.conversation);
         } catch (err) {
           agent.error(errText(err));
         }

@@ -56,11 +56,15 @@ interface FileState {
 }
 
 /**
- * The auth file. Every call reads the file again, so a sign-in from another lu-minal process (or
- * `lu-minal login` in another terminal) is seen at once. A file that can't be parsed reads as
- * empty, and is copied to `auth.json.bak` (or a timestamped .bak) before anything overwrites it.
+ * The auth file. Every call checks the file (a cheap stat; it is re-read when it changed), so a
+ * sign-in from another lu-minal process (or `lu-minal login` in another terminal) is seen at once.
+ * A file that can't be parsed reads as empty, and is copied to `auth.json.bak` (or a timestamped
+ * .bak) before anything overwrites it.
  */
 export class AuthStore {
+  /** The last parse, keyed by the file's identity, size and times. */
+  private cache: { stamp: string; state: FileState } | null = null;
+
   constructor(readonly file: string) {}
 
   /** The store in lu-minal's config dir. */
@@ -68,13 +72,29 @@ export class AuthStore {
     return new AuthStore(authFile());
   }
 
+  /** The file's content. Callers must not change the returned data (update() works on a copy). */
   private read(): FileState {
+    let stamp: string;
+    try {
+      const st = fs.statSync(this.file);
+      stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      this.cache = null;
+      return { data: {}, broken: code !== "ENOENT" && code !== "ENOTDIR" };
+    }
+    if (this.cache?.stamp === stamp) return this.cache.state;
+    const state = this.parse();
+    this.cache = { stamp, state };
+    return state;
+  }
+
+  private parse(): FileState {
     let text: string;
     try {
       text = fs.readFileSync(this.file, "utf8");
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      return { data: {}, broken: code !== "ENOENT" && code !== "ENOTDIR" };
+    } catch {
+      return { data: {}, broken: true };
     }
     if (!text.trim()) return { data: {}, broken: false };
     try {
@@ -97,6 +117,7 @@ export class AuthStore {
   }
 
   private write(data: Record<string, unknown>): void {
+    this.cache = null;
     const dir = path.dirname(this.file);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const text = `${JSON.stringify(data, null, 2)}\n`;
@@ -116,8 +137,9 @@ export class AuthStore {
   private update(change: (data: Record<string, unknown>) => void): void {
     const state = this.read();
     if (state.broken) this.backup();
-    change(state.data);
-    this.write(state.data);
+    const data = structuredClone(state.data);
+    change(data);
+    this.write(data);
   }
 
   /** The sign-in for a provider, or null. */

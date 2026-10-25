@@ -7,8 +7,11 @@ import type { AddressInfo } from "node:net";
 import type { ProviderBalance } from "../core/types.js";
 import type { FetchLike } from "./types.js";
 
+/** The page the user approves the sign-in on. */
 export const OPENROUTER_AUTH_URL = "https://openrouter.ai/auth";
+/** Where the code from the redirect is traded for a key. */
 export const OPENROUTER_KEY_EXCHANGE_URL = "https://openrouter.ai/api/v1/auths/keys";
+/** A key's usage and limit. */
 export const OPENROUTER_KEY_INFO_URL = "https://openrouter.ai/api/v1/key";
 const DEFAULT_PORT = 3000;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -29,6 +32,7 @@ export interface OAuthLogin {
   cancel(): void;
 }
 
+/** Options for `startOpenRouterLogin`. */
 export interface OpenRouterLoginOptions {
   /** The preferred local port (default 3000); a busy one falls back to a free random port. */
   port?: number;
@@ -104,9 +108,10 @@ function listen(server: http.Server, port: number, host: string): Promise<number
 function closeServer(server: http.Server): void {
   if (!server.listening) return;
   server.close();
-  server.closeIdleConnections();
+  // Optional calls: not every runtime the binaries are built with has them.
+  server.closeIdleConnections?.();
   // A browser may hold a keep-alive socket open; don't let it keep the server around.
-  setTimeout(() => server.closeAllConnections(), 1000).unref();
+  setTimeout(() => server.closeAllConnections?.(), 1000).unref();
 }
 
 /** A late server error (a broken socket) must not crash the app. */

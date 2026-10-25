@@ -50,7 +50,7 @@ const MAX_AGENTS = 24;
 
 export class Project {
   readonly id = newId("proj");
-  readonly createdAt = Date.now();
+  createdAt = Date.now();
   name: string;
   cwd: string;
   agents: Agent[] = [];

@@ -134,6 +134,7 @@ export function Footer({ hub, project, rect }: { hub: Hub; project: Project | un
     left.push({ text: " · ", color: c.faint }, { text: `◆ studio${studio.place ? ` ${studio.place.name}` : ""}`, color: c.success });
   }
   const right: Seg[] = [
+    { text: `Σ ${formatTokens(hub.stats.totalTokens())} `, color: c.faint },
     { text: `+${formatCount(t.added)}`, color: c.success },
     { text: " ", color: c.faint },
     { text: `-${formatCount(t.removed)}`, color: c.error },

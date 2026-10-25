@@ -3,6 +3,7 @@
 import type { ModelInfo } from "./models.js";
 import type { FetchLike } from "./types.js";
 
+/** Where Ollama listens by default (its native API root, not the /v1 endpoint). */
 export const OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434";
 const TAGS_TIMEOUT_MS = 1500;
 

@@ -49,6 +49,17 @@ describe("AuthStore", () => {
     expect(a.secretFor("opencode")).toBe("two");
   });
 
+  it("sees a file an editor rewrote in place, and its deletion", () => {
+    const store = new AuthStore(file);
+    store.set("groq", { type: "api", key: "first" });
+    expect(store.secretFor("groq")).toBe("first");
+    fs.writeFileSync(file, JSON.stringify({ groq: { type: "api", key: "second-key" } }));
+    expect(store.secretFor("groq")).toBe("second-key");
+    fs.rmSync(file);
+    expect(store.secretFor("groq")).toBeNull();
+    expect(store.ids()).toEqual([]);
+  });
+
   it("refuses malformed entries", () => {
     const store = new AuthStore(file);
     expect(() => store.set("x", { type: "api", key: "" })).toThrow();

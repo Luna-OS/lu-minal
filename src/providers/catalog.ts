@@ -16,10 +16,13 @@ export interface Catalog {
   source: "network" | "cache" | "fallback";
 }
 
+/** models.dev's catalog. */
 export const MODELS_DEV_URL = "https://models.dev/api.json";
 /** The cache file's name inside the cache dir. */
 export const CATALOG_CACHE_FILE = "models-dev.json";
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** How far in the future a cache timestamp may be and still count as fresh (file times, clocks). */
+const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 /** Providers shown first in pickers, in this order (everything else follows alphabetically). */
 export const FEATURED_ORDER = [
@@ -36,8 +39,11 @@ export const FEATURED_ORDER = [
 /** How many of FEATURED_ORDER (the first ones that exist) get `featured: true`. */
 const FEATURED_COUNT = 8;
 
+/** Claude through the Claude Code CLI and the user's subscription. */
 export const CLAUDE_CODE_PROVIDER_ID = "claude-code";
+/** A local Ollama server. */
 export const OLLAMA_PROVIDER_ID = "ollama";
+/** Ollama's OpenAI-compatible endpoint on this machine. */
 export const OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1";
 /** The Claude Code CLI's model aliases, in picker order. */
 export const CLAUDE_CODE_ALIASES = ["default", "opus", "sonnet", "haiku"] as const;
@@ -369,6 +375,7 @@ export function fallbackCatalog(): Catalog {
 
 // ---- loading ------------------------------------------------------------------------------------
 
+/** Options for `loadCatalog`. */
 export interface LoadCatalogOptions {
   /** The cache dir (`cacheDir()` from src/platform/paths.ts); the file is `models-dev.json`. */
   cacheDir: string;
@@ -448,8 +455,8 @@ export async function loadCatalog(opts: LoadCatalogOptions): Promise<Catalog> {
 
   if (cached) {
     const age = now() - cached.fetchedAt;
-    // A timestamp from the future (a changed clock) counts as stale.
-    if (opts.offline || (age >= 0 && age < maxAge)) return buildCatalog(cached.data, "cache", cached.fetchedAt);
+    // A timestamp well in the future (a changed clock) counts as stale; a little skew doesn't.
+    if (opts.offline || (age > -CLOCK_SKEW_MS && age < maxAge)) return buildCatalog(cached.data, "cache", cached.fetchedAt);
   } else if (opts.offline) {
     return fallbackCatalog();
   }

@@ -28,6 +28,7 @@ export class ProviderNotReadyError extends Error {
   }
 }
 
+/** What the registry reads. `config` and `catalog` can be swapped later (setConfig / setCatalog). */
 export interface RegistryDeps {
   catalog: Catalog;
   auth: AuthStore;
@@ -129,6 +130,11 @@ function sortModels(models: ModelInfo[]): ModelInfo[] {
     .map((x) => x.m);
 }
 
+/**
+ * Providers and models with the user's sign-ins applied. It holds no state worth notifying about
+ * beyond the catalog and local model lists; whoever calls setCatalog / setLocalModels or changes
+ * auth.json should tell the UI.
+ */
 export class ProviderRegistry {
   private catalog!: Catalog;
   private catalogProviders = new Map<string, ProviderInfo>();

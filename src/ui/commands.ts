@@ -27,6 +27,7 @@ export interface DialogLaunchers {
   model(agent: Agent): void;
   theme(): void;
   usage(): void;
+  stats(): void;
   roblox(): void;
   help(): void;
   agents(): void;
@@ -116,6 +117,7 @@ export const COMMANDS: Command[] = [
     },
   },
   { name: "usage", aliases: ["limits"], description: "Plan limits, credits and token use", run: (ctx) => ctx.dialogs.usage() },
+  { name: "stats", aliases: ["statistics", "tokens"], description: "Token statistics: today, this week, all time, by model and project", run: (ctx) => ctx.dialogs.stats() },
   { name: "roblox", aliases: ["studio"], description: "Connect Roblox Studio", run: (ctx) => ctx.dialogs.roblox() },
   {
     name: "perm",

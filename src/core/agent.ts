@@ -32,7 +32,30 @@ export interface AgentDriver {
   interrupt(): void;
   /** Ends the agent for good. */
   dispose(): Promise<void>;
+  /**
+   * The conversation as JSON-safe data, saved with the session so a restart continues it (native
+   * agents; Claude Code keeps its own sessions and resumes by id).
+   */
+  snapshot?(): unknown;
+  /** Puts a saved conversation back before the first turn. */
+  restore?(state: unknown): void;
 }
+
+/** What the session file keeps of an agent. */
+export interface SavedAgentState {
+  log: LogEntry[];
+  tokensIn: number;
+  tokensOut: number;
+  contextTokens: number;
+  costUsd: number;
+  linesAdded: number;
+  linesRemoved: number;
+  busyMs: number;
+  allowed: string[];
+  createdAt: number;
+}
+
+const SAVED_LOG = 400;
 
 const MAX_LOG = 1500;
 
@@ -45,7 +68,7 @@ interface PendingApproval {
 
 export class Agent {
   readonly id: string;
-  readonly createdAt = Date.now();
+  createdAt = Date.now();
   name: string;
   role: AgentRole;
   label: string | null;
@@ -82,6 +105,10 @@ export class Agent {
   sessionId: string | null = null;
 
   driver: AgentDriver | null = null;
+
+  /** Told about every usage report and every diff (the Hub keeps statistics with them). */
+  onUsage: ((u: { input: number; output: number; costUsd: number }) => void) | null = null;
+  onLines: ((added: number, removed: number) => void) | null = null;
 
   constructor(
     spec: AgentSpec,
@@ -216,12 +243,54 @@ export class Agent {
     if (u.output) this.tokensOut += u.output;
     if (u.context !== undefined) this.contextTokens = u.context;
     if (u.costUsd) this.costUsd += u.costUsd;
+    if (u.input || u.output || u.costUsd) {
+      this.onUsage?.({ input: u.input ?? 0, output: u.output ?? 0, costUsd: u.costUsd ?? 0 });
+    }
     this.changed();
   }
 
   addLines(added: number, removed: number): void {
     this.linesAdded += added;
     this.linesRemoved += removed;
+    this.onLines?.(added, removed);
+    this.changed();
+  }
+
+  // ---- saving and restoring --------------------------------------------------------------------
+
+  saveState(): SavedAgentState {
+    return {
+      // Approvals that were still open can't be answered after a restart.
+      log: this.log.slice(-SAVED_LOG).map((e): LogEntry => {
+        if (e.kind === "approval" && !e.decision) return { ...e, decision: "deny" };
+        if ((e.kind === "text" || e.kind === "reasoning") && e.streaming) return { ...e, streaming: false };
+        return e;
+      }),
+      tokensIn: this.tokensIn,
+      tokensOut: this.tokensOut,
+      contextTokens: this.contextTokens,
+      costUsd: this.costUsd,
+      linesAdded: this.linesAdded,
+      linesRemoved: this.linesRemoved,
+      busyMs: this.busyMs + (this.turnStartedAt !== null ? Date.now() - this.turnStartedAt : 0),
+      allowed: [...this.allowed],
+      createdAt: this.createdAt,
+    };
+  }
+
+  restoreState(saved: Partial<SavedAgentState>): void {
+    if (Array.isArray(saved.log)) {
+      this.log = saved.log.map((e) => (e.kind === "tool" && e.status === "running" ? { ...e, status: "error" as const } : e));
+    }
+    this.tokensIn = saved.tokensIn ?? 0;
+    this.tokensOut = saved.tokensOut ?? 0;
+    this.contextTokens = saved.contextTokens ?? 0;
+    this.costUsd = saved.costUsd ?? 0;
+    this.linesAdded = saved.linesAdded ?? 0;
+    this.linesRemoved = saved.linesRemoved ?? 0;
+    this.busyMs = saved.busyMs ?? 0;
+    for (const key of saved.allowed ?? []) this.allowed.add(key);
+    if (saved.createdAt) this.createdAt = saved.createdAt;
     this.changed();
   }
 

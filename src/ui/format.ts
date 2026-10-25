@@ -40,3 +40,13 @@ export function formatAgo(at: number, now = Date.now()): string {
   if (h < 48) return `${h}h ago`;
   return `${Math.round(h / 24)}d ago`;
 }
+
+const BARS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+
+/** A one-row bar chart: one bar per value, scaled to the largest ("·" for nothing). */
+export function sparkline(values: number[]): string {
+  const max = Math.max(0, ...values);
+  return values
+    .map((v) => (v <= 0 || max <= 0 ? "·" : BARS[Math.min(BARS.length - 1, Math.round((v / max) * (BARS.length - 1)))]))
+    .join("");
+}

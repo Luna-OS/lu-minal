@@ -2,6 +2,7 @@
 // lu-minal's entry point: the terminal UI, plus a few sub-commands that work without it
 // (models, providers, login, roblox, themes, setup).
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { render } from "ink";
 import React from "react";
@@ -27,8 +28,8 @@ export const VERSION = process.env.LU_MINAL_VERSION ?? "0.1.0";
 const HELP = `lu-minal ${VERSION} - a team of coding agents under the night sky
 
 Usage
-  lu-minal [folder]              open the folder (default: here) in the terminal UI
-  lu-minal -c, --continue        reopen the tabs of the last session
+  lu-minal [folder]              open lu-minal: your last session comes back, plus the folder
+  lu-minal --fresh [folder]      start without the last session's tabs
   lu-minal models [query] [--free]   list models (all providers from models.dev)
   lu-minal providers             list providers and whether you are signed in
   lu-minal login <provider> [key]    sign in (claude, openrouter, or save an API key)
@@ -265,18 +266,24 @@ async function main(): Promise<void> {
     });
   }
 
+  // Read the last session before anything can overwrite it.
+  const saved = args.flags.has("fresh") ? null : hub.readSavedSession();
   await hub.init();
   const modelFlag = args.flags.get("model");
   const lead = typeof modelFlag === "string" ? parseModelRef(modelFlag) ?? undefined : undefined;
-  let restored = 0;
-  if (args.flags.has("continue")) restored = await hub.restoreSession();
-  if (!restored) {
+  const restored = saved ? await hub.restoreSession(saved) : 0;
+  const existing = hub.projects.findIndex((p) => p.cwd === folder);
+  if (existing >= 0) {
+    hub.switchTo(existing);
+  } else if (!restored || args.positional[0] || folder !== os.homedir()) {
+    // A folder of its own (or nothing restored): open it next to the restored tabs.
     try {
       await hub.openProject({ cwd: folder, lead });
     } catch (err) {
       hub.toast(errText(err), "error");
     }
   }
+  if (restored) hub.toast(`Welcome back - ${restored} tab${restored === 1 ? "" : "s"} restored.`, "success");
   let lastTitle = "";
   hub.notifier.subscribe(() => {
     const p = hub.activeProject;

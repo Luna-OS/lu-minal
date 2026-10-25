@@ -223,4 +223,5 @@ when the Windows binaries are built on Windows, and the macOS binaries are signe
 signature from Bun, but the x64 one does not, so sign it on a Mac
 (`codesign --force --sign - lu-minal-macos-x64`) before macOS runs it. The release workflow builds
 each on its own system. Releases are built by `.github/workflows/release.yml` when a `v*` tag is
-pushed.
+pushed, or when the workflow is started by hand (Actions tab, "Run workflow") with the version from
+`package.json`; it then creates the tag on the commit it built.

@@ -207,6 +207,18 @@ describe("the release workflow", () => {
     expect(listed).toContain("lu-minal-macos-app.zip");
   });
 
+  it("can be started by hand for a version and then tags the commit it built", () => {
+    // A tag push, or the Actions tab / API with the version (for sessions that can't push tags).
+    expect(release).toMatch(/\non:\n {2}push:\n {4}tags: \["v\*"\]\n {2}workflow_dispatch:\n {4}inputs:\n {6}version:\n/);
+    // The version check reads the tag from either and still compares it with package.json.
+    expect(release).toContain("TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}");
+    expect(release).toContain('tag="${TAG#v}"');
+    expect(release).not.toContain("GITHUB_REF_NAME#v");
+    // The release (and with it the tag) points at the commit that was tested and built.
+    expect(release).toContain("tag_name: v${{ needs.version.outputs.version }}");
+    expect(release).toContain("target_commitish: ${{ github.sha }}");
+  });
+
   it("publishes only after the tagged commit passed the tests on all three systems", () => {
     // ci.yml runs for branches only, so a tag push is tested by the release workflow itself.
     expect(ci).toMatch(/push:\n\s+branches: \["\*\*"\]/);

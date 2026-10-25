@@ -110,6 +110,27 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: npm ci
       - run: bun scripts/build-binaries.ts --target=windows --outdir=dist-bin --smoke
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          # On the runner image already, or from Chocolatey.
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Chocolatey could not install Inno Setup' }
+          }
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "no ISCC.exe at $iscc" }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+      - name: The installers (lu-minal-windows-x64-setup.exe, lu-minal-windows-arm64-setup.exe)
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          foreach ($arch in 'x64', 'arm64') {
+            & $env:ISCC /Q "/DAppVersion=$env:VERSION" "/DArch=$arch" windows\lu-minal.iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC failed for $arch" }
+          }
+          Get-ChildItem dist-bin\lu-minal-windows-*-setup.exe | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
@@ -175,6 +196,7 @@ jobs:
           ls -la
           for f in lu-minal-linux-x64 lu-minal-linux-arm64 lu-minal-linux-x64-musl lu-minal-linux-arm64-musl \
                    lu-minal-macos-x64 lu-minal-macos-arm64 lu-minal-windows-x64.exe lu-minal-windows-arm64.exe \
+                   lu-minal-windows-x64-setup.exe lu-minal-windows-arm64-setup.exe \
                    lu-minal-macos-app.zip lu-minal-macos-app.dmg; do
             [ -f "$f" ] || { echo "::error::missing release file $f"; exit 1; }
           done

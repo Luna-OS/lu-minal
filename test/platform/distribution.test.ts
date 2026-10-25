@@ -190,6 +190,52 @@ describe("the installers", () => {
   });
 });
 
+describe("the Windows installer (Inno Setup)", () => {
+  const iss = read("windows", "lu-minal.iss");
+  const release = read(".github", "workflows", "release.yml");
+  const ci = read(".github", "workflows", "ci.yml");
+
+  it("installs for the current user, without administrator rights, where install.ps1 does", () => {
+    expect(iss).toMatch(/^PrivilegesRequired=lowest$/m);
+    expect(iss).not.toMatch(/PrivilegesRequiredOverridesAllowed/);
+    expect(iss).toMatch(/^DefaultDirName=\{localappdata\}\\Programs\\lu-minal$/m);
+    expect(read("install.ps1")).toContain("Join-Path $local 'Programs\\lu-minal'");
+    // One app id for every version and both architectures: Settings > Apps updates in place.
+    expect(iss).toMatch(/^AppId=\{\{[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\}$/m);
+  });
+
+  it("puts lu-minal on the PATH, in Start and Windows Terminal, and takes it all away again", () => {
+    for (const task of ["path", "terminal", "desktopicon"]) expect(iss).toMatch(new RegExp(`^Name: "${task}"; Description:`, "m"));
+    expect(iss).toContain('Parameters: "setup windows-terminal"; Flags: runhidden waituntilterminated; Tasks: terminal');
+    expect(iss).toContain('Parameters: "setup windows-terminal --remove"; Flags: runhidden waituntilterminated; Tasks: terminal');
+    expect(iss).toMatch(/CurStepChanged[\s\S]*AddToPath\(ExpandConstant\('\{app\}'\)\)/);
+    expect(iss).toMatch(/CurUninstallStepChanged[\s\S]*RemoveFromPath\(ExpandConstant\('\{app\}'\)\)/);
+    // Expandable, so the user's %VARIABLE% entries keep working.
+    expect(iss).toContain("RegWriteExpandStringValue(HKCU, EnvironmentKey, 'Path'");
+    expect(iss).toMatch(/^ChangesEnvironment=yes$/m);
+    expect(iss).toMatch(/^Name: "\{autoprograms\}\\lu-minal"/m);
+  });
+
+  it("is built for x64 and arm64 from the release binaries, with the moon icon", () => {
+    expect(iss).toContain('Source: "{#DistDir}\\lu-minal-windows-{#Arch}.exe"; DestDir: "{app}"; DestName: "lu-minal.exe"');
+    expect(iss).toMatch(/^OutputBaseFilename=lu-minal-windows-\{#Arch\}-setup$/m);
+    expect(iss).toMatch(/^SetupIconFile=\{#DistDir\}\\lu-minal.ico$/m);
+    expect(read("scripts", "build-binaries.ts")).toContain('icon: writeIco(path.join(opts.outdir, "lu-minal.ico"))');
+    expect(release).toContain("foreach ($arch in 'x64', 'arm64')");
+    expect(release).toContain('& $env:ISCC /Q "/DAppVersion=$env:VERSION" "/DArch=$arch" windows\\lu-minal.iss');
+    const check = /for f in ([\s\S]*?); do/.exec(release)?.[1].replace(/\\\n/g, " ") ?? "";
+    for (const arch of ["x64", "arm64"]) expect(check.split(/\s+/)).toContain(`lu-minal-windows-${arch}-setup.exe`);
+  });
+
+  it("is installed, checked and uninstalled on a real Windows machine in CI", () => {
+    expect(ci).toContain("'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=\"path,terminal\"'");
+    expect(ci).toContain("(Join-Path $dir 'unins000.exe')");
+    for (const left of ["lu-minal.exe behind", "on the user PATH", "Windows Terminal profile behind", "Start menu shortcut behind", "Settings > Apps entry is still there"]) {
+      expect(ci).toContain(left);
+    }
+  });
+});
+
 describe("the release workflow", () => {
   const release = read(".github", "workflows", "release.yml");
   const ci = read(".github", "workflows", "ci.yml");

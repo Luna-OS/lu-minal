@@ -4,6 +4,7 @@ lu-minal runs the same on **Windows, macOS and Linux**. Pick whichever fits:
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
+| **Setup program** | `lu-minal-windows-x64-setup.exe`, `-arm64-setup.exe` ([below](#windows-setup)) | – | – |
 | **Installer** (standalone binary, no Node needed) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` | same as macOS |
 | **Download a binary** | `lu-minal-windows-x64.exe`, `-arm64.exe` | `lu-minal-macos-arm64`, `-x64` | `lu-minal-linux-x64`, `-arm64`, `-musl` builds |
 | **App / integration** | Windows Terminal profile | the native **lu-minal app** (`LuMinal.app`) | applications-menu entry |
@@ -97,6 +98,36 @@ curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh | 
 
 Running it again updates lu-minal (even while it is running). To uninstall, delete
 `~/.local/bin/lu-minal` (and `~/.local/share/applications/lu-minal.desktop`).
+
+## Windows setup
+
+From 0.1.1 on, every release has a setup program: `lu-minal-windows-x64-setup.exe`, or
+`lu-minal-windows-arm64-setup.exe` for Windows on Arm. It installs lu-minal for you alone,
+without administrator rights, into `%LOCALAPPDATA%\Programs\lu-minal` (the folder install.ps1
+uses, so either one updates the other). It asks what else to do:
+
+- **Add lu-minal to my PATH**, so `lu-minal` works in any new terminal;
+- **Add a lu-minal profile to Windows Terminal** (Moon Dark colours); the Start menu entry then
+  opens lu-minal in Windows Terminal;
+- **Create a desktop shortcut** (off unless you tick it).
+
+Running a newer setup updates lu-minal in place (it closes a running lu-minal first, after
+asking). Uninstall it in Settings > Apps > Installed apps: that removes the program, the PATH
+entry, the shortcuts and the Windows Terminal profile, and keeps your settings, keys and sessions
+(`%APPDATA%\lu-minal`, `%LOCALAPPDATA%\lu-minal`).
+
+The setup programs are not code-signed yet, so Windows SmartScreen may say "Windows protected
+your PC": click **More info**, then **Run anyway**. Check the download against `SHA256SUMS` first
+if you like (`Get-FileHash lu-minal-windows-x64-setup.exe`).
+
+For scripted installs:
+
+```powershell
+.\lu-minal-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="path,terminal"
+```
+
+`/DIR="..."` installs somewhere else; `/LOG="setup.log"` writes a log. The uninstaller
+(`unins000.exe` in the install folder) takes `/VERYSILENT` too.
 
 ## install.ps1 (Windows)
 

@@ -18,6 +18,25 @@ afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c();
 });
 
+/**
+ * Ends a fake agent and waits until it is gone: Windows keeps a process's working folder locked
+ * until the process has exited, so its temp folder can only be removed after that.
+ */
+function stopped(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 5000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.kill("SIGKILL");
+  });
+}
+
+/** fs.rmSync ignores maxRetries for EBUSY in some Node versions; the promise version retries. */
+const removeDir = (dir: string) => fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+
 async function waitFor(check: () => boolean, what: string, timeoutMs = 8000): Promise<void> {
   const until = Date.now() + timeoutMs;
   while (!check()) {
@@ -102,8 +121,8 @@ function setup(
   const endTurns = vi.spyOn(agent, "endTurn");
   cleanups.push(async () => {
     await driver.dispose();
-    for (const c of children) if (c.exitCode === null) c.kill("SIGKILL");
-    if (!opts.dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await Promise.all(children.map(stopped));
+    if (!opts.dir) await removeDir(dir);
   });
   const logged = (): Logged[] =>
     fs.existsSync(logFile)
@@ -308,7 +327,7 @@ describe("AcpDriver", () => {
 
   it("kills an agent that ignores the cancel and resumes its session in a new process", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-acp-"));
-    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    cleanups.push(() => removeDir(dir));
     const t = setup({ dir, stateFile: path.join(dir, "state.json") });
     await t.driver.start();
     t.agent.deliver({ from: "you", text: "hang" });
@@ -430,7 +449,7 @@ describe("AcpDriver", () => {
 
   it("loads an earlier session without showing its replayed history", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-acp-"));
-    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    cleanups.push(() => removeDir(dir));
     const stateFile = path.join(dir, "state.json");
     const first = setup({ dir, stateFile, env: { FAKE_ACP_LOAD: "1" } });
     await first.driver.start();

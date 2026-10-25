@@ -48,6 +48,11 @@ export interface ThemeSky {
   glyphs: string[];
   /** Stars per 100 cells (0.5 .. 6 looks good). */
   density: number;
+  /**
+   * How much of the sky shines through the panels (0 = opaque panels, 1 = as bright as outside).
+   * The Moon look uses a faint 0.25: the panels are glass.
+   */
+  glass: number;
   moon: boolean;
   moonColor: string;
   shootingStars: boolean;

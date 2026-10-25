@@ -45,6 +45,7 @@
   },
   "homepage": "https://github.com/Luna-OS/lu-minal#readme",
   "dependencies": {
+    "chalk": "^6.0.1",
     "diff": "^9.0.0",
     "ink": "^8.0.0",
     "react": "^19.3.1"

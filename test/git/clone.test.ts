@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -265,7 +266,8 @@ describe("cloneRepo with a fake git", () => {
       `if (args[0] === "--version") { console.log("git version 2.45.2"); process.exit(0); }
        const { spawn } = await import("node:child_process");
        fs.mkdirSync(args[args.length - 1], { recursive: true });
-       const mid = spawn(process.execPath, [${JSON.stringify(middle)}], { stdio: ["ignore", "pipe", "inherit"], detached: true, windowsHide: true });
+       // Outside the test's folder: Windows can't remove a folder that is a process's working directory.
+       const mid = spawn(process.execPath, [${JSON.stringify(middle)}], { cwd: ${JSON.stringify(os.tmpdir())}, stdio: ["ignore", "pipe", "inherit"], detached: true, windowsHide: true });
        let out = "";
        mid.stdout.on("data", (d) => (out += d));
        mid.on("close", () => {
@@ -289,11 +291,15 @@ describe("cloneRepo with a fake git", () => {
       expect(Date.now() - started).toBeLessThan(10_000);
       expect(fs.existsSync(path.join(dir, "moon-app"))).toBe(false);
     } finally {
+      // Gone before afterEach removes the folder (the kill itself doesn't wait on Windows).
       for (const { helper: pid } of fake.log()) {
-        try {
-          process.kill(pid);
-        } catch {
-          // already gone
+        for (let i = 0; i < 50; i++) {
+          try {
+            process.kill(pid, i === 0 ? "SIGTERM" : 0);
+            await new Promise((r) => setTimeout(r, 50));
+          } catch {
+            break;
+          }
         }
       }
     }

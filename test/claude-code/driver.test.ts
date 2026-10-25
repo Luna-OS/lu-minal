@@ -10,6 +10,7 @@ import { Agent } from "../../src/core/agent.js";
 import { Notifier } from "../../src/core/emitter.js";
 import { Project, type ProjectRuntime } from "../../src/core/project.js";
 import type { LogEntry } from "../../src/core/types.js";
+import { realTranscriptPath } from "./real-transcripts.js";
 
 const FAKE = fileURLToPath(new URL("../fixtures/fake-claude.mjs", import.meta.url));
 
@@ -46,6 +47,8 @@ function setup(opts: {
   platform?: NodeJS.Platform;
   register?: McpLink["register"];
   onSpawn?: (args: string[], options: SpawnOptions) => void;
+  interruptGraceMs?: number;
+  permissionMode?: "ask" | "auto-edit" | "yolo" | "plan";
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-driver-"));
   const logFile = path.join(dir, "starts.jsonl");
@@ -55,7 +58,11 @@ function setup(opts: {
     defaultWorkerModel: () => ({ provider: "claude-code", model: "sonnet" }),
   };
   const project = new Project({ cwd: dir, name: "demo", permissionMode: "auto-edit" }, notifier, runtime);
-  const agent = new Agent({ name: "luna", role: "lead", model: { provider: "claude-code", model: "opus" } }, notifier, "auto-edit");
+  const agent = new Agent(
+    { name: "luna", role: "lead", model: { provider: "claude-code", model: "opus" } },
+    notifier,
+    opts.permissionMode ?? "auto-edit",
+  );
   project.agents.push(agent);
   const unregistered: string[] = [];
   const configFile = path.join(dir, "mcp", `${agent.id}.json`);
@@ -82,7 +89,7 @@ function setup(opts: {
       return child;
     },
     env: { ...process.env, FAKE_CLAUDE_LOG: logFile, ...opts.env },
-    interruptGraceMs: 300,
+    interruptGraceMs: opts.interruptGraceMs ?? 300,
     queueGraceMs: 2000,
     platform: opts.platform,
   });
@@ -133,6 +140,8 @@ describe("ClaudeCodeDriver", () => {
     expect(t.rateLimits).toHaveLength(1);
     expect(t.rateLimits[0].fiveHour).toEqual({ utilization: 0.48, resetsAt: 1791081600000 });
     expect(t.endTurns.mock.calls).toEqual([["idle"]]);
+    // Where Claude Code compacts (autocompact_state).
+    expect(t.agent.contextWindow).toBe(180000);
 
     // The command line and the environment.
     expect(fs.realpathSync(start.cwd)).toBe(fs.realpathSync(t.dir));
@@ -524,6 +533,184 @@ describe("ClaudeCodeDriver", () => {
     t.agent.deliver({ from: "you", text: "hello" });
     await t.idle();
     expect(t.texts()).toEqual(["Hello there!"]);
+  });
+
+  it("replays a real Claude Code 2.1.310 turn: text, usage, context window, session, rate limit", async () => {
+    const t = setup();
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: `replay 1 ${realTranscriptPath("stream-reply-ok.jsonl")}` });
+    await t.idle();
+    expect(t.texts()).toEqual(["OK"]);
+    expect(t.agent.sessionId).toBe("00000000-0000-4000-8000-000000000002");
+    expect(t.agent.contextWindow).toBe(980000);
+    expect(t.agent.tokensIn).toBe(2 + 12723 + 29585);
+    expect(t.agent.contextTokens).toBe(2 + 12723 + 29585);
+    expect(t.agent.tokensOut).toBe(4);
+    expect(t.agent.costUsd).toBeCloseTo(0.00284265, 8);
+    expect(t.rateLimits.map((r) => [r.fiveHour?.utilization, r.sevenDay?.utilization])).toEqual([[0.15, 0.13]]);
+    expect(t.endTurns.mock.calls).toEqual([["idle"]]);
+    expect(t.agent.log.some((e) => e.kind === "error" || e.kind === "info")).toBe(false);
+  });
+
+  it("replays real permission prompts and an interrupted turn as tool rows", async () => {
+    const t = setup();
+    await t.driver.start();
+    const file = realTranscriptPath("stream-permissions.jsonl");
+    t.agent.deliver({ from: "you", text: `replay 1 ${file}` });
+    await t.idle();
+    expect(t.tools().map((r) => [r.verb, r.target, r.status, r.detail])).toEqual([
+      ["run", "touch a.txt", "ok", "✓ no output"],
+      ["run", "touch b.txt", "error", "denied"],
+    ]);
+    expect(t.texts()).toEqual(["Created `a.txt`. The `touch b.txt` call was denied by the user, so I did not retry it."]);
+    // The denial is on its row already: no extra line for it.
+    expect(t.agent.log.some((e) => e.kind === "info")).toBe(false);
+
+    // A turn the CLI ended because it was interrupted (not by this driver): no error.
+    t.agent.deliver({ from: "you", text: `replay 2 ${file}` });
+    await t.idle();
+    expect(t.tools()[2]).toMatchObject({ verb: "run", target: "touch c.txt", status: "error", detail: "cancelled" });
+    expect(t.agent.log.some((e) => e.kind === "error")).toBe(false);
+    expect(t.agent.log.some((e) => e.kind === "info" && /interrupted/.test(e.text))).toBe(true);
+    expect(t.endTurns.mock.calls).toEqual([["idle"], ["idle"]]);
+  });
+
+  it("sends SIGINT when the interrupt request doesn't end the turn, then resumes in a new process", async () => {
+    if (process.platform === "win32") return; // no SIGINT for another process there
+    const signals = path.join(os.tmpdir(), `lm-signals-${process.pid}-${Date.now()}.txt`);
+    cleanups.push(() => fs.rmSync(signals, { force: true }));
+    const t = setup({ env: { FAKE_CLAUDE_SIGNALS: signals } });
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "sigint" });
+    await waitFor(() => t.texts().includes("Working"), "the streamed text");
+    const began = Date.now();
+    t.agent.interrupt();
+    await t.idle("the SIGINT");
+    expect(Date.now() - began).toBeGreaterThanOrEqual(250);
+    expect(fs.readFileSync(signals, "utf8")).toBe("SIGINT\n");
+    expect(t.agent.log.some((e) => e.kind === "error")).toBe(false);
+    expect(t.endTurns.mock.calls).toEqual([["idle"]]);
+
+    t.agent.deliver({ from: "you", text: "hello" });
+    await t.idle();
+    const starts = t.starts();
+    expect(starts).toHaveLength(2);
+    expect(flagValue(starts[1].argv, "--resume")).toBe(`sess-${starts[0].pid}`);
+    expect(t.texts()).toEqual(["Working", "Hello there!"]);
+  });
+
+  it("goes on to SIGINT at once when the CLI refuses the interrupt request", async () => {
+    if (process.platform === "win32") return;
+    const signals = path.join(os.tmpdir(), `lm-signals-r-${process.pid}-${Date.now()}.txt`);
+    cleanups.push(() => fs.rmSync(signals, { force: true }));
+    const t = setup({ env: { FAKE_CLAUDE_REFUSE_INTERRUPT: "1", FAKE_CLAUDE_SIGNALS: signals }, interruptGraceMs: 6000 });
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "sigint" });
+    await waitFor(() => t.texts().includes("Working"), "the streamed text");
+    const began = Date.now();
+    t.agent.interrupt();
+    await t.idle("the SIGINT");
+    expect(Date.now() - began).toBeLessThan(3000);
+    expect(fs.readFileSync(signals, "utf8")).toBe("SIGINT\n");
+  });
+
+  it("a second interrupt doesn't wait for the grace period", async () => {
+    if (process.platform === "win32") return;
+    const signals = path.join(os.tmpdir(), `lm-signals-2-${process.pid}-${Date.now()}.txt`);
+    cleanups.push(() => fs.rmSync(signals, { force: true }));
+    const t = setup({ env: { FAKE_CLAUDE_SIGNALS: signals }, interruptGraceMs: 6000 });
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "sigint" });
+    await waitFor(() => t.texts().includes("Working"), "the streamed text");
+    const began = Date.now();
+    t.agent.interrupt();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(t.agent.turnStartedAt).not.toBeNull();
+    t.agent.interrupt();
+    await t.idle("the SIGINT");
+    expect(Date.now() - began).toBeLessThan(3000);
+    expect(fs.readFileSync(signals, "utf8")).toBe("SIGINT\n");
+  });
+
+  it("stops the process outright on Windows, which has no SIGINT for it", async () => {
+    const signals = path.join(os.tmpdir(), `lm-signals-w-${process.pid}-${Date.now()}.txt`);
+    cleanups.push(() => fs.rmSync(signals, { force: true }));
+    const t = setup({ env: { FAKE_CLAUDE_SIGNALS: signals }, platform: "win32" });
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "sigint" });
+    await waitFor(() => t.texts().includes("Working"), "the streamed text");
+    t.agent.interrupt();
+    await t.idle("the hard stop");
+    await waitFor(() => t.children[0].exitCode !== null || t.children[0].signalCode !== null, "the old process to end");
+    expect(fs.existsSync(signals)).toBe(false);
+    expect(t.agent.log.some((e) => e.kind === "error")).toBe(false);
+  });
+
+  it("unregisters when dispose() came while start() was registering", async () => {
+    let release = () => {};
+    const order: string[] = [];
+    const t = setup({
+      register: () =>
+        new Promise((resolve) => {
+          release = () => {
+            order.push("registered");
+            resolve({ configFile: "x.json", serverName: "luminal" });
+          };
+        }),
+      mcp: {
+        unregister: () => {
+          order.push("unregistered");
+        },
+      },
+    });
+    const started = t.driver.start();
+    t.driver.send({ from: "you", text: "hello" });
+    await t.driver.dispose();
+    release();
+    await started;
+    // The last word is an unregister that came after the registration.
+    expect(order).toEqual(["unregistered", "registered", "unregistered"]);
+    expect(t.starts()).toHaveLength(0);
+    expect(t.agent.turnStartedAt).toBeNull();
+  });
+
+  it("withdraws a permission question the CLI cancels (control_cancel_request)", async () => {
+    const t = setup();
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "ask-cancel" });
+    await waitFor(() => t.agent.pendingApproval !== null, "the approval request");
+    expect(t.agent.pendingApproval).toMatchObject({ summary: "run make deploy" });
+    await waitFor(() => t.agent.pendingApproval === null, "the withdrawn request");
+    await t.idle();
+    // No answer went to the CLI for the withdrawn request.
+    expect(t.texts()).toEqual(["cancelled; answered=none"]);
+    const entry = t.agent.log.find((e) => e.kind === "approval") as Extract<LogEntry, { kind: "approval" }>;
+    expect(entry.decision).toBe("deny");
+  });
+
+  it("drops the questions of a process that died while they waited", async () => {
+    const t = setup();
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "ask" });
+    await waitFor(() => t.agent.pendingApproval !== null, "the approval request");
+    t.children[0].kill("SIGKILL");
+    await waitFor(() => t.agent.turnStartedAt === null, "the turn to end");
+    expect(t.agent.pendingApproval).toBeNull();
+    expect(t.agent.status).toBe("error");
+    expect(t.agent.log.some((e) => e.kind === "error" && /stopped unexpectedly/.test(e.text))).toBe(true);
+    // The next message starts a resumed process as usual.
+    t.agent.deliver({ from: "you", text: "hello" });
+    await t.idle();
+    expect(t.starts()).toHaveLength(2);
+  });
+
+  it("turns down AskUserQuestion without bothering the user", async () => {
+    const t = setup({ permissionMode: "ask" });
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "ask-question" });
+    await t.idle();
+    expect(t.texts()[0]).toMatch(/^behavior=deny: lu-minal can't show multiple-choice questions/);
+    expect(t.agent.log.some((e) => e.kind === "approval")).toBe(false);
   });
 
   it("dispose ends the process and unregisters from MCP", async () => {

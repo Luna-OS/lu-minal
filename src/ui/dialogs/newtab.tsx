@@ -150,6 +150,8 @@ function RepoList({ hub, ui, host, close, closeParent }: { hub: Hub; ui: UiServi
   React.useEffect(() => {
     let live = true;
     setLoading(true);
+    // The old results don't answer the new query: never let enter pick one of them.
+    setRepos([]);
     const t = setTimeout(() => {
       host
         .listRepos({ query, perPage: 100 })
@@ -187,6 +189,7 @@ function RepoList({ hub, ui, host, close, closeParent }: { hub: Hub; ui: UiServi
         return false;
       }}
       onSelect={(item) => {
+        if (loading) return;
         const repo = repos.find((r) => r.fullName === item.id);
         if (!repo) return;
         close();

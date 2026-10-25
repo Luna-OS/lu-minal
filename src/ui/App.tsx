@@ -4,6 +4,15 @@
 import { Box, Text, useAnimation, useApp, useInput, usePaste, useWindowSize, type Key } from "ink";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { Agent } from "../core/agent.js";
+import {
+  attachmentFromPath,
+  attachmentsDir,
+  clipboardHint,
+  clipboardImage,
+  describeAttachment,
+  droppedFiles,
+  type Attachment,
+} from "../core/attachments.js";
 import type { Hub, TerminalRunner } from "../core/hub.js";
 import type { Project } from "../core/project.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
@@ -45,6 +54,7 @@ function Screen({ onExit }: { onExit: () => void }) {
   const [dialogs, setDialogs] = useState<DialogSpec[]>([]);
   const [editors, setEditors] = useState<Record<string, EditorState>>({});
   const [scrolls, setScrolls] = useState<Record<string, number>>({});
+  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
   const history = useRef<Record<string, { items: string[]; index: number }>>({});
   const lastCtrlC = useRef(0);
   const lastBusy = useRef<{ busy: boolean; doneAt: number }>({ busy: false, doneAt: 0 });
@@ -99,6 +109,30 @@ function Screen({ onExit }: { onExit: () => void }) {
     if (focused) setEditor(focused, { value: text, cursor: text.length });
   };
 
+  // ---- attachments -----------------------------------------------------------------------------
+
+  const attachOf = (agent: Agent | undefined): Attachment[] => (agent ? (attachments[agent.id] ?? []) : []);
+  const addAttachments = (agent: Agent, list: Attachment[]) => {
+    if (!list.length) return;
+    setAttachments((a) => ({ ...a, [agent.id]: [...(a[agent.id] ?? []), ...list].slice(-10) }));
+  };
+  /** Attaches files by path; says why when one can't be attached. */
+  const attachPaths = (paths: string[]) => {
+    if (!focused) return;
+    const ok: Attachment[] = [];
+    for (const p of paths) {
+      const a = attachmentFromPath(p);
+      if (typeof a === "string") hub.toast(a, "warning");
+      else ok.push(a);
+    }
+    addAttachments(focused, ok);
+  };
+  const pasteImage = async (agent: Agent) => {
+    const image = await clipboardImage(attachmentsDir(hub.stateDir)).catch(() => null);
+    if (image) addAttachments(agent, [image]);
+    else hub.toast(clipboardHint(), "info");
+  };
+
   const ctxRef = useRef<CommandContext | null>(null);
   const launchers = useMemo(() => createLaunchers(hub, ui, () => ctxRef.current!), [hub, ui]);
   const toggleZoom = () => {
@@ -113,6 +147,7 @@ function Screen({ onExit }: { onExit: () => void }) {
     agent: focused,
     setPrompt,
     toggleZoom,
+    attach: attachPaths,
     dialogs: launchers,
   };
   ctxRef.current = ctx;
@@ -121,13 +156,15 @@ function Screen({ onExit }: { onExit: () => void }) {
 
   const submit = (agent: Agent, text: string) => {
     const value = text.trim();
-    if (!value || !project) return;
+    const files = attachOf(agent);
+    if ((!value && !files.length) || !project) return;
     const h = (history.current[project.id] ??= { items: [], index: -1 });
     h.items = [value, ...h.items.filter((x) => x !== value)].slice(0, 100);
     h.index = -1;
     setEditor(agent, emptyEditor());
     setScrolls((s) => ({ ...s, [agent.id]: 0 }));
     if (value.startsWith("/")) {
+      // Commands don't take attachments; they stay for the next message.
       const typed = /^\/(\S*)/.exec(value)?.[1] ?? "";
       const matches = commandSuggestions(typed);
       if (!findCommand(typed) && matches.length === 1) {
@@ -137,13 +174,14 @@ function Screen({ onExit }: { onExit: () => void }) {
       }
       return;
     }
+    setAttachments((a) => ({ ...a, [agent.id]: [] }));
     const at = /^@(\S+)\s+([\s\S]+)$/.exec(value);
     if (at) {
-      const got = project.send("you", at[1], at[2]);
+      const got = project.send("you", at[1], at[2], files);
       if (!got.length) hub.toast(`Nobody called "${at[1]}" here.`, "warning");
       return;
     }
-    agent.deliver({ from: "you", text: value });
+    agent.deliver({ from: "you", text: value, attachments: files.length ? files : undefined });
   };
 
   // ---- keys ------------------------------------------------------------------------------------
@@ -210,6 +248,15 @@ function Screen({ onExit }: { onExit: () => void }) {
       if (agent.busy) agent.interrupt();
       return;
     }
+    if ((key.ctrl || key.meta) && input === "v") {
+      // Ctrl+V (Alt+V where the terminal keeps Ctrl+V for pasting text, as Windows Terminal does).
+      void pasteImage(agent);
+      return;
+    }
+    if (key.backspace && !editor.value && attachOf(agent).length) {
+      setAttachments((a) => ({ ...a, [agent.id]: (a[agent.id] ?? []).slice(0, -1) }));
+      return;
+    }
     if (agent.pendingApproval && !editor.value) {
       if (input === "y" || input === "Y") return agent.answerApproval("allow");
       if (input === "a" || input === "A") return agent.answerApproval("always");
@@ -237,7 +284,11 @@ function Screen({ onExit }: { onExit: () => void }) {
   useInput(handleKey, { isActive: !dialogOpen });
   usePaste(
     (text) => {
-      if (focused) setEditor(focused, insertText(editorOf(focused), text));
+      if (!focused) return;
+      // Files dropped on the terminal arrive as a paste of their paths.
+      const files = droppedFiles(text);
+      if (files) attachPaths(files);
+      else setEditor(focused, insertText(editorOf(focused), text));
     },
     { isActive: !dialogOpen },
   );
@@ -261,6 +312,21 @@ function Screen({ onExit }: { onExit: () => void }) {
   lastBusy.current.busy = leadBusy;
   const mood: AxoMood = leadBusy ? "work" : now - lastBusy.current.doneAt < 2500 ? "done" : hub.ready ? "idle" : "sleep";
   const leadAgent = project?.lead;
+
+  const chipRows = (agent: Agent | undefined): Row[] => {
+    const list = attachOf(agent);
+    if (!list.length) return [];
+    return [
+      {
+        key: "attachments",
+        segs: [
+          { text: "  ▣ ", color: c.accent2 },
+          { text: list.map(describeAttachment).join("   "), color: c.text },
+          { text: "   backspace removes", color: c.faint },
+        ],
+      },
+    ];
+  };
 
   const menuRows = (agent: Agent | undefined): Row[] =>
     slashMenu(agent).map((cmd, i) => ({
@@ -301,7 +367,7 @@ function Screen({ onExit }: { onExit: () => void }) {
                 editor={isFocused ? editorOf(agent) : null}
                 scroll={scrolls[agent.id] ?? 0}
                 reserveRight={reserve}
-                menu={isFocused ? menuRows(agent) : undefined}
+                menu={isFocused ? [...chipRows(agent), ...menuRows(agent)] : undefined}
               />
             );
           })

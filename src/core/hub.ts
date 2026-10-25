@@ -3,6 +3,9 @@
 // decides how each agent runs (ProjectRuntime). The UI reads it and calls its actions.
 import fs from "node:fs";
 import path from "node:path";
+import { AcpDriver } from "../agents/acp/driver.js";
+import { listAcpModels } from "../agents/acp/models.js";
+import { acpEnv } from "../agents/acp/presets.js";
 import { readClaudeAccount } from "../agents/claude-code/account.js";
 import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
@@ -36,6 +39,7 @@ import { detectShell } from "../tools/exec.js";
 import { toolsForAgent } from "../tools/index.js";
 import type { CloudApi, ToolServices } from "../tools/types.js";
 import { Agent, type SavedAgentState } from "./agent.js";
+import { attachmentsDir, pruneAttachments } from "./attachments.js";
 import { rememberRecent, saveConfig, type Config } from "./config.js";
 import { newId, Notifier } from "./emitter.js";
 import { Project, type ProjectRuntime } from "./project.js";
@@ -203,6 +207,8 @@ export class Hub implements ProjectRuntime {
     }
     await Promise.all(tasks.map((t) => t.catch(() => undefined)));
     void this.refreshLocalModels();
+    // Clipboard pictures older than a month go.
+    pruneAttachments(attachmentsDir(this.stateDir));
     this.ready = true;
     this.notifier.changed();
     if (!this.opts.offline) this.startPollers();
@@ -327,6 +333,23 @@ export class Hub implements ProjectRuntime {
           this.planUsage = applyRateLimit(this.planUsage, ev);
           this.notifier.changed();
         },
+      });
+    } else if (this.registry.provider(agent.model.provider)?.kind === "acp") {
+      const preset = this.registry.acpPreset(agent.model.provider);
+      const exe = preset ? this.registry.acpProgram(preset.id) : null;
+      if (!preset || !exe) {
+        agent.setStatus("error");
+        throw new Error(this.registry.connectionHint(agent.model.provider));
+      }
+      agent.driver = new AcpDriver({
+        agent,
+        project,
+        preset,
+        exe,
+        mcp: this.mcp,
+        // The team-only prompt, as for Claude Code; the driver renames mcp__luminal__* to the agent's names.
+        systemPrompt: () => this.promptFor(project, agent, "claude-code"),
+        version: process.env.LU_MINAL_VERSION,
       });
     } else {
       agent.driver = new NativeDriver({
@@ -483,15 +506,18 @@ export class Hub implements ProjectRuntime {
     });
   }
 
-  /** Moves an agent to another model (the driver restarts; Claude Code resumes its session). */
+  /** Moves an agent to another model (the driver restarts; Claude Code and ACP agents resume their session). */
   async changeModel(project: Project, agent: Agent, model: ModelRef): Promise<void> {
-    const wasClaude = agent.model.provider === "claude-code";
+    // Within the same CLI the session carries on and the new driver picks the new model in it.
+    const keepSession =
+      agent.model.provider === model.provider &&
+      (model.provider === "claude-code" || this.registry.provider(model.provider)?.kind === "acp");
     // A native conversation moves to the new model; Claude Code keeps its own session.
     const conversation = agent.driver?.snapshot?.() ?? null;
     await agent.driver?.dispose().catch(() => undefined);
     agent.driver = null;
     agent.model = model;
-    if (!wasClaude || model.provider !== "claude-code") agent.sessionId = null;
+    if (!keepSession) agent.sessionId = null;
     agent.info(`Now on ${agent.modelLabel}.`);
     try {
       await this.launch(project, agent);
@@ -549,6 +575,19 @@ export class Hub implements ProjectRuntime {
   async refreshLocalModels(): Promise<void> {
     const models = await listOllamaModels(this.config.providers.ollama?.baseURL, this.opts.fetchImpl).catch(() => []);
     this.registry.setLocalModels("ollama", models);
+    if (!this.opts.offline) {
+      this.registry.refreshAcp();
+      // OpenCode's own model list (`opencode models`, cached for a day); the others list static models.
+      await Promise.all(
+        this.registry.acpPresets().map(async (preset) => {
+          if (preset.models !== "opencode") return;
+          const exe = this.registry.acpProgram(preset.id);
+          if (!exe) return;
+          const list = await listAcpModels(preset, { exe, cacheDir: this.opts.cacheDir }).catch(() => []);
+          if (list.length) this.registry.setLocalModels(preset.id, list);
+        }),
+      );
+    }
     this.notifier.changed();
   }
 
@@ -583,6 +622,26 @@ export class Hub implements ProjectRuntime {
   }
 
   // ---- other providers -------------------------------------------------------------------------
+
+  /** Signs in to an ACP agent's own CLI (`opencode auth login`) in the real terminal. */
+  async loginAcp(providerId: string, run: TerminalRunner): Promise<boolean> {
+    const preset = this.registry.acpPreset(providerId);
+    if (!preset) return false;
+    this.registry.refreshAcp();
+    const exe = this.registry.acpProgram(providerId);
+    if (!exe) {
+      this.toast(this.registry.connectionHint(providerId), "warning");
+      return false;
+    }
+    if (preset.login) {
+      const loginExe = preset.login.command === preset.command ? exe : (findProgram(preset.login.command) ?? preset.login.command);
+      await run(loginExe, preset.login.args, { env: acpEnv(preset) });
+    } else {
+      this.toast(preset.signIn, "info");
+    }
+    void this.refreshLocalModels();
+    return true;
+  }
 
   /** Starts OpenRouter's browser sign-in; the key is stored when it finishes. */
   async loginOpenRouter(): Promise<OAuthLogin> {

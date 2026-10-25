@@ -1,6 +1,6 @@
 import os from "node:os";
 import { describe, expect, it } from "vitest";
-import type { ClaudeRateLimitEvent } from "../../src/agents/claude-code/events.js";
+import { eventsFrom, type ClaudeRateLimitEvent } from "../../src/agents/claude-code/events.js";
 import { applyRateLimit, fetchPlanUsage, parseUsage, toMs, USAGE_ARGS } from "../../src/agents/claude-code/usage.js";
 import type { PlanUsage } from "../../src/core/types.js";
 
@@ -73,6 +73,38 @@ describe("parseUsage", () => {
     const json = parseUsage(JSON.stringify({ rate_limits: { seven_day: { utilization: 50 } } }), NOW)!;
     expect(json.week).toEqual({ utilization: 0.5, resetsAt: null });
     expect(json.plan).toBeNull();
+  });
+
+  it("reads the SDK's usage report, which names the number `percent`", () => {
+    const u = parseUsage(
+      report({
+        five_hour: { percent: 14, resets_at: "2026-10-04T09:40:00Z" },
+        seven_day: { percent: 13.5, resets_at: 1791511200 },
+        seven_day_opus: { percent: 2, resets_at: null },
+        model_scoped: [{ display_name: "Fable", percent: 7, resets_at: null }],
+        extra_usage: { is_enabled: false, monthly_limit: null, used_credits: 0, percent: 0, currency: "USD" },
+      }),
+      NOW,
+    )!;
+    expect(u.session).toEqual({ utilization: 0.14, resetsAt: Date.UTC(2026, 9, 4, 9, 40) });
+    expect(u.week).toEqual({ utilization: 0.135, resetsAt: 1791511200000 });
+    expect(u.models).toEqual([
+      { name: "Opus", utilization: 0.02, resetsAt: null },
+      { name: "Fable", utilization: 0.07, resetsAt: null },
+    ]);
+    expect(u.extra).toEqual({ enabled: false, limit: null, used: 0, utilization: 0, currency: "USD" });
+    // `utilization` wins when a window has both.
+    expect(parseUsage(report({ five_hour: { utilization: 20, percent: 30 } }), NOW)!.session!.utilization).toBe(0.2);
+  });
+
+  it("is null for the session-cost report Claude Code 2.1.310 prints where /usage has no plan numbers", () => {
+    // Real lines (trimmed): `claude -p /usage` answered locally with the session's cost only.
+    const text = [
+      '{"type":"system","subtype":"init","cwd":"/home/u","session_id":"s","tools":[],"mcp_servers":[],"model":"claude-sonnet-5-5"}',
+      '{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Total cost:            $0.0000"}]},"local_command_run":{"command":"usage","args":""}}',
+      '{"is_error":false,"num_turns":0,"session_id":"s","total_cost_usd":0,"subtype":"success","result":"Total cost:            $0.0000","local_command":"usage","type":"result"}',
+    ].join("\n");
+    expect(parseUsage(text, NOW)).toBeNull();
   });
 
   it("is null without plan numbers, and 'not available' for an API key", () => {
@@ -170,5 +202,62 @@ describe("applyRateLimit", () => {
     const before: PlanUsage = { available: false, plan: "pro", session: null, week: null, models: [], extra: null, at: 1 };
     expect(applyRateLimit(before, ev(), NOW).available).toBe(true);
     expect(applyRateLimit(before, ev({ fiveHour: null, sevenDay: null }), NOW)).toEqual(before);
+  });
+
+  it("moves the per-model windows the event carries and keeps the others", () => {
+    const prev: PlanUsage = {
+      available: true,
+      plan: "max",
+      session: null,
+      week: null,
+      models: [
+        { name: "Opus", utilization: 0.2, resetsAt: 3 },
+        { name: "Fable", utilization: 0.1, resetsAt: 4 },
+      ],
+      extra: null,
+      at: 10,
+    };
+    const next = applyRateLimit(
+      prev,
+      ev({ fiveHour: null, sevenDay: null, models: [{ name: "Opus", utilization: 0.9, resetsAt: 5 }, { name: "Sonnet", utilization: 0.3, resetsAt: 6 }] }),
+      NOW,
+    );
+    expect(next.models).toEqual([
+      { name: "Opus", utilization: 0.9, resetsAt: 5 },
+      { name: "Fable", utilization: 0.1, resetsAt: 4 },
+      { name: "Sonnet", utilization: 0.3, resetsAt: 6 },
+    ]);
+    expect(next.at).toBe(NOW);
+    expect(prev.models[0].utilization).toBe(0.2);
+  });
+
+  it("works with the events of the real CLI's line and the documented shape", () => {
+    const real = eventsFrom({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed",
+        resetsAt: 1792944600,
+        rateLimitType: "five_hour",
+        overageStatus: "allowed",
+        overageResetsAt: 1793491200,
+        isUsingOverage: false,
+        unifiedWindows: {
+          five_hour: { utilization: 0.15, resetsAt: 1792944600, status: "allowed" },
+          seven_day: { utilization: 0.13, resetsAt: 1793318400, status: "allowed" },
+        },
+      },
+    })[0] as ClaudeRateLimitEvent;
+    // What the end-to-end run showed: session 15 %, week 13 %.
+    const after = applyRateLimit(null, real, NOW);
+    expect(after.session).toEqual({ utilization: 0.15, resetsAt: 1792944600000 });
+    expect(after.week).toEqual({ utilization: 0.13, resetsAt: 1793318400000 });
+
+    const documented = eventsFrom({
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed_warning", resetsAt: 1793318400, utilization: 0.8, rateLimitType: "seven_day" },
+    })[0] as ClaudeRateLimitEvent;
+    const next = applyRateLimit(after, documented, NOW + 1);
+    expect(next.session).toEqual(after.session);
+    expect(next.week).toEqual({ utilization: 0.8, resetsAt: 1793318400000 });
   });
 });

@@ -146,9 +146,16 @@ describe("McpServer: registration", () => {
     expect(r.configFile).toBe(path.join(stateDir, "mcp", `${lead.id}.json`));
     expect(JSON.parse(fs.readFileSync(r.configFile, "utf8"))).toEqual({
       mcpServers: {
-        luminal: { type: "http", url: `${server.baseUrl}/mcp/${lead.id}`, headers: { Authorization: `Bearer ${r.token}` } },
+        luminal: {
+          type: "http",
+          url: `${server.baseUrl}/mcp/${lead.id}`,
+          headers: { Authorization: `Bearer ${r.token}` },
+          // 24 h: Claude Code gives HTTP servers 60 s per request otherwise, too short for an approval.
+          timeout: 86_400_000,
+        },
       },
     });
+    expect(server.configFor(lead.id)).toEqual(JSON.parse(fs.readFileSync(r.configFile, "utf8")));
     expect(r.token).toMatch(/^[0-9a-f]{64}$/);
     if (process.platform !== "win32") expect(fs.statSync(r.configFile).mode & 0o777).toBe(0o600);
     // Each registration gets its own token.
@@ -369,6 +376,45 @@ describe("McpServer: tools", () => {
     expect((await pending).json.result).toEqual({ content: [{ type: "text", text: "deployed" }], isError: false });
   });
 
+  it("cancels only the call of the session that sent notifications/cancelled", async () => {
+    const r = await register(lead);
+    const session = async () => {
+      const res = await post(r, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25" } });
+      return res.headers.get("mcp-session-id")!;
+    };
+    const a = await session();
+    const b = await session();
+    expect(a).not.toBe(b);
+    let done = false;
+    const running = post(r, call(7, "wait", {}), { headers: { "Mcp-Session-Id": a } }).then((res) => {
+      done = true;
+      return res;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The other process's request 7 is another call.
+    const cancel = { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "AbortError: remote-cancel" } };
+    expect((await post(r, cancel, { headers: { "Mcp-Session-Id": b } })).status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(done).toBe(false);
+    expect((await post(r, cancel, { headers: { "Mcp-Session-Id": a } })).status).toBe(202);
+    expect((await running).json.result).toEqual({ content: [{ type: "text", text: "aborted" }], isError: true });
+  });
+
+  it("ends the running calls of a session the client deletes", async () => {
+    lead.permissionMode = "ask";
+    const r = await register(lead);
+    const init = await post(r, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    const sid = init.headers.get("mcp-session-id")!;
+    const running = post(r, call(3, "approve", { tool_name: "Bash", input: { command: "make" } }), { headers: { "Mcp-Session-Id": sid } });
+    await waitFor(() => lead.pendingApproval !== null, "the approval");
+    const del = await fetch(r.url, { method: "DELETE", headers: { Authorization: `Bearer ${r.token}`, "Mcp-Session-Id": sid } });
+    expect(del.status).toBe(200);
+    expect(JSON.parse((await running).json.result.content[0].text).behavior).toBe("deny");
+    expect(lead.pendingApproval).toBeNull();
+    // The session is gone.
+    expect((await post(r, { jsonrpc: "2.0", id: 4, method: "ping" }, { headers: { "Mcp-Session-Id": sid } })).status).toBe(404);
+  });
+
   it("aborts a running call on notifications/cancelled", async () => {
     const r = await register(lead);
     const running = post(r, call(42, "wait", {}));
@@ -434,6 +480,44 @@ describe("McpServer: Claude Code's permission prompts (approve)", () => {
       behavior: "deny",
       message: "Not allowed: lu-minal is in plan mode (read-only). Describe the change instead.",
     });
+  });
+
+  it("receives what Claude Code 2.1.310 really sends and withdraws the question when it cancels the call", async () => {
+    lead.permissionMode = "ask";
+    const r = await register(lead);
+    const init = await post(r, { jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {} } });
+    const sid = init.headers.get("mcp-session-id")!;
+    const headers = { "Mcp-Session-Id": sid };
+    // The request as recorded from the real CLI (only the tool use id shortened).
+    const request = {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "approve",
+        arguments: { tool_name: "Bash", input: { command: "touch c.txt", description: "Create file c.txt" }, tool_use_id: "toolu_01EY" },
+        _meta: { "claudecode/toolUseId": "toolu_01EY", progressToken: 4 },
+      },
+    };
+    const pending = post(r, request, { headers });
+    await waitFor(() => lead.pendingApproval !== null, "the approval");
+    expect(lead.pendingApproval).toMatchObject({ tool: "Bash", summary: "run touch c.txt", detail: "touch c.txt\n(Create file c.txt)" });
+    // An interrupt: the CLI cancels the call.
+    await post(r, { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 4, reason: "AbortError: remote-cancel" } }, { headers });
+    expect(answer(await pending)).toEqual({ behavior: "deny", message: "The user denied this in lu-minal." });
+    expect(lead.pendingApproval).toBeNull();
+    expect(lead.status).not.toBe("waiting");
+  });
+
+  it("turns down AskUserQuestion without asking, telling Claude to ask in its reply", async () => {
+    lead.permissionMode = "ask";
+    const r = await register(lead);
+    const res = answer(await post(r, approve(1, "AskUserQuestion", { questions: [{ question: "Which database?", options: [] }] })));
+    expect(res.behavior).toBe("deny");
+    expect(res.message).toMatch(/plain text/);
+    lead.permissionMode = "yolo";
+    expect(answer(await post(r, approve(2, "AskUserQuestion", { questions: [] }))).behavior).toBe("deny");
+    expect(lead.log.filter((e) => e.kind === "approval")).toHaveLength(0);
   });
 
   it("withdraws the question when Claude Code goes away", async () => {

@@ -115,17 +115,67 @@ export function describeClaudeTool(name: string, input: Record<string, unknown>,
     }
     case "ExitPlanMode":
       return { verb: "plan", target: "ready" };
+    case "EnterPlanMode":
+      return { verb: "plan", target: "start" };
     case "Skill":
       return { verb: "skill", target: str(input.skill) || str(input.name) || undefined };
     case "SlashCommand":
       return { verb: "command", target: str(input.command) || undefined };
+    // Claude Code loads the schemas of its deferred tools on demand.
+    case "ToolSearch":
+      return { verb: "load", target: "tools" };
+    case "AskUserQuestion": {
+      const first = Array.isArray(input.questions) && isObj(input.questions[0]) ? str(input.questions[0].question) : "";
+      return { verb: "ask", target: firstLine(first || str(input.question), 60) || undefined };
+    }
+    case "Monitor":
+      return { verb: "watch", target: firstLine(str(input.description) || str(input.command), 60) || undefined };
+    case "TaskOutput":
+      return { verb: "check", target: str(input.task_id) || str(input.shell_id) || undefined };
+    case "TaskStop":
+      return { verb: "stop", target: str(input.task_id) || str(input.shell_id) || undefined };
+    case "TaskCreate":
+    case "TaskUpdate":
+    case "TaskGet":
+    case "TaskList":
+      return { verb: "todo", target: firstLine(str(input.subject) || str(input.title) || str(input.taskId) || str(input.id), 60) || undefined };
+    case "CronCreate":
+    case "ScheduleWakeup":
+      return { verb: "schedule", target: firstLine(str(input.cron) || str(input.prompt) || str(input.reason), 60) || undefined };
+    case "CronDelete":
+      return { verb: "unschedule", target: str(input.id) || undefined };
+    case "CronList":
+      return { verb: "list", target: "schedules" };
+    case "EnterWorktree":
+      return { verb: "worktree", target: str(input.name) || str(input.path) || "new" };
+    case "ExitWorktree":
+      return { verb: "worktree", target: "leave" };
+    case "SendMessage":
+      return { verb: "message", target: `→ ${str(input.to) || str(input.recipient) || "?"}` };
+    case "ListMcpResourcesTool":
+      return { verb: "list", target: str(input.server) ? `${str(input.server)} resources` : "resources" };
+    case "ReadMcpResourceTool":
+      return { verb: "read", target: str(input.uri) || undefined };
+    case "LSP":
+      return { verb: "lsp", target: firstLine([str(input.operation), displayPath(filePath, cwd)].filter(Boolean).join(" "), 60) || undefined };
     default:
       break;
   }
   if (name.startsWith(LUMINAL_TOOL_PREFIX)) return describeLuminalTool(name.slice(LUMINAL_TOOL_PREFIX.length), input);
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
   if (mcp) return { verb: mcp[1], target: words(mcp[2]) };
-  return { verb: name };
+  // A tool this list doesn't know yet: its name in words ("ListConnectors" → "list connectors").
+  return { verb: camelWords(name) || name };
+}
+
+/** "list connectors" for "ListConnectors" (acronyms kept together: "LSPServer" → "lsp server"). */
+function camelWords(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 // ---- results -----------------------------------------------------------------------------------
@@ -152,6 +202,10 @@ function meaningfulLine(text: string, max = 70): string {
 function errorDetail(name: string, text: string): string {
   const clean = cleanResultText(text);
   if (/denied this in lu-minal|haven't granted it yet|permission to use .* (was|has been) denied/i.test(clean)) return "denied";
+  // What the CLI puts in a call it cut off because the turn was interrupted.
+  if (/^The user doesn't want to proceed with this tool use|^User rejected tool use|^\[Request interrupted by user/i.test(clean)) {
+    return "cancelled";
+  }
   const exit = /^(?:Error: )?Exit code (\d+)\s*\n?([\s\S]*)$/.exec(clean);
   if (exit && (name === "Bash" || name === "PowerShell")) {
     const rest = meaningfulLine(exit[2], 60);
@@ -333,6 +387,8 @@ export function toolResultDisplay(
     case "Bash":
     case "PowerShell": {
       if (meta?.interrupted === true) return { detail: "interrupted" };
+      // Claude Code 2.1 says so in words when a command printed nothing.
+      if (/^\((Bash|PowerShell|Command) completed with no output\)$/i.test(text)) return { detail: "✓ no output" };
       const line = meaningfulLine(text);
       return { detail: line ? `✓ ${line}` : "✓ exit 0" };
     }

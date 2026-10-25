@@ -34,7 +34,13 @@ export function toResponsesInput(messages: ChatMessage[]): unknown[] {
   const out: unknown[] = [];
   for (const m of messages) {
     if (m.role === "user") {
-      out.push({ role: "user", content: [{ type: "input_text", text: m.content }] });
+      out.push({
+        role: "user",
+        content: [
+          { type: "input_text", text: m.content },
+          ...(m.images ?? []).map((img) => ({ type: "input_image", image_url: `data:${img.mediaType};base64,${img.data}` })),
+        ],
+      });
     } else if (m.role === "tool") {
       out.push({ type: "function_call_output", call_id: m.toolCallId, output: m.content });
     } else if (m.raw?.wire === "openai-responses" && Array.isArray(m.raw.data)) {

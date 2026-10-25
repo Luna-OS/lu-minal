@@ -99,6 +99,17 @@ describe("Claude Code through lu-minal's MCP server", () => {
     await waitFor(() => entry.decision === "deny", "the denial");
   });
 
+  it("drops a pending permission prompt when Claude Code dies while it waits", async () => {
+    agent.deliver({ from: "you", text: "mcp-approve-die npm run deploy" });
+    await waitFor(() => agent.pendingApproval !== null, "the approval");
+    await waitFor(() => agent.turnStartedAt === null, "the turn to end");
+    expect(agent.pendingApproval).toBeNull();
+    expect(agent.status).toBe("error");
+    expect(agent.log.some((e) => e.kind === "error" && /stopped unexpectedly \(exit code 9\)/.test(e.text))).toBe(true);
+    const entry = agent.log.find((e) => e.kind === "approval") as Extract<LogEntry, { kind: "approval" }>;
+    await waitFor(() => entry.decision === "deny", "the denial");
+  });
+
   it("shows lu-minal's own tool call with the tool's verb and display", async () => {
     agent.deliver({ from: "you", text: "mcp-echo hello team" });
     await idle();

@@ -6,13 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { render } from "ink";
 import React from "react";
+import { acpEnv, findAcpAgent, findAcpProgram } from "./agents/acp/presets.js";
 import { readClaudeAccount } from "./agents/claude-code/account.js";
 import { findClaude } from "./agents/claude-code/cli.js";
 import { claudeLoginArgs } from "./agents/claude-code/login.js";
 import { configFile, loadConfig } from "./core/config.js";
 import { errText, Hub } from "./core/hub.js";
 import { cacheDir, configDir, expandHome, stateDir } from "./platform/paths.js";
-import { openExternal, spawnProgram } from "./platform/process.js";
+import { findProgram, openExternal, spawnProgram } from "./platform/process.js";
 import { launchCommand } from "./platform/install-info.js";
 import { installWindowsTerminalProfile, removeWindowsTerminalProfile } from "./platform/windows-terminal.js";
 import { AuthStore } from "./providers/auth.js";
@@ -44,7 +45,7 @@ Usage
   lu-minal --fresh [folder]      start without the last session's tabs
   lu-minal models [query] [--free]   list models (all providers from models.dev)
   lu-minal providers             list providers and whether you are signed in
-  lu-minal login <provider> [key]    sign in (claude, openrouter, or save an API key)
+  lu-minal login <provider> [key]    sign in (claude, openrouter, opencode-cli, gemini-cli, or save an API key)
   lu-minal logout <provider>     forget a provider's key
   lu-minal roblox install        install the Roblox Studio plugin
   lu-minal roblox path           print the Roblox plugins folder
@@ -101,9 +102,9 @@ function print(line = ""): void {
   process.stdout.write(`${line}\n`);
 }
 
-async function runInherit(exe: string, args: string[]): Promise<number | null> {
+async function runInherit(exe: string, args: string[], env?: NodeJS.ProcessEnv): Promise<number | null> {
   return new Promise((resolve) => {
-    const child = spawnProgram(exe, args, { stdio: "inherit" });
+    const child = spawnProgram(exe, args, { stdio: "inherit", env });
     child.on("error", () => resolve(null));
     child.on("exit", (code) => resolve(code));
   });
@@ -147,6 +148,20 @@ async function subcommand(args: Args): Promise<number | null> {
           return 1;
         }
         return runInherit(exe, claudeLoginArgs());
+      }
+      const acp = findAcpAgent(id, loadConfig());
+      if (acp) {
+        const exe = findAcpProgram(acp);
+        if (!exe) {
+          print(`${acp.name} is not installed.${acp.install ? ` Install it: ${acp.install}` : ""}`);
+          return 1;
+        }
+        if (!acp.login) {
+          print(acp.signIn);
+          return 0;
+        }
+        const loginExe = acp.login.command === acp.command ? exe : (findProgram(acp.login.command) ?? acp.login.command);
+        return runInherit(loginExe, acp.login.args, acpEnv(acp));
       }
       const auth = AuthStore.default();
       if (rest[1]) {

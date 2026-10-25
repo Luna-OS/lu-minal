@@ -7,6 +7,8 @@ import type { Project } from "../core/project.js";
 import { PERMISSION_MODES, type PermissionMode } from "../core/types.js";
 import { parseModelRef } from "../providers/models.js";
 import type { UiServices } from "./store.js";
+import path from "node:path";
+import { expandHome } from "../platform/paths.js";
 
 export interface CommandContext {
   hub: Hub;
@@ -16,6 +18,8 @@ export interface CommandContext {
   /** Puts text into the focused agent's prompt. */
   setPrompt: (text: string) => void;
   toggleZoom: () => void;
+  /** Attaches files (by path) to the focused agent's next message. */
+  attach: (paths: string[]) => void;
   /** Opens one of the dialogs (implemented in dialogs/index.tsx). */
   dialogs: DialogLaunchers;
 }
@@ -23,6 +27,7 @@ export interface CommandContext {
 export interface DialogLaunchers {
   newTab(): void;
   newAgent(): void;
+  attach(): void;
   login(provider?: string): void;
   model(agent: Agent): void;
   theme(): void;
@@ -81,6 +86,19 @@ export const COMMANDS: Command[] = [
     },
   },
   { name: "agents", aliases: ["team"], description: "The agents in this project", run: (ctx) => ctx.dialogs.agents() },
+  {
+    name: "attach",
+    aliases: ["file", "image"],
+    args: "[path]",
+    description: "Attach a picture or file to the next message (also ctrl+v / alt+v for a screenshot, or drop files on the terminal)",
+    keys: "ctrl+v",
+    run: (ctx, args) => {
+      const p = args.trim();
+      if (!p) return ctx.dialogs.attach();
+      const base = ctx.project?.cwd ?? process.cwd();
+      ctx.attach([path.resolve(base, expandHome(p.replace(/^["']|["']$/g, "")))]);
+    },
+  },
   { name: "tasks", aliases: ["board"], description: "The project's shared task board", run: (ctx) => ctx.dialogs.tasks() },
   {
     name: "model",

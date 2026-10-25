@@ -3,18 +3,21 @@
 // its context. Its stream becomes the agent's log (text, reasoning, tool rows with diffs), usage and
 // status; lu-minal's own tools and the permission prompts come through the MCP server.
 //
-// A process that dies, is interrupted the hard way or runs in an outdated permission mode is
-// replaced by a new one with `--resume <sessionId>`, so the conversation goes on.
+// An interrupt is a control request first (Claude Code 2.1.310 ends the turn at once), then SIGINT
+// on macOS / Linux, then a hard stop. A process that dies, is interrupted the hard way (or with
+// SIGINT) or runs in an outdated permission mode is replaced by a new one with
+// `--resume <sessionId>`, so the conversation goes on. Permission questions die with their process.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Agent, AgentDriver, AgentInput } from "../../core/agent.js";
+import { messageParts, type Attachment } from "../../core/attachments.js";
 import { newId } from "../../core/emitter.js";
 import type { Project } from "../../core/project.js";
 import type { LogEntry } from "../../core/types.js";
 import { workVerb } from "../../core/verbs.js";
-import { approvalAnswer, assessClaudeTool } from "../../mcp/approve.js";
+import { approvalAnswer, askWithdrawable, assessClaudeTool, automaticAnswer } from "../../mcp/approve.js";
 import { isWindows } from "../../platform/paths.js";
 import { killTree, spawnProgram } from "../../platform/process.js";
 import type { ToolDisplay } from "../../tools/types.js";
@@ -63,18 +66,38 @@ export interface ClaudeDriverDeps {
   spawnImpl?: (exe: string, args: string[], opts: SpawnOptions) => ChildProcess;
   /** The environment the process inherits (claudeEnv is applied on top); defaults to process.env. */
   env?: NodeJS.ProcessEnv;
-  /** How long interrupt() waits for the CLI to end the turn before it kills the process. */
+  /**
+   * How long interrupt() waits for the CLI to end the turn after the interrupt request, and again
+   * after the SIGINT that follows on macOS / Linux, before it kills the process.
+   */
   interruptGraceMs?: number;
   /**
    * After a result while more messages were sent during the turn: how long to wait for the CLI to
    * start on them before deciding it took them into the finished turn.
    */
   queueGraceMs?: number;
-  /** For tests: the platform whose argument rules apply (cmd.exe shims need a prompt file). */
+  /**
+   * For tests: the platform whose rules apply (cmd.exe shims need a prompt file; Windows has no
+   * SIGINT for another process, so an interrupt that isn't honoured stops it outright).
+   */
   platform?: NodeJS.Platform;
 }
 
 const STDERR_LINES = 20;
+
+/** What one user message carries: text, or content blocks when pictures come along. */
+type MessageContent = string | Array<Record<string, unknown>>;
+
+/** The message for Claude: pictures as image blocks (Claude sees them), other files by path. */
+export function claudeContent(text: string, attachments: Attachment[]): MessageContent {
+  if (!attachments.length) return text;
+  const parts = messageParts(text, attachments, { images: true });
+  return parts.map((p) =>
+    p.type === "text"
+      ? { type: "text", text: p.text }
+      : { type: "image", source: { type: "base64", media_type: p.mediaType, data: p.data } },
+  );
+}
 /** Windows' CreateProcess limit is 32767 characters; leave room for the rest of the line. */
 const MAX_INLINE_PROMPT = 24_000;
 
@@ -104,6 +127,10 @@ interface Run {
   controls: Map<string, { kind: "mode"; previous: ClaudePermissionMode } | { kind: "interrupt" }>;
   promptFile: string | null;
   warnedMcp: boolean;
+  /** Permission questions the CLI asked on stdin (can_use_tool), by request id: withdraws one. */
+  asks: Map<string, () => void>;
+  /** We sent it SIGINT: it may end the turn or exit, either is expected. */
+  sigint: boolean;
   exitPromise: Promise<void>;
   markExited: () => void;
 }
@@ -133,7 +160,10 @@ function track(child: ChildProcess): void {
 }
 
 const LOGIN_TROUBLE = /invalid api key|please run \/login|not logged in|log in|authentication|oauth token|credit balance/i;
-const RESUME_FAILED = /no conversation found|could not find (a )?(session|conversation)|session .*not found/i;
+// "No conversation found with session ID: <id>" (stderr and the result's errors), or for a value
+// that is not a UUID "--resume requires a valid session ID or session title ...".
+const RESUME_FAILED =
+  /no conversation found|could not find (a )?(session|conversation)|session .*not found|requires a valid session id|does not match any session/i;
 
 /** The error line for a failed result. */
 function resultError(ev: ClaudeResultEvent): string {
@@ -165,9 +195,9 @@ export class ClaudeCodeDriver implements AgentDriver {
   private ready = false;
   private disposed = false;
   /** Messages handed over before start() finished. */
-  private waiting: string[] = [];
+  private waiting: MessageContent[] = [];
   /** Messages handed over while an interrupt is settling (sent once it has). */
-  private deferred: string[] = [];
+  private deferred: MessageContent[] = [];
   /** Messages written whose result has not arrived yet. */
   private outstanding = 0;
   private interrupting: { timer: NodeJS.Timeout } | null = null;
@@ -202,11 +232,24 @@ export class ClaudeCodeDriver implements AgentDriver {
       this.mcpConfig = await this.deps.mcp.register(this.agent);
     } catch (err) {
       this.mcpConfig = null;
-      this.agent.info(
-        `lu-minal's team tools are not available to Claude (${err instanceof Error ? err.message : String(err)}). Permission prompts still reach you.`,
-      );
+      if (!this.disposed) {
+        this.agent.info(
+          `lu-minal's team tools are not available to Claude (${err instanceof Error ? err.message : String(err)}). Permission prompts still reach you.`,
+        );
+      }
     }
-    if (this.disposed) return;
+    if (this.disposed) {
+      // dispose() ran while the registration was on its way: it unregistered too early.
+      if (this.mcpConfig) {
+        try {
+          this.deps.mcp.unregister(this.agent.id);
+        } catch {
+          // nothing to clean up
+        }
+        this.mcpConfig = null;
+      }
+      return;
+    }
     this.ready = true;
     this.agent.setStatus("idle");
     const waiting = this.waiting.splice(0);
@@ -218,7 +261,8 @@ export class ClaudeCodeDriver implements AgentDriver {
 
   send(input: AgentInput): void {
     if (this.disposed) return;
-    const text = input.from === "you" ? input.text : `[message from ${input.from}] ${input.text}`;
+    const said = input.from === "you" ? input.text : `[message from ${input.from}] ${input.text}`;
+    const text = claudeContent(said, input.attachments ?? []);
     this.agent.startTurn();
     if (!this.ready) {
       this.waiting.push(text);
@@ -239,21 +283,23 @@ export class ClaudeCodeDriver implements AgentDriver {
       if (this.outstanding === 0 && this.agent.turnStartedAt !== null && !this.interrupting) this.agent.endTurn("idle");
       return;
     }
-    if (this.interrupting) return;
+    // Asked again while the first one settles: don't wait for the grace period.
+    if (this.interrupting) {
+      this.escalate(run);
+      return;
+    }
     // Messages queued behind the turn would run after a soft interrupt, and a process that has not
     // started its turn may not listen yet: stop it outright (the next message resumes).
     if (this.outstanding > 1 || !run.initialized) {
       this.stopHard(run);
       return;
     }
+    // Claude Code answers { subtype: "success", response: { still_queued: [] } } at once and ends the
+    // turn with an error_during_execution result (terminal_reason "aborted_tools" during a tool).
     const requestId = newId("interrupt");
     run.controls.set(requestId, { kind: "interrupt" });
-    const timer = setTimeout(() => {
-      if (this.interrupting && this.run === run) this.stopHard(run);
-    }, this.deps.interruptGraceMs ?? 3000);
-    timer.unref?.();
-    this.interrupting = { timer };
-    if (!this.writeLine(run, interruptLine(requestId))) this.stopHard(run);
+    this.interrupting = { timer: this.escalateLater(run) };
+    if (!this.writeLine(run, interruptLine(requestId))) this.escalate(run);
   }
 
   async dispose(): Promise<void> {
@@ -281,7 +327,7 @@ export class ClaudeCodeDriver implements AgentDriver {
 
   // ---- the process -----------------------------------------------------------------------------
 
-  private write(text: string): void {
+  private write(text: MessageContent): void {
     const desired = claudePermissionMode(this.agent.permissionMode);
     let run = this.run;
     if (run && run.mode !== desired) {
@@ -385,6 +431,8 @@ export class ClaudeCodeDriver implements AgentDriver {
       controls: new Map(),
       promptFile,
       warnedMcp: false,
+      asks: new Map(),
+      sigint: false,
       exitPromise,
       markExited,
     };
@@ -422,6 +470,7 @@ export class ClaudeCodeDriver implements AgentDriver {
   private retire(run: Run): void {
     run.retired = true;
     if (this.run === run) this.run = null;
+    this.withdrawAsks(run);
     try {
       run.child.stdin?.end();
     } catch {
@@ -447,8 +496,14 @@ export class ClaudeCodeDriver implements AgentDriver {
     run.markExited();
     live.delete(run.child);
     this.removePromptFile(run);
+    this.withdrawAsks(run);
     if (this.run === run) this.run = null;
     if (run.retired || this.disposed) return;
+    // Its permission questions (the MCP approve calls, lu-minal's own tools) died with it.
+    if (this.agent.approvals.length) {
+      for (const a of this.agent.approvals.splice(0)) a.resolve("deny");
+      this.agent.changed();
+    }
 
     const tail = this.stderrTail.join("\n").trim();
     if (!run.initialized && run.resumed && RESUME_FAILED.test(tail)) {
@@ -512,8 +567,48 @@ export class ClaudeCodeDriver implements AgentDriver {
     if (this.interrupting) clearTimeout(this.interrupting.timer);
     this.interrupting = null;
     this.outstanding = 0;
+    // A process that got SIGINT may be on its way out: the next message starts a new one (resumed).
+    if (this.run?.sigint) this.retire(this.run);
     this.endTurn("idle");
     this.flushDeferred();
+  }
+
+  private escalateLater(run: Run): NodeJS.Timeout {
+    const timer = setTimeout(() => this.escalate(run), this.deps.interruptGraceMs ?? 3000);
+    timer.unref?.();
+    return timer;
+  }
+
+  /**
+   * The interrupt request didn't end the turn (no answer, or the CLI refused it): SIGINT, the
+   * documented way to stop a `-p` turn, on macOS / Linux; when that doesn't help either (or on
+   * Windows, which can't send it), the process is stopped and the next message resumes.
+   */
+  private escalate(run: Run): void {
+    if (!this.interrupting || this.run !== run) return;
+    clearTimeout(this.interrupting.timer);
+    const platform = this.deps.platform ?? process.platform;
+    if (platform !== "win32" && !run.sigint && !run.exited) {
+      run.sigint = true;
+      let sent = false;
+      try {
+        sent = run.child.kill("SIGINT");
+      } catch {
+        sent = false;
+      }
+      if (sent) {
+        this.interrupting.timer = this.escalateLater(run);
+        return;
+      }
+    }
+    this.stopHard(run);
+  }
+
+  /** Takes back the permission questions a process asked on stdin (it is gone or cancelled them). */
+  private withdrawAsks(run: Run): void {
+    const asks = [...run.asks.values()];
+    run.asks.clear();
+    for (const withdraw of asks) withdraw();
   }
 
   /** Sends the messages that arrived while an interrupt was settling. */
@@ -583,6 +678,10 @@ export class ClaudeCodeDriver implements AgentDriver {
         agent.addUsage({ output: ev.tokens });
         return;
       case "context-window":
+        if (ev.tokens > 0 && agent.contextWindow !== ev.tokens) {
+          agent.contextWindow = ev.tokens;
+          agent.changed();
+        }
         return;
       case "rate-limit":
         try {
@@ -600,11 +699,19 @@ export class ClaudeCodeDriver implements AgentDriver {
         run.controls.delete(ev.requestId);
         // The CLI refused the mode switch: the next message restarts it in the right mode.
         if (pending.kind === "mode" && !ev.ok) run.mode = pending.previous;
+        // It refused the interrupt: on to SIGINT / a hard stop.
+        if (pending.kind === "interrupt" && !ev.ok) this.escalate(run);
         return;
       }
       case "control-request":
         void this.controlRequest(run, ev.requestId, ev.subtype, ev.request);
         return;
+      case "control-cancel": {
+        const withdraw = run.asks.get(ev.requestId);
+        run.asks.delete(ev.requestId);
+        withdraw?.();
+        return;
+      }
     }
   }
 
@@ -718,14 +825,17 @@ export class ClaudeCodeDriver implements AgentDriver {
       this.finishInterrupt();
       return;
     }
+    // Stopped by an interrupt that wasn't ours (terminal_reason "aborted_tools", ...): no error.
+    const aborted = !ev.ok && !ev.text.trim() && /^aborted/.test(ev.terminalReason ?? "");
+    if (aborted) agent.info("Claude Code's turn was interrupted.");
     if (this.outstanding > 0) {
-      if (!ev.ok) agent.error(resultError(ev));
+      if (!ev.ok && !aborted) agent.error(resultError(ev));
       this.updateQueued();
       this.startQueueTimer(run);
       return;
     }
-    if (!ev.ok) agent.error(resultError(ev));
-    this.endTurn(ev.ok ? "idle" : "error");
+    if (!ev.ok && !aborted) agent.error(resultError(ev));
+    this.endTurn(ev.ok || aborted ? "idle" : "error");
   }
 
   /** A permission request straight from the CLI (no permission-prompt tool): asked like any other. */
@@ -740,20 +850,23 @@ export class ClaudeCodeDriver implements AgentDriver {
       request.input && typeof request.input === "object" && !Array.isArray(request.input)
         ? (request.input as Record<string, unknown>)
         : {};
-    const assessed = assessClaudeTool(toolName, input, this.deps.project.cwd);
-    let decision: string;
-    try {
-      decision = await agent.requestApproval({
-        tool: toolName,
-        risk: assessed.risk,
-        summary: assessed.summary,
-        detail: assessed.detail,
-        allowKey: assessed.allowKey,
-      });
-    } catch {
-      decision = "deny";
+    const automatic = automaticAnswer(toolName);
+    if (automatic) {
+      this.writeLine(run, controlResponseLine(requestId, automatic));
+      return;
     }
-    if (run.exited || run.retired) return;
+    const assessed = assessClaudeTool(toolName, input, this.deps.project.cwd);
+    const ask = askWithdrawable(agent, {
+      tool: toolName,
+      risk: assessed.risk,
+      summary: assessed.summary,
+      detail: assessed.detail,
+      allowKey: assessed.allowKey,
+    });
+    run.asks.set(requestId, ask.withdraw);
+    const decision = await ask.decision;
+    // Cancelled (control_cancel_request) or the process is gone: nobody waits for the answer.
+    if (!run.asks.delete(requestId) || run.exited || run.retired) return;
     this.writeLine(run, controlResponseLine(requestId, approvalAnswer(decision !== "deny", input, agent.permissionMode)));
   }
 

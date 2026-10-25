@@ -24,8 +24,10 @@ export function parseModelRef(text: string): ModelRef | null {
  *   (no API key, lu-minal never sees a token).
  * - "api": a hosted HTTP API (one of the three wire protocols).
  * - "local": a server on this machine (Ollama, LM Studio), no key needed.
+ * - "acp": a coding-agent CLI driven over the Agent Client Protocol (OpenCode, Gemini CLI, custom
+ *   ones from config.json); it signs in and talks to its models itself (src/agents/acp/).
  */
-export type ProviderKind = "claude-code" | "api" | "local";
+export type ProviderKind = "claude-code" | "api" | "local" | "acp";
 
 /**
  * How a provider signs in:
@@ -65,6 +67,8 @@ export interface ModelInfo {
   maxOutput: number | null;
   toolCall: boolean;
   reasoning: boolean;
+  /** Takes pictures as input (models.dev's modalities.input has "image"). */
+  vision?: boolean;
   /** Costs nothing to use (input and output price 0). */
   free: boolean;
   /** USD per million tokens. */
@@ -79,7 +83,7 @@ export interface ResolvedModel {
   ref: ModelRef;
   provider: ProviderInfo;
   model: ModelInfo;
-  /** Null for "claude-code" models, which run through the CLI. */
+  /** Null for "claude-code" and "acp" models, which run through their CLI. */
   endpoint: WireEndpoint | null;
   wire: WireKind | null;
 }

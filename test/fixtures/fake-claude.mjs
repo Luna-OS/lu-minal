@@ -10,14 +10,24 @@
 //   "deny"                   a result that reports a permission denial
 //   "fail"                   an error result (not signed in)
 //   "slow" / "hang"          starts streaming and waits; "slow" stops on an interrupt, "hang" never
+//                            (SIGINT ends a "hang" process, as Node does by default)
+//   "sigint"                 like "hang", but SIGINT ends the turn (an error result) and the
+//                            process stays
 //   "crash"                  writes to stderr and exits with code 3
 //   "ask"                    asks the host for a permission (control_request can_use_tool)
+//   "ask-cancel"             asks, then withdraws the request (control_cancel_request)
+//   "ask-question"           asks about AskUserQuestion and reports the answer
 //   "pause"                  answers after 300 ms
 //   "mode"                   answers with the current permission mode ("mode=acceptEdits")
 //   "compact"                compacts the conversation first (status lines), then answers
 //   "[message from x] ..."   echoes the message ("got [message from x] ...")
 //   "mcp-approve <command>"  asks lu-minal's MCP "approve" tool (from --mcp-config) about Bash
 //   "mcp-echo <text>"        calls lu-minal's MCP tool "echo" and reports it as a tool call
+//   "mcp-approve-die <cmd>"  asks the MCP "approve" tool, then dies before the answer comes
+//   "replay <turn> <file>"   prints the lines of one turn of a recorded real transcript (turns end
+//                            with a result line; the first is 1)
+// FAKE_CLAUDE_REFUSE_INTERRUPT=1 answers interrupt requests with an error; FAKE_CLAUDE_SIGNALS names
+// a file that gets a line per SIGINT a "sigint" turn received.
 // Every start is logged to $FAKE_CLAUDE_LOG (one JSON line: argv, cwd, a few env vars).
 import fs from "node:fs";
 import readline from "node:readline";
@@ -194,12 +204,13 @@ function askHost(request) {
 
 async function handleUser(content) {
   turn++;
-  init();
   const id = `msg_${turn}`;
   // The argument is the rest of the line, so paths with spaces (Windows profiles) work.
   const line = String(content).trim();
   const word = line.split(/\s+/)[0] ?? "";
   const arg = line.slice(word.length).trim();
+  // A replayed transcript brings its own init line.
+  if (word !== "replay") init();
   switch (word) {
     case "edit": {
       start(id);
@@ -337,6 +348,66 @@ async function handleUser(content) {
       result({ result: `behavior=${behavior}` });
       return;
     }
+    case "ask-cancel": {
+      start(id);
+      const requestId = `req-cancel-${turn}`;
+      let answered = "none";
+      out({ type: "control_request", request_id: requestId, request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "make deploy" }, tool_use_id: "toolu_cancel" } });
+      answers.set(requestId, (r) => {
+        answered = r?.response?.behavior ?? "?";
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      out({ type: "control_cancel_request", request_id: requestId });
+      // A late answer to a withdrawn request would show up here.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      text(id, `cancelled; answered=${answered}`);
+      stop(2);
+      result({ result: "" });
+      return;
+    }
+    case "ask-question": {
+      start(id);
+      const answer = await askHost({
+        subtype: "can_use_tool",
+        tool_name: "AskUserQuestion",
+        input: { questions: [{ question: "Which database?", options: [{ label: "SQLite" }, { label: "Postgres" }] }] },
+        tool_use_id: "toolu_q",
+      });
+      const r = answer?.response ?? {};
+      text(id, `behavior=${r.behavior ?? "none"}: ${r.message ?? ""}`);
+      stop(2);
+      result({ result: "" });
+      return;
+    }
+    case "sigint": {
+      start(id);
+      out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Working" } }, parent_tool_use_id: null, ...base() });
+      await new Promise((resolve) => process.once("SIGINT", resolve));
+      if (process.env.FAKE_CLAUDE_SIGNALS) fs.appendFileSync(process.env.FAKE_CLAUDE_SIGNALS, "SIGINT\n");
+      result({ subtype: "error_during_execution", is_error: true, result: null, errors: ["[ede_diagnostic] result_type=user"], terminal_reason: "aborted_streaming" });
+      return;
+    }
+    case "mcp-approve-die": {
+      start(id);
+      void mcp("tools/call", { name: "approve", arguments: { tool_name: "Bash", input: { command: arg }, tool_use_id: "toolu_die" } }).catch(() => undefined);
+      // Dies once the question is on its way.
+      setTimeout(() => process.exit(9), 300);
+      await new Promise(() => undefined);
+      return;
+    }
+    case "replay": {
+      // "replay <turn> <file>": the file is the rest of the line (paths with spaces work).
+      const which = arg.split(/\s+/)[0] ?? "1";
+      const file = arg.slice(which.length).trim();
+      const want = Number(which) || 1;
+      let at = 1;
+      for (const raw of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+        if (!raw.trim()) continue;
+        if (at === want) process.stdout.write(`${raw}\n`);
+        if (JSON.parse(raw).type === "result") at++;
+      }
+      return;
+    }
     default: {
       start(id);
       out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me think." } }, parent_tool_use_id: null, ...base() });
@@ -365,7 +436,12 @@ rl.on("line", (line) => {
   if (msg.type === "control_request") {
     const subtype = msg.request?.subtype;
     if (subtype === "interrupt") {
-      out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id } });
+      if (process.env.FAKE_CLAUDE_REFUSE_INTERRUPT) {
+        out({ type: "control_response", response: { subtype: "error", request_id: msg.request_id, error: "Cannot interrupt now" } });
+        return;
+      }
+      // Claude Code 2.1.310's receipt (interrupt_receipt_v1).
+      out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: { still_queued: [] } } });
       onInterrupt?.();
     } else if (subtype === "set_permission_mode") {
       if (process.env.FAKE_CLAUDE_REFUSE_MODE) {

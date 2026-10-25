@@ -10,12 +10,13 @@ import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
+import { MCP_TOOL_TIMEOUT_MS } from "../agents/claude-code/cli.js";
 import type { Agent } from "../core/agent.js";
 import { newId } from "../core/emitter.js";
 import type { Project } from "../core/project.js";
 import { createToolContext, normalizeArgs, runToolCall } from "../tools/run.js";
 import type { Tool, ToolDisplay, ToolServices } from "../tools/types.js";
-import { APPROVE_TOOL, APPROVE_TOOL_NAME, approvalAnswer, assessClaudeTool } from "./approve.js";
+import { APPROVE_TOOL, APPROVE_TOOL_NAME, approvalAnswer, askWithdrawable, assessClaudeTool, automaticAnswer } from "./approve.js";
 import { classify, RPC_ERRORS, RpcError, rpcError, rpcResult, type JsonRpcId, type JsonRpcResponse } from "./jsonrpc.js";
 
 /** The server's name in Claude Code's config: its tools are "mcp__luminal__<tool>". */
@@ -63,9 +64,24 @@ interface Registration {
   configFile: string;
   sessions: Set<string>;
   recent: RecentCall[];
-  /** Running calls by JSON-RPC id, for notifications/cancelled. */
+  /** Running calls by MCP session and JSON-RPC id (inflightKey), for notifications/cancelled. */
   inflight: Map<string, AbortController>;
 }
+
+/** The server entry Claude Code reads from `--mcp-config`. */
+export interface McpServerEntry {
+  type: "http";
+  url: string;
+  headers: Record<string, string>;
+  /**
+   * How long Claude Code waits for one request, in ms. HTTP servers otherwise get 60 s per request,
+   * too short for a permission prompt that waits for the user.
+   */
+  timeout: number;
+}
+
+/** JSON-RPC ids are only unique within one MCP session (one Claude Code process). */
+const inflightKey = (sessionId: string | null, id: JsonRpcId) => `${sessionId ?? ""}\u0000${String(id)}`;
 
 type Obj = Record<string, unknown>;
 
@@ -116,6 +132,10 @@ function readBody(req: http.IncomingMessage, limit: number): Promise<string> {
       else resolve(Buffer.concat(chunks).toString("utf8"));
     });
     req.on("error", reject);
+    // A client that goes away halfway through the body sends neither "end" nor always "error".
+    req.on("close", () => {
+      if (!req.complete) reject(new Error("The request was cut off."));
+    });
   });
 }
 
@@ -265,18 +285,10 @@ export class McpServer {
   }
 
   /** The config file content for an agent (what register writes). */
-  configFor(agentId: string): { mcpServers: Record<string, { type: "http"; url: string; headers: Record<string, string> }> } | null {
+  configFor(agentId: string): { mcpServers: Record<string, McpServerEntry> } | null {
     const reg = this.agents.get(agentId);
     if (!reg) return null;
-    return {
-      mcpServers: {
-        [MCP_SERVER_NAME]: {
-          type: "http",
-          url: `${this.baseUrl}/mcp/${encodeURIComponent(agentId)}`,
-          headers: { Authorization: `Bearer ${reg.token}` },
-        },
-      },
-    };
+    return this.configOf(reg);
   }
 
   /**
@@ -331,23 +343,24 @@ export class McpServer {
     return name.startsWith(prefix) ? name.slice(prefix.length) : name;
   }
 
+  private configOf(reg: Registration): { mcpServers: Record<string, McpServerEntry> } {
+    return {
+      mcpServers: {
+        [MCP_SERVER_NAME]: {
+          type: "http",
+          url: `${this.baseUrl}/mcp/${encodeURIComponent(reg.agentId)}`,
+          headers: { Authorization: `Bearer ${reg.token}` },
+          timeout: MCP_TOOL_TIMEOUT_MS,
+        },
+      },
+    };
+  }
+
   private writeConfig(reg: Registration): void {
     if (this.port === null) return;
     const dir = path.dirname(reg.configFile);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const content = `${JSON.stringify(
-      {
-        mcpServers: {
-          [MCP_SERVER_NAME]: {
-            type: "http",
-            url: `${this.baseUrl}/mcp/${encodeURIComponent(reg.agentId)}`,
-            headers: { Authorization: `Bearer ${reg.token}` },
-          },
-        },
-      },
-      null,
-      2,
-    )}\n`;
+    const content = `${JSON.stringify(this.configOf(reg), null, 2)}\n`;
     // Temp file + rename: a starting `claude` never reads half a file.
     const tmp = `${reg.configFile}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     fs.writeFileSync(tmp, content, { mode: 0o600 });
@@ -401,11 +414,14 @@ export class McpServer {
     }
     switch (req.method) {
       case "POST":
-        return this.post(req, res, reg);
+        return this.post(req, res, reg, sessionId);
       case "DELETE":
         if (sessionId) {
           this.sessions.delete(sessionId);
           reg.sessions.delete(sessionId);
+          // The client ended the session: its running calls (a waiting approval) end with it.
+          const prefix = inflightKey(sessionId, "");
+          for (const [key, controller] of reg.inflight) if (key.startsWith(prefix)) controller.abort();
         }
         res.writeHead(200, { "Content-Length": "0" });
         res.end();
@@ -417,7 +433,7 @@ export class McpServer {
     }
   }
 
-  private async post(req: http.IncomingMessage, res: http.ServerResponse, reg: Registration): Promise<void> {
+  private async post(req: http.IncomingMessage, res: http.ServerResponse, reg: Registration, sessionId: string | null): Promise<void> {
     let body: string;
     try {
       body = await readBody(req, MAX_BODY_BYTES);
@@ -448,7 +464,7 @@ export class McpServer {
     let newSession: string | null = null;
     const answers = await Promise.all(
       messages.map((m) =>
-        this.dispatch(m, reg, request.signal, (sid) => {
+        this.dispatch(m, reg, sessionId, request.signal, (sid) => {
           newSession = sid;
         }),
       ),
@@ -467,6 +483,7 @@ export class McpServer {
   private async dispatch(
     message: unknown,
     reg: Registration,
+    sessionId: string | null,
     signal: AbortSignal,
     onSession: (sessionId: string) => void,
   ): Promise<JsonRpcResponse | null> {
@@ -479,13 +496,13 @@ export class McpServer {
       case "notification":
         if (c.message.method === "notifications/cancelled" && isObj(c.message.params)) {
           const id = c.message.params.requestId;
-          if (typeof id === "string" || typeof id === "number") reg.inflight.get(String(id))?.abort();
+          if (typeof id === "string" || typeof id === "number") reg.inflight.get(inflightKey(sessionId, id))?.abort();
         }
         return null;
       case "request": {
         const { id, method, params } = c.message;
         try {
-          return rpcResult(id, await this.call(method, params, id, reg, signal, onSession));
+          return rpcResult(id, await this.call(method, params, inflightKey(sessionId, id), reg, signal, onSession));
         } catch (err) {
           if (err instanceof RpcError) return rpcError(id, err.code, err.message, err.data);
           return rpcError(id, RPC_ERRORS.internal, err instanceof Error ? err.message : String(err));
@@ -497,7 +514,7 @@ export class McpServer {
   private async call(
     method: string,
     params: unknown,
-    id: JsonRpcId,
+    key: string,
     reg: Registration,
     signal: AbortSignal,
     onSession: (sessionId: string) => void,
@@ -528,7 +545,7 @@ export class McpServer {
       case "tools/list":
         return { tools: this.listTools(reg.agentId) };
       case "tools/call":
-        return this.callTool(params, id, reg, signal);
+        return this.callTool(params, key, reg, signal);
       default:
         throw new RpcError(RPC_ERRORS.methodNotFound, `Method not found: ${method}`);
     }
@@ -545,7 +562,7 @@ export class McpServer {
     ];
   }
 
-  private async callTool(params: unknown, id: JsonRpcId, reg: Registration, signal: AbortSignal): Promise<unknown> {
+  private async callTool(params: unknown, key: string, reg: Registration, signal: AbortSignal): Promise<unknown> {
     const p = isObj(params) ? params : {};
     const name = typeof p.name === "string" ? p.name : "";
     if (!name) throw new RpcError(RPC_ERRORS.invalidParams, "tools/call needs a tool name.");
@@ -562,7 +579,6 @@ export class McpServer {
     const onAbort = () => controller.abort();
     if (signal.aborted) controller.abort();
     else signal.addEventListener("abort", onAbort, { once: true });
-    const key = String(id);
     reg.inflight.set(key, controller);
     try {
       if (isApprove) return await this.approve(binding, args, controller.signal);
@@ -599,31 +615,24 @@ export class McpServer {
     const toolName = typeof args.tool_name === "string" && args.tool_name ? args.tool_name : "tool";
     const input = isObj(args.input) ? args.input : {};
     if (signal.aborted) return textResult(JSON.stringify(approvalAnswer(false, input, agent.permissionMode)), false);
+    const automatic = automaticAnswer(toolName);
+    if (automatic) return textResult(JSON.stringify(automatic), false);
     const assessed = assessClaudeTool(toolName, input, project.cwd);
-    const before = new Set(agent.approvals);
-    const pending = agent.requestApproval({
+    const ask = askWithdrawable(agent, {
       tool: toolName,
       risk: assessed.risk,
       summary: assessed.summary,
       detail: assessed.detail,
       allowKey: assessed.allowKey,
     });
-    // The request it queued (none when the mode or the "always" list decided at once).
-    const mine = agent.approvals.find((a) => !before.has(a));
-    const onAbort = () => {
-      if (!mine) return;
-      const i = agent.approvals.indexOf(mine);
-      if (i < 0) return;
-      agent.approvals.splice(i, 1);
-      mine.resolve("deny");
-      agent.changed();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    let decision: Awaited<typeof pending>;
+    // Claude Code cancels the call (notifications/cancelled) or drops the request when it is
+    // interrupted or dies: the question leaves the panel.
+    signal.addEventListener("abort", ask.withdraw, { once: true });
+    let decision: Awaited<typeof ask.decision>;
     try {
-      decision = await pending;
+      decision = await ask.decision;
     } finally {
-      signal.removeEventListener("abort", onAbort);
+      signal.removeEventListener("abort", ask.withdraw);
     }
     return textResult(JSON.stringify(approvalAnswer(decision !== "deny", input, agent.permissionMode)), false);
   }

@@ -103,18 +103,33 @@ describe("Forgejo host: anonymous", () => {
     ]);
   });
 
+  // An exact "owner/name" is looked up first (GET /repos/{owner}/{name}); here it doesn't exist.
+  const missingExact = (url: URL) =>
+    url.pathname.endsWith("/repos/search") ? null : json({ message: "not found" }, 404);
+
   it("searches by name for owner/name queries and keeps matching full names", async () => {
-    const fetch = fakeFetch(() => searchBody([fjRepo("luna/moon"), fjRepo("vega/moon"), fjRepo("luna/moonbase")]));
+    const fetch = fakeFetch((url) => missingExact(url) ?? searchBody([fjRepo("luna/moon"), fjRepo("vega/moon"), fjRepo("luna/moonbase")]));
     const list = await codeberg({ fetchImpl: fetch }).listRepos({ query: "luna/moon" });
-    expect(fetch.calls[0].url).toBe(`${SEARCH}?q=moon&limit=50&page=1&sort=updated&order=desc`);
+    expect(fetch.calls.map((c) => c.url)).toEqual([
+      "https://codeberg.org/api/v1/repos/luna/moon",
+      `${SEARCH}?q=moon&limit=50&page=1&sort=updated&order=desc`,
+    ]);
     expect(list.map((r) => r.fullName)).toEqual(["luna/moon", "luna/moonbase"]);
   });
 
   it("reads a pasted repository URL of the instance as owner/name", async () => {
-    const fetch = fakeFetch(() => searchBody([fjRepo("luna/moon"), fjRepo("vega/moon")]));
+    const fetch = fakeFetch((url) => missingExact(url) ?? searchBody([fjRepo("luna/moon"), fjRepo("vega/moon")]));
     const list = await codeberg({ fetchImpl: fetch }).listRepos({ query: "https://codeberg.org/luna/moon.git" });
-    expect(fetch.calls[0].url).toBe(`${SEARCH}?q=moon&limit=50&page=1&sort=updated&order=desc`);
+    expect(fetch.calls[1].url).toBe(`${SEARCH}?q=moon&limit=50&page=1&sort=updated&order=desc`);
     expect(list.map((r) => r.fullName)).toEqual(["luna/moon"]);
+  });
+
+  it("puts the exact owner/name first even when the search doesn't find it", async () => {
+    const fetch = fakeFetch((url) =>
+      url.pathname.endsWith("/repos/search") ? searchBody([fjRepo("other/fgj-fork")]) : json(fjRepo("romaintb/fgj")),
+    );
+    const list = await codeberg({ fetchImpl: fetch }).listRepos({ query: "romaintb/fgj" });
+    expect(list.map((r) => r.fullName)[0]).toBe("romaintb/fgj");
   });
 
   it("reports a failed search ({ ok: false })", async () => {

@@ -8,7 +8,8 @@
 //     rate_limits: { five_hour, seven_day, seven_day_opus, seven_day_sonnet: { utilization, resets_at },
 //                    model_scoped: [{ display_name, utilization, resets_at }],
 //                    extra_usage: { is_enabled, monthly_limit, used_credits, utilization, currency } } }
-// utilization is in percent there (44 = 44 %); lu-minal uses fractions (0.44).
+// utilization is in percent there (44 = 44 %); lu-minal uses fractions (0.44). The SDK's usage report
+// (SDKUsageReport.rate_limits) names the same number `percent`; both are read.
 //
 // Between two reports, the `rate_limit_event` lines of running agents move the session and week
 // windows (applyRateLimit).
@@ -51,10 +52,13 @@ export function toMs(v: unknown): number | null {
   return null;
 }
 
-/** { utilization (0..1), resetsAt (ms) } from a window of the report (percent), or null. */
+/**
+ * { utilization (0..1), resetsAt (ms) } from a window of the report, or null. The report counts
+ * in percent: `utilization` (Claude Code's own field) or `percent` (the SDK's usage report).
+ */
 function windowOf(w: unknown): UsageWindow | null {
   if (!isObj(w)) return null;
-  const u = num(w.utilization);
+  const u = num(w.utilization) ?? num(w.percent);
   if (u === null) return null;
   return { utilization: u / 100, resetsAt: toMs(w.resets_at ?? w.resetsAt) };
 }
@@ -106,7 +110,7 @@ export function parseUsage(stdout: string, now: number = Date.now()): PlanUsage 
       if (w && !models.some((x) => x.name === m.display_name)) models.push({ name: m.display_name, ...w });
     }
     const x = rl.extra_usage;
-    const xu = isObj(x) ? num(x.utilization) : null;
+    const xu = isObj(x) ? (num(x.utilization) ?? num(x.percent)) : null;
     return {
       available: true,
       plan,
@@ -156,16 +160,27 @@ export async function fetchPlanUsage(exe: string, opts: FetchUsageOptions = {}):
 
 /**
  * The plan usage after a `rate_limit_event` from a running agent: the session and week windows
- * from the stream, everything else (plan, per-model windows, extra usage) as it was.
+ * (and per-model weekly windows) the stream reported, everything else (plan, other windows, extra
+ * usage) as it was.
  */
 export function applyRateLimit(prev: PlanUsage | null, ev: ClaudeRateLimitEvent, now: number = Date.now()): PlanUsage {
   const base: PlanUsage = prev ?? { available: true, plan: null, session: null, week: null, models: [], extra: null, at: now };
-  const moved = Boolean(ev.fiveHour || ev.sevenDay);
+  const fresh = ev.models ?? [];
+  const moved = Boolean(ev.fiveHour || ev.sevenDay || fresh.length);
+  let models = base.models;
+  if (fresh.length) {
+    models = base.models.map((m) => {
+      const hit = fresh.find((f) => f.name === m.name);
+      return hit ? { ...hit } : m;
+    });
+    for (const f of fresh) if (!models.some((m) => m.name === f.name)) models.push({ ...f });
+  }
   return {
     ...base,
     available: base.available || moved,
     session: ev.fiveHour ? { ...ev.fiveHour } : base.session,
     week: ev.sevenDay ? { ...ev.sevenDay } : base.week,
+    models,
     at: moved ? now : base.at,
   };
 }

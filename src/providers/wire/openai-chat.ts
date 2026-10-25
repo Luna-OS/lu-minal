@@ -33,7 +33,17 @@ export function toOpenAIChatMessages(system: string, messages: ChatMessage[]): A
   if (system) out.push({ role: "system", content: system });
   for (const m of messages) {
     if (m.role === "user") {
-      out.push({ role: "user", content: m.content });
+      if (m.images?.length) {
+        out.push({
+          role: "user",
+          content: [
+            { type: "text", text: m.content },
+            ...m.images.map((img) => ({ type: "image_url", image_url: { url: `data:${img.mediaType};base64,${img.data}` } })),
+          ],
+        });
+      } else {
+        out.push({ role: "user", content: m.content });
+      }
     } else if (m.role === "tool") {
       out.push({ role: "tool", tool_call_id: m.toolCallId, content: m.content });
     } else {

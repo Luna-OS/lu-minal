@@ -2,8 +2,9 @@
 // and how old tool output is dropped to make room, how teammates' messages read, and the
 // conversation as JSON for the session file.
 import type { AgentInput } from "../../core/agent.js";
+import { messageParts } from "../../core/attachments.js";
 import type { ModelInfo } from "../../providers/models.js";
-import type { ChatMessage, TokenUsage, ToolResultMessage } from "../../providers/types.js";
+import type { ChatMessage, TokenUsage, ToolResultMessage, UserMessage } from "../../providers/types.js";
 
 /** What an old tool result is replaced with once the context gets full. */
 export const REMOVED_OUTPUT = "[output removed to save context]";
@@ -19,6 +20,19 @@ export function formatInput(input: AgentInput): string {
   const from = input.from.trim();
   if (!from || from === "you" || from === "user") return input.text;
   return `[message from ${from}] ${input.text}`;
+}
+
+/**
+ * The conversation entry for an input: its text, the attached files listed (text files inlined),
+ * and the pictures as images when the model can see them.
+ */
+export function userMessageFor(input: AgentInput, vision: boolean): UserMessage {
+  const text = formatInput(input);
+  if (!input.attachments?.length) return { role: "user", content: text };
+  const parts = messageParts(text, input.attachments, { images: vision });
+  const first = parts[0];
+  const images = parts.flatMap((p) => (p.type === "image" ? [{ mediaType: p.mediaType, data: p.data }] : []));
+  return { role: "user", content: first?.type === "text" ? first.text : text, ...(images.length ? { images } : {}) };
 }
 
 /** USD for one request: fresh input, cache reads and writes, and output, by the model's prices. */
@@ -71,6 +85,11 @@ export function saveConversation(messages: ChatMessage[]): SavedConversation {
   while (start > 0 && start < messages.length && messages[start].role !== "user") start++;
   if (start >= messages.length) start = Math.max(0, messages.length - SAVED_MESSAGES);
   const out = messages.slice(start).map((m): ChatMessage => {
+    // Pictures stay out of the session file (they can be megabytes); the text keeps their paths.
+    if (m.role === "user" && m.images?.length) {
+      const { images: _images, ...rest } = m;
+      return { ...rest, content: `${m.content}\n[${m.images.length} picture(s) not kept after the restart]` };
+    }
     if (m.role === "tool" && m.content.length > SAVED_TOOL_CHARS) {
       return { ...m, content: `${m.content.slice(0, SAVED_TOOL_CHARS)}\n[cut when the session was saved]` };
     }

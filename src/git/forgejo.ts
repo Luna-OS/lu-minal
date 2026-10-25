@@ -203,7 +203,26 @@ export function createForgejoHost(opts: ForgejoHostOptions): RepoHost {
     return list.map((raw) => mapForgejoRepo(raw, instance)).filter((r): r is RepoInfo => r !== null);
   }
 
+  /** The repository "owner/name" names exactly, or null when there is none (or no access). */
+  async function exact(query: string, t: string | null): Promise<RepoInfo | null> {
+    const m = /^([\w.-]+)\/([\w.-]+)$/.exec(query.trim());
+    if (!m) return null;
+    try {
+      const raw = await api(`/repos/${encodeURIComponent(m[1])}/${encodeURIComponent(m[2].replace(/\.git$/i, ""))}`, t);
+      return mapForgejoRepo(raw, instance);
+    } catch {
+      return null;
+    }
+  }
+
   async function search(query: string, t: string | null, page: number, limit: number): Promise<RepoInfo[]> {
+    // An exact "owner/name" goes first: the search itself only matches names and descriptions.
+    const direct = page === 1 ? await exact(query, t) : null;
+    const found = await keywordSearch(query, t, page, limit);
+    return direct ? mergeRepos([direct], found) : found;
+  }
+
+  async function keywordSearch(query: string, t: string | null, page: number, limit: number): Promise<RepoInfo[]> {
     // The search matches repository names; for "owner/name" ask for "name" and filter below.
     const slash = query.lastIndexOf("/");
     const keyword = slash >= 0 ? query.slice(slash + 1).trim() : query;

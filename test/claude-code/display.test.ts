@@ -10,6 +10,7 @@ import {
   hunksToDiff,
   toolResultDisplay,
 } from "../../src/agents/claude-code/display.js";
+import { realInitTools } from "./real-transcripts.js";
 
 let cwd: string;
 
@@ -83,7 +84,40 @@ describe("describeClaudeTool", () => {
     expect(describeClaudeTool("mcp__luminal__task_add", { title: "Voice" }, cwd)).toEqual({ verb: "task add", target: "Voice" });
     expect(describeClaudeTool("mcp__luminal__list_agents", {}, cwd)).toEqual({ verb: "list agents" });
     expect(describeClaudeTool("mcp__github__create_pull_request", {}, cwd)).toEqual({ verb: "github", target: "create pull request" });
-    expect(describeClaudeTool("SomethingNew", {}, cwd)).toEqual({ verb: "SomethingNew" });
+    // A tool this list doesn't know yet: its name in words.
+    expect(describeClaudeTool("SomethingNew", {}, cwd)).toEqual({ verb: "something new" });
+    expect(describeClaudeTool("LSPServerRestart", {}, cwd)).toEqual({ verb: "lsp server restart" });
+  });
+
+  it("names Claude Code's newer tools", () => {
+    expect(describeClaudeTool("ToolSearch", { query: "select:Read,Edit" }, cwd)).toEqual({ verb: "load", target: "tools" });
+    expect(describeClaudeTool("AskUserQuestion", { questions: [{ question: "Which database?\nPick one." }] }, cwd)).toEqual({
+      verb: "ask",
+      target: "Which database?",
+    });
+    expect(describeClaudeTool("Monitor", { command: "until curl -s x; do sleep 2; done", description: "Wait for the server" }, cwd)).toEqual({
+      verb: "watch",
+      target: "Wait for the server",
+    });
+    expect(describeClaudeTool("TaskStop", { task_id: "b7" }, cwd)).toEqual({ verb: "stop", target: "b7" });
+    expect(describeClaudeTool("TaskCreate", { subject: "Write tests" }, cwd)).toEqual({ verb: "todo", target: "Write tests" });
+    expect(describeClaudeTool("CronCreate", { cron: "0 9 * * 1", prompt: "standup" }, cwd)).toEqual({ verb: "schedule", target: "0 9 * * 1" });
+    expect(describeClaudeTool("CronList", {}, cwd)).toEqual({ verb: "list", target: "schedules" });
+    expect(describeClaudeTool("EnterWorktree", { name: "fix-login" }, cwd)).toEqual({ verb: "worktree", target: "fix-login" });
+    expect(describeClaudeTool("EnterPlanMode", {}, cwd)).toEqual({ verb: "plan", target: "start" });
+    expect(describeClaudeTool("SendMessage", { to: "lead", message: "done" }, cwd)).toEqual({ verb: "message", target: "→ lead" });
+    expect(describeClaudeTool("ReadMcpResourceTool", { server: "docs", uri: "docs://intro" }, cwd)).toEqual({ verb: "read", target: "docs://intro" });
+  });
+
+  it("gives every tool of a real Claude Code 2.1.310 init line a lower-case verb", () => {
+    const tools = realInitTools();
+    expect(tools).toEqual(expect.arrayContaining(["Task", "Bash", "Edit", "Read", "Write", "WebFetch", "WebSearch", "NotebookEdit", "Skill", "ToolSearch"]));
+    // And the ones other accounts and versions list.
+    const more = ["Glob", "Grep", "TodoWrite", "BashOutput", "KillShell", "LS", "MultiEdit", "NotebookRead", "ExitPlanMode", "SlashCommand", "Agent", "TaskOutput", "LSP"];
+    for (const name of [...tools, ...more]) {
+      const { verb } = describeClaudeTool(name, {}, cwd);
+      expect(verb, name).toMatch(/^[a-z][a-z0-9 ]*$/);
+    }
   });
 });
 
@@ -210,6 +244,12 @@ describe("toolResultDisplay", () => {
       detail: "✓ Test Files  12 passed (12)",
     });
     expect(toolResultDisplay("Bash", { command: "mkdir x" }, "", false, cwd)).toEqual({ detail: "✓ exit 0" });
+    // Claude Code 2.1.310 says it in words.
+    expect(
+      toolResultDisplay("Bash", { command: "touch a.txt" }, "(Bash completed with no output)", false, cwd, {
+        meta: { stdout: "", stderr: "", interrupted: false, isImage: false, noOutputExpected: true },
+      }),
+    ).toEqual({ detail: "✓ no output" });
     expect(toolResultDisplay("Bash", { command: "npm test" }, 'Exit code 1\nnpm ERR! Missing script: "test"', true, cwd)).toEqual({
       detail: 'exit 1 · npm ERR! Missing script: "test"',
     });
@@ -242,6 +282,10 @@ describe("toolResultDisplay", () => {
       detail: "File has not been read yet. Read it first before writing to it.",
     });
     expect(toolResultDisplay("Bash", {}, "The user denied this in lu-minal.", true, cwd)).toEqual({ detail: "denied" });
+    // A call the CLI cut off because the turn was interrupted (Claude Code 2.1.310's words).
+    const cut =
+      "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+    expect(toolResultDisplay("Bash", { command: "touch c.txt" }, cut, true, cwd)).toEqual({ detail: "cancelled" });
     expect(toolResultDisplay("Edit", {}, "", true, cwd)).toEqual({ detail: "failed" });
   });
 });

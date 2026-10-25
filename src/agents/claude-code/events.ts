@@ -3,7 +3,10 @@
 // own with lines in the shapes the CLI really prints.
 //
 // A subagent's own stream (lines with a `parent_tool_use_id`) is skipped: only the main
-// conversation reaches the panel.
+// conversation reaches the panel. Line types the driver has no use for (active_goal,
+// system/post_turn_summary, system/task_summary, system/thinking_tokens, ...) give no events.
+//
+// test/claude-code/fixtures/*.jsonl are real transcripts (trimmed, anonymised) that the tests replay.
 import type { UsageWindow } from "../../core/types.js";
 
 /** Token counts as the CLI reports them for a turn. */
@@ -29,16 +32,22 @@ export type ClaudeInitEvent = {
   version: string | null;
   /** The MCP servers and whether they connected ("connected", "failed", "needs-auth", ...). */
   mcpServers: Array<{ name: string; status: string }>;
+  /** The tools the model can use ("Bash", "Edit", "mcp__luminal__send_message", ...). */
+  tools: string[];
+  /** What the CLI's stream-json protocol supports ("interrupt_receipt_v1", ...). */
+  capabilities: string[];
 };
 
 export type ClaudeRateLimitEvent = {
   kind: "rate-limit";
   /** "allowed" | "allowed_warning" | "rejected". */
   status: string | null;
-  /** The window the status is about: "five_hour", "seven_day", ... */
+  /** The window the status is about: "five_hour", "seven_day", "seven_day_opus", ... */
   type: string | null;
   fiveHour: UsageWindow | null;
   sevenDay: UsageWindow | null;
+  /** Per-model weekly windows ("Opus", "Sonnet") when the line carries them. */
+  models?: Array<{ name: string } & UsageWindow>;
   usingOverage: boolean;
 };
 
@@ -55,6 +64,8 @@ export type ClaudeResultEvent = {
   usage: ClaudeUsage | null;
   denials: ClaudeDenial[];
   sessionId: string | null;
+  /** Why the turn ended: "completed", "aborted_tools" (an interrupt), ...; null when not given. */
+  terminalReason: string | null;
 };
 
 export type ClaudeEvent =
@@ -89,6 +100,8 @@ export type ClaudeEvent =
    * asks for a permission without a permission-prompt tool. It waits for a control response.
    */
   | { kind: "control-request"; requestId: string; subtype: string; request: Record<string, unknown> }
+  /** The CLI withdrew one of its control requests (an interrupt while it asked for a permission). */
+  | { kind: "control-cancel"; requestId: string }
   /** A line that is not JSON (a warning, a crash), or a line of stderr. */
   | { kind: "stderr"; text: string };
 
@@ -113,13 +126,33 @@ function epochMs(v: unknown): number | null {
   return n < 1e12 ? n * 1000 : n;
 }
 
-/** A rate-limit window as { utilization 0..1, resetsAt ms }, or null. */
-function windowOf(w: unknown): UsageWindow | null {
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && Boolean(s)) : []);
+
+/**
+ * A rate-limit window as { utilization 0..1, resetsAt ms }, or null. The stream sends
+ * `utilization` as a fraction (0.15); a `percent` field (0..100) is read too. A window that is
+ * "rejected" without a number is full.
+ */
+function rateWindow(w: unknown, status: string | null = null): UsageWindow | null {
   if (!isObj(w)) return null;
-  const u = num(w.utilization);
+  let u = num(w.utilization);
+  if (u === null) {
+    const p = num(w.percent);
+    if (p !== null) u = p / 100;
+  }
+  if (u === null && (str(w.status) ?? status) === "rejected") u = 1;
   if (u === null) return null;
   return { utilization: u, resetsAt: epochMs(w.resetsAt ?? w.resets_at) };
 }
+
+/** Per-model weekly windows by their key. */
+const MODEL_WINDOWS: Array<[string, string]> = [
+  ["seven_day_opus", "Opus"],
+  ["seven_day_sonnet", "Sonnet"],
+];
+
+/** "fiveHour" for "five_hour". */
+const camel = (key: string) => key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
 
 /** The text of a tool result's content (a string or a list of blocks). */
 function resultText(content: unknown): string {
@@ -177,24 +210,55 @@ function streamEvents(msg: Obj): Array<ClaudeEvent | StreamStart> {
   return [];
 }
 
+/**
+ * A rate_limit_event. Claude Code 2.1.310 prints
+ *   { rate_limit_info: { status, resetsAt, rateLimitType: "five_hour", overageStatus, isUsingOverage,
+ *                        unifiedWindows: { five_hour: { utilization, resetsAt, status }, seven_day: {...} } } }
+ * while the SDK documents only the window the status is about:
+ *   { rate_limit_info: { status, resetsAt?, utilization?, rateLimitType? } }
+ * Both are read (snake_case spellings too); the unified windows win over the single one.
+ */
 function rateLimitEvent(msg: Obj): ClaudeRateLimitEvent {
-  const info = isObj(msg.rate_limit_info) ? msg.rate_limit_info : {};
-  const windows = isObj(info.unifiedWindows) ? info.unifiedWindows : {};
-  const type = str(info.rateLimitType);
+  const info = isObj(msg.rate_limit_info) ? msg.rate_limit_info : isObj(msg.rateLimitInfo) ? msg.rateLimitInfo : msg;
+  const unified = info.unifiedWindows ?? info.unified_windows;
+  const windows = isObj(unified) ? unified : {};
+  const type = str(info.rateLimitType) ?? str(info.rate_limit_type);
   const status = str(info.status);
-  let fiveHour = windowOf(windows.five_hour);
-  let sevenDay = windowOf(windows.seven_day);
-  // Older lines carry only the window the status is about, at the top level.
-  const single = windowOf(info) ?? (status === "rejected" ? { utilization: 1, resetsAt: epochMs(info.resetsAt) } : null);
+  const windowAt = (key: string) => rateWindow(windows[key] ?? windows[camel(key)]);
+  let fiveHour = windowAt("five_hour");
+  let sevenDay = windowAt("seven_day");
+  const models: Array<{ name: string } & UsageWindow> = [];
+  for (const [key, name] of MODEL_WINDOWS) {
+    const w = windowAt(key);
+    if (w) models.push({ name, ...w });
+  }
+  // The documented shape: only the window the status is about, at the top level.
+  const single = rateWindow(info, status);
   if (single && type === "five_hour" && !fiveHour) fiveHour = single;
   if (single && type === "seven_day" && !sevenDay) sevenDay = single;
-  return { kind: "rate-limit", status, type, fiveHour, sevenDay, usingOverage: Boolean(info.isUsingOverage) };
+  const model = MODEL_WINDOWS.find(([key]) => key === type);
+  if (single && model && !models.some((m) => m.name === model[1])) models.push({ name: model[1], ...single });
+  const ev: ClaudeRateLimitEvent = {
+    kind: "rate-limit",
+    status,
+    type,
+    fiveHour,
+    sevenDay,
+    usingOverage: Boolean(info.isUsingOverage ?? info.is_using_overage),
+  };
+  if (models.length) ev.models = models;
+  return ev;
 }
+
+/** Lines of the CLI's own diagnostics that it adds to `errors` (not meant for people). */
+const DIAGNOSTIC = /^\[[a-z_]+_diagnostic\]/i;
 
 function resultEvent(msg: Obj): ClaudeResultEvent {
   const ok = !msg.is_error && msg.subtype === "success";
   let text = typeof msg.result === "string" ? msg.result : "";
-  if (!text && Array.isArray(msg.errors)) text = msg.errors.filter((e) => typeof e === "string").join("\n");
+  if (!text && Array.isArray(msg.errors)) {
+    text = msg.errors.filter((e): e is string => typeof e === "string" && !DIAGNOSTIC.test(e.trim())).join("\n");
+  }
   const denials = Array.isArray(msg.permission_denials) ? msg.permission_denials : [];
   return {
     kind: "result",
@@ -211,6 +275,7 @@ function resultEvent(msg: Obj): ClaudeResultEvent {
       toolUseId: str(d.tool_use_id),
     })),
     sessionId: str(msg.session_id),
+    terminalReason: str(msg.terminal_reason),
   };
 }
 
@@ -232,6 +297,8 @@ function rawEvents(msg: unknown): Array<ClaudeEvent | StreamStart> {
               .filter(isObj)
               .map((s) => ({ name: str(s.name) ?? "", status: str(s.status) ?? "unknown" }))
               .filter((s) => s.name),
+            tools: strings(msg.tools),
+            capabilities: strings(msg.capabilities),
           },
         ];
       }
@@ -304,6 +371,11 @@ function rawEvents(msg: unknown): Array<ClaudeEvent | StreamStart> {
       const requestId = str(msg.request_id);
       if (!requestId) return [];
       return [{ kind: "control-request", requestId, subtype: str(request.subtype) ?? "", request }];
+    }
+
+    case "control_cancel_request": {
+      const requestId = str(msg.request_id);
+      return requestId ? [{ kind: "control-cancel", requestId }] : [];
     }
 
     case "control_response": {

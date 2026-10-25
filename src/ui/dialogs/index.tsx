@@ -1,5 +1,7 @@
 // The dialog launchers the commands and keys open: palette, new agent, themes, usage, Roblox,
 // help, agents, tasks and the close-tab confirmation.
+import fs from "node:fs";
+import path from "node:path";
 import React from "react";
 import type { Agent } from "../../core/agent.js";
 import type { Hub } from "../../core/hub.js";
@@ -7,7 +9,7 @@ import type { Project } from "../../core/project.js";
 import { formatModelRef } from "../../providers/models.js";
 import { installPlugin, robloxPluginsDir } from "../../roblox/install.js";
 import { openExternal } from "../../platform/process.js";
-import { tildify } from "../../platform/paths.js";
+import { expandHome, tildify } from "../../platform/paths.js";
 import { COMMANDS, type CommandContext, type DialogLaunchers } from "../commands.js";
 import { formatCost, formatTokens, sparkline } from "../format.js";
 import type { UiServices } from "../store.js";
@@ -20,6 +22,35 @@ import { UsageDialog } from "./usage.js";
 import { openCloudDialog } from "./cloud.js";
 
 const ROBLOX_DOCS = "https://github.com/Luna-OS/lu-minal/blob/main/docs/roblox.md";
+
+const MAX_PICKER_FILES = 3000;
+const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", ".next", "target", "__pycache__", ".venv", "dist-bin"]);
+
+/** The project's files for the attach picker (relative paths, ignored folders skipped). */
+export function projectFiles(root: string, max = MAX_PICKER_FILES): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, rel: string) => {
+    if (out.length >= max) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      if (out.length >= max) return;
+      const r = rel ? path.join(rel, e.name) : e.name;
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) walk(path.join(dir, e.name), r);
+      } else if (e.isFile()) {
+        out.push(r);
+      }
+    }
+  };
+  walk(root, "");
+  return out;
+}
 
 export function createLaunchers(
   hub: Hub,
@@ -121,6 +152,38 @@ export function createLaunchers(
       ui.openDialog({ id: "usage", render: (close) => <UsageDialog hub={hub} onClose={close} /> });
     },
     cloud: () => openCloudDialog(hub, ui),
+    attach: () => {
+      const project = hub.activeProject;
+      if (!project) return hub.toast("Open a project first (ctrl+t).", "warning");
+      const files = projectFiles(project.cwd);
+      ui.openDialog({
+        id: "attach",
+        render: (close) => (
+          <ListDialog
+            theme={theme()}
+            title="Attach a file"
+            subtitle={`${files.length}${files.length >= MAX_PICKER_FILES ? "+" : ""} files in ${project.name} · or type a path`}
+            items={files.map((f) => ({ id: f, label: f, keywords: path.basename(f) }))}
+            placeholder="Filter, or type a path like ~/Desktop/shot.png"
+            onCancel={close}
+            onSelect={(item) => {
+              close();
+              getCtx().attach([path.resolve(project.cwd, item.id)]);
+            }}
+            onKey={(_input, key, item, query) => {
+              // Enter on a typed path that isn't in the list attaches it as typed.
+              if (key.return && !item && query.trim()) {
+                close();
+                getCtx().attach([path.resolve(project.cwd, expandHome(query.trim()))]);
+                return true;
+              }
+              return false;
+            }}
+            empty="No file matches - press enter to attach what you typed as a path."
+          />
+        ),
+      });
+    },
     stats: () => {
       ui.openDialog({
         id: "stats",

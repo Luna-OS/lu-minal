@@ -57,7 +57,11 @@ export function findClaude(configured?: string | null, env: NodeJS.ProcessEnv = 
   return findProgram("claude", { configured: wanted, extra: knownClaudeLocations(os.homedir(), env), env });
 }
 
-/** The permission modes Claude Code knows (`--permission-mode`). */
+/**
+ * The permission modes lu-minal uses (`--permission-mode`). Claude Code 2.1.310's help lists the
+ * asking mode as "manual" but still takes "default" (older versions know only that), and reports it
+ * as "default" in its init line.
+ */
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
 
 export const CLAUDE_PERMISSION_MODES: readonly ClaudePermissionMode[] = [
@@ -144,8 +148,9 @@ export function chatArgs(opts: ChatArgsOptions = {}): string[] {
 }
 
 /** One user message as Claude Code's stream-json input expects it. */
-export function userMessageLine(text: string): string {
-  return `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
+/** One user message for stream-json input: plain text, or content blocks (text and images). */
+export function userMessageLine(content: string | Array<Record<string, unknown>>): string {
+  return `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
 }
 
 /** A control request line (interrupt, set_permission_mode, ...). */
@@ -173,17 +178,18 @@ export function setPermissionModeLine(requestId: string, mode: ClaudePermissionM
   return controlLine(requestId, { subtype: "set_permission_mode", mode });
 }
 
-/** 24 hours: an MCP call (the permission prompt) may wait that long for the user's answer. */
+/**
+ * 24 hours: an MCP call (the permission prompt) may wait that long for the user's answer. Set both
+ * as MCP_TOOL_TIMEOUT and as the server entry's "timeout" in the --mcp-config (Claude Code gives
+ * HTTP servers 60 s per request unless one of them is higher).
+ */
 export const MCP_TOOL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Variables that mark a process as running inside a Claude Code session. When lu-minal itself is
- * started from one (a terminal in Claude Code), its agents must not inherit them: `claude` refuses
- * to start nested, and a fixed session id would make every agent write into the same conversation.
- */
-/**
- * Markers a Claude Code process leaves for its children. Started from inside a Claude Code session
- * (a terminal tab of it, or a cloud session), a child `claude` would otherwise join that session.
+ * Markers a Claude Code process leaves for its children. When lu-minal itself is started from inside
+ * a Claude Code session (a terminal tab of it, or a cloud session), its agents must not inherit
+ * them: `claude` refuses to start nested, and a child would otherwise join that session (a fixed
+ * session id would make every agent write into the same conversation).
  */
 const NESTED_SESSION_VARS = [
   "CLAUDECODE",

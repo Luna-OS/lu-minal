@@ -2,7 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { approvalAnswer, assessClaudeTool, claudeToolRisk, isReadOnlyCommand } from "../../src/mcp/approve.js";
+import { Agent } from "../../src/core/agent.js";
+import { Notifier } from "../../src/core/emitter.js";
+import {
+  approvalAnswer,
+  askWithdrawable,
+  assessClaudeTool,
+  automaticAnswer,
+  claudeToolRisk,
+  isReadOnlyCommand,
+} from "../../src/mcp/approve.js";
 
 let cwd: string;
 
@@ -84,6 +93,13 @@ describe("claudeToolRisk", () => {
     expect(claudeToolRisk("mcp__github__create_pull_request", {}, cwd)).toBe("other");
     expect(claudeToolRisk("ExitPlanMode", {}, cwd)).toBe("other");
     expect(claudeToolRisk("SomethingNew", {}, cwd)).toBe("other");
+    // Claude Code 2.1's newer tools.
+    expect(claudeToolRisk("ToolSearch", { query: "select:Read" }, cwd)).toBe("read");
+    expect(claudeToolRisk("TaskCreate", { subject: "x" }, cwd)).toBe("read");
+    expect(claudeToolRisk("EnterPlanMode", {}, cwd)).toBe("read");
+    expect(claudeToolRisk("ReadMcpResourceTool", { uri: "x" }, cwd)).toBe("read");
+    expect(claudeToolRisk("Monitor", { command: "tail -f log" }, cwd)).toBe("exec");
+    expect(claudeToolRisk("TaskStop", { task_id: "b1" }, cwd)).toBe("exec");
   });
 
   it("asks for edits outside the project and in .git / .claude", () => {
@@ -155,5 +171,50 @@ describe("approvalAnswer", () => {
       behavior: "deny",
       message: "Not allowed: lu-minal is in plan mode (read-only). Describe the change instead.",
     });
+  });
+});
+
+describe("automaticAnswer", () => {
+  it("turns down AskUserQuestion (a yes / no prompt can't collect the picks) and nothing else", () => {
+    expect(automaticAnswer("AskUserQuestion")).toMatchObject({ behavior: "deny", message: expect.stringMatching(/plain text/) });
+    expect(automaticAnswer("Bash")).toBeNull();
+    expect(automaticAnswer("ExitPlanMode")).toBeNull();
+  });
+});
+
+describe("askWithdrawable", () => {
+  const request = { tool: "Bash", risk: "exec" as const, summary: "run make", allowKey: "Bash:make" };
+
+  it("asks like requestApproval and passes the answer on", async () => {
+    const agent = new Agent({ name: "luna", role: "lead", model: { provider: "claude-code", model: "opus" } }, new Notifier(), "ask");
+    const ask = askWithdrawable(agent, request);
+    expect(agent.pendingApproval).toMatchObject({ summary: "run make" });
+    agent.answerApproval("allow");
+    expect(await ask.decision).toBe("allow");
+    // Withdrawing an answered question changes nothing.
+    ask.withdraw();
+    expect(agent.approvals).toHaveLength(0);
+  });
+
+  it("withdraws the question: it leaves the panel and counts as a denial", async () => {
+    const agent = new Agent({ name: "luna", role: "lead", model: { provider: "claude-code", model: "opus" } }, new Notifier(), "ask");
+    const other = agent.requestApproval({ ...request, summary: "run other" });
+    const ask = askWithdrawable(agent, request);
+    expect(agent.approvals).toHaveLength(2);
+    ask.withdraw();
+    expect(await ask.decision).toBe("deny");
+    expect(agent.approvals.map((a) => a.request.summary)).toEqual(["run other"]);
+    const entry = agent.log.filter((e) => e.kind === "approval")[1] as any;
+    expect(entry.decision).toBe("deny");
+    agent.answerApproval("allow");
+    expect(await other).toBe("allow");
+  });
+
+  it("decides at once when the mode does, with nothing to withdraw", async () => {
+    const agent = new Agent({ name: "luna", role: "lead", model: { provider: "claude-code", model: "opus" } }, new Notifier(), "yolo");
+    const ask = askWithdrawable(agent, request);
+    expect(agent.approvals).toHaveLength(0);
+    ask.withdraw();
+    expect(await ask.decision).toBe("allow");
   });
 });

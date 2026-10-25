@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseModelRef, type ModelRef } from "../providers/models.js";
 import type { TeamApi, TeamMember } from "../tools/types.js";
 import { Agent } from "./agent.js";
+import type { Attachment } from "./attachments.js";
 import { newId, type Notifier } from "./emitter.js";
 import type {
   AgentSpec,
@@ -174,9 +175,9 @@ export class Project {
    * Sends `text` from `from` (an agent name or "you") to `to` (a name, "lead", or "*" for everyone
    * but the sender). Returns the names that got it.
    */
-  send(from: string, to: string, text: string): string[] {
+  send(from: string, to: string, text: string, attachments?: Attachment[]): string[] {
     const body = text.trim();
-    if (!body) return [];
+    if (!body && !attachments?.length) return [];
     const target = to.trim().replace(/^@/, "").toLowerCase();
     let recipients: Agent[];
     if (target === "*" || target === "all" || target === "everyone") {
@@ -200,7 +201,7 @@ export class Project {
     if (this.messages.length > MAX_MESSAGES) this.messages.splice(0, this.messages.length - MAX_MESSAGES);
     const sender = this.findAgent(from);
     sender?.append({ kind: "message", to: message.to, text: body });
-    for (const r of recipients) r.deliver({ from, text: body });
+    for (const r of recipients) r.deliver({ from, text: body, attachments });
     this.changed();
     return recipients.map((r) => r.name);
   }

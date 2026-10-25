@@ -23,7 +23,7 @@ import type { Tool, ToolResult, ToolServices } from "../../tools/types.js";
 import {
   contextLimit,
   costOf,
-  formatInput,
+  userMessageFor,
   loadConversation,
   saveConversation,
   trimToolResults,
@@ -222,9 +222,19 @@ export class NativeDriver implements AgentDriver {
     this.running = run;
   }
 
+  /** Whether the agent's model takes pictures (false while it can't be resolved). */
+  private canSee(): boolean {
+    try {
+      return this.deps.resolveModel().model.vision === true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Moves the queued inputs into the conversation. */
   private takeQueue(): void {
-    for (const input of this.queue.splice(0)) this.messages.push({ role: "user", content: formatInput(input) });
+    const vision = this.canSee();
+    for (const input of this.queue.splice(0)) this.messages.push(userMessageFor(input, vision));
     this.deps.agent.queued = 0;
   }
 
@@ -297,7 +307,7 @@ export class NativeDriver implements AgentDriver {
           const last = this.messages[this.messages.length - 1];
           if (last?.role === "tool" && !last.content.includes(INTERRUPTED)) last.content += `\n${INTERRUPTED}`;
         }
-        for (const input of this.held.splice(0)) this.messages.push({ role: "user", content: formatInput(input) });
+        for (const input of this.held.splice(0)) this.messages.push(userMessageFor(input, this.canSee()));
         if (!this.disposed) agent.info("Interrupted.");
         this.finishTurn("idle");
       } else {

@@ -5,7 +5,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { clip, describeClaudeTool, displayPath, firstLine, LUMINAL_TOOL_PREFIX } from "../agents/claude-code/display.js";
-import type { PermissionMode, RiskKind } from "../core/types.js";
+import type { Agent } from "../core/agent.js";
+import type { ApprovalDecision, ApprovalRequest, PermissionMode, RiskKind } from "../core/types.js";
 
 /** An approval request for one of Claude Code's tool calls. */
 export interface ClaudeApproval {
@@ -48,9 +49,19 @@ const READ_TOOLS = new Set([
   "BashOutput",
   "Skill",
   "ToolSearch",
+  "TaskOutput",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskGet",
+  "TaskList",
+  "CronList",
+  "EnterPlanMode",
+  "ListMcpResourcesTool",
+  "ReadMcpResourceTool",
+  "LSP",
 ]);
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
-const EXEC_TOOLS = new Set(["Bash", "PowerShell", "KillShell", "KillBash"]);
+const EXEC_TOOLS = new Set(["Bash", "PowerShell", "KillShell", "KillBash", "Monitor", "TaskStop"]);
 
 /** Folders inside a project whose files change how tools behave: edits there always ask. */
 const SENSITIVE_DIRS = new Set([".git", ".claude"]);
@@ -283,6 +294,22 @@ export function assessClaudeTool(toolName: string, input: Record<string, unknown
   return { risk, summary: plain || `use ${toolName}`, detail, allowKey: toolName };
 }
 
+/**
+ * The answer to a permission prompt that lu-minal gives without asking anyone, or null. Claude
+ * Code's AskUserQuestion expects the user's picks back in `updatedInput`, which a yes / no approval
+ * can't collect, so Claude is told to ask in its reply instead (the user answers with a message).
+ */
+export function automaticAnswer(toolName: string): { behavior: "deny"; message: string } | null {
+  if (toolName === "AskUserQuestion") {
+    return {
+      behavior: "deny",
+      message:
+        "lu-minal can't show multiple-choice questions. Ask the user in plain text in your reply instead, then end your turn and wait for their answer.",
+    };
+  }
+  return null;
+}
+
 /** What the approve tool answers Claude Code (as the text of its result). */
 export function approvalAnswer(
   allowed: boolean,
@@ -296,5 +323,31 @@ export function approvalAnswer(
       mode === "plan"
         ? "Not allowed: lu-minal is in plan mode (read-only). Describe the change instead."
         : "The user denied this in lu-minal.",
+  };
+}
+
+/**
+ * Asks for an approval like Agent.requestApproval, with a way to take the question back when the
+ * call that asked is gone (Claude Code was interrupted or died): withdraw() removes it from the
+ * panel and denies it. A failing request counts as a denial.
+ */
+export function askWithdrawable(
+  agent: Agent,
+  request: Omit<ApprovalRequest, "id" | "agentId">,
+): { decision: Promise<ApprovalDecision>; withdraw: () => void } {
+  const before = new Set(agent.approvals);
+  const decision = agent.requestApproval(request).catch((): ApprovalDecision => "deny");
+  // The request it queued (none when the mode or the "always" list decided at once).
+  const mine = agent.approvals.find((a) => !before.has(a));
+  return {
+    decision,
+    withdraw: () => {
+      if (!mine) return;
+      const i = agent.approvals.indexOf(mine);
+      if (i < 0) return;
+      agent.approvals.splice(i, 1);
+      mine.resolve("deny");
+      agent.changed();
+    },
   };
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLineParser, eventsFrom, type ClaudeEvent } from "../../src/agents/claude-code/events.js";
+import { realTranscript } from "./real-transcripts.js";
 
 // Lines in the shapes Claude Code 2.1 prints with --output-format stream-json --verbose
 // --include-partial-messages (trimmed to the fields that matter, plus some that don't).
@@ -187,6 +188,7 @@ describe("Claude Code stream-json events", () => {
       usage: { input: 10, output: 42, cacheRead: 4141, cacheWrite: 120 },
       denials: [],
       sessionId: "s-1",
+      terminalReason: null,
     });
   });
 
@@ -332,11 +334,189 @@ describe("Claude Code stream-json events", () => {
     ]);
   });
 
+  it("reads the documented rate_limit_info shape, snake_case, percent and per-model windows", () => {
+    const one = (info: Record<string, unknown>) => eventsFrom({ type: "rate_limit_event", rate_limit_info: info })[0] as any;
+    // The SDK's documented shape: the window the status is about, at the top level.
+    expect(one({ status: "allowed_warning", resetsAt: 1791504000, utilization: 0.81, rateLimitType: "seven_day" })).toEqual({
+      kind: "rate-limit",
+      status: "allowed_warning",
+      type: "seven_day",
+      fiveHour: null,
+      sevenDay: { utilization: 0.81, resetsAt: 1791504000000 },
+      usingOverage: false,
+    });
+    // Without a type it can't be placed: only the status.
+    expect(one({ status: "allowed", utilization: 0.3 })).toMatchObject({ status: "allowed", type: null, fiveHour: null, sevenDay: null });
+    expect(one({ status: "allowed" })).toMatchObject({ fiveHour: null, sevenDay: null });
+    // snake_case and percent.
+    expect(one({ status: "allowed", resets_at: "2026-10-25T18:00:00Z", percent: 42, rate_limit_type: "five_hour" }).fiveHour).toEqual({
+      utilization: 0.42,
+      resetsAt: Date.parse("2026-10-25T18:00:00Z"),
+    });
+    expect(one({ status: "allowed", unified_windows: { five_hour: { utilization: 0.1, resets_at: 1791081600 } } }).fiveHour).toEqual({
+      utilization: 0.1,
+      resetsAt: 1791081600000,
+    });
+    // Per-model weekly windows, from the unified windows or as the window the status is about.
+    expect(
+      one({
+        status: "allowed",
+        unifiedWindows: { seven_day_opus: { utilization: 0.5, resetsAt: 1791504000 }, seven_day: { utilization: 0.2 } },
+      }),
+    ).toMatchObject({ sevenDay: { utilization: 0.2, resetsAt: null }, models: [{ name: "Opus", utilization: 0.5, resetsAt: 1791504000000 }] });
+    expect(one({ status: "rejected", rateLimitType: "seven_day_sonnet", resetsAt: 1791504000 }).models).toEqual([
+      { name: "Sonnet", utilization: 1, resetsAt: 1791504000000 },
+    ]);
+    // A unified window that is rejected without a number is full.
+    expect(one({ status: "rejected", unifiedWindows: { five_hour: { status: "rejected", resetsAt: 1791081600 } } }).fiveHour).toEqual({
+      utilization: 1,
+      resetsAt: 1791081600000,
+    });
+  });
+
+  it("keeps the CLI's own diagnostics out of a result's error text", () => {
+    const [r] = eventsFrom({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      result: null,
+      errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],
+      terminal_reason: "aborted_tools",
+    }) as any[];
+    expect(r).toMatchObject({ ok: false, text: "", terminalReason: "aborted_tools" });
+    const [both] = eventsFrom({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: ["[ede_diagnostic] x", "API Error: 529 Overloaded"],
+    }) as any[];
+    expect(both.text).toBe("API Error: 529 Overloaded");
+  });
+
+  it("reads a withdrawn control request", () => {
+    expect(eventsFrom({ type: "control_cancel_request", request_id: "req_7" })).toEqual([{ kind: "control-cancel", requestId: "req_7" }]);
+    expect(eventsFrom({ type: "control_cancel_request" })).toEqual([]);
+  });
+
   it("passes lines that aren't JSON on as stderr and ignores junk", () => {
     const events = parseAll("Error: something broke\n\n   \n42\nnull\n{\"type\":\"keep_alive\"}\n");
     expect(events).toEqual([{ kind: "stderr", text: "Error: something broke" }]);
     expect(eventsFrom(null)).toEqual([]);
     expect(eventsFrom("text")).toEqual([]);
     expect(eventsFrom({ type: "assistant", message: { content: "not a list" } })).toEqual([]);
+  });
+});
+
+describe("a real Claude Code 2.1.310 transcript", () => {
+  it("parses every line of a short answer: init with capabilities, partial messages, rate limit, result", () => {
+    const text = realTranscript("stream-reply-ok.jsonl");
+    const types = text
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        const m = JSON.parse(l);
+        return m.subtype ? `${m.type}/${m.subtype}` : m.type === "stream_event" ? `stream_event/${m.event.type}` : m.type;
+      });
+    // What the CLI really prints (the lines that give no events included).
+    expect(types).toEqual([
+      "active_goal",
+      "autocompact_state",
+      "system/init",
+      "system/status",
+      "stream_event/message_start",
+      "stream_event/content_block_start",
+      "stream_event/content_block_delta",
+      "assistant",
+      "stream_event/content_block_stop",
+      "stream_event/message_delta",
+      "stream_event/message_stop",
+      "rate_limit_event",
+      "system/post_turn_summary",
+      "result/success",
+    ]);
+    for (const chunk of [1, 7, 64, 100_000]) {
+      const events = parseAll(text, chunk);
+      expect(events.map((e) => e.kind)).toEqual([
+        "context-window",
+        "init",
+        "status",
+        "context",
+        "text-delta",
+        "text",
+        "output",
+        "rate-limit",
+        "result",
+      ]);
+    }
+    const events = parseAll(text);
+    const [win, init, status, context, delta, answer, output, limit, result] = events as any[];
+    expect(win.tokens).toBe(980000);
+    expect(init).toMatchObject({
+      model: "claude-haiku-5-5",
+      sessionId: "00000000-0000-4000-8000-000000000002",
+      cwd: "/work/demo",
+      permissionMode: "default",
+      version: "2.1.310",
+    });
+    expect(init.mcpServers).toEqual([
+      { name: "luminal", status: "connected" },
+      { name: "example", status: "needs-auth" },
+    ]);
+    expect(init.capabilities).toContain("interrupt_receipt_v1");
+    expect(init.tools).toEqual(expect.arrayContaining(["Bash", "Edit", "Read", "Write", "ToolSearch", "mcp__luminal__echo"]));
+    expect(status).toEqual({ kind: "status", status: "requesting" });
+    expect(context.tokens).toBe(2 + 12723 + 29585);
+    expect(delta).toMatchObject({ kind: "text-delta", text: "OK", messageId: "msg_fixture01" });
+    expect(answer).toEqual({ kind: "text", messageId: "msg_fixture01", text: "OK" });
+    expect(output.tokens).toBe(4);
+    // The line the CLI prints: the status of the session window, with both windows unified.
+    expect(limit).toEqual({
+      kind: "rate-limit",
+      status: "allowed",
+      type: "five_hour",
+      fiveHour: { utilization: 0.15, resetsAt: 1792944600000 },
+      sevenDay: { utilization: 0.13, resetsAt: 1793318400000 },
+      usingOverage: false,
+    });
+    expect(result).toMatchObject({
+      kind: "result",
+      ok: true,
+      subtype: "success",
+      text: "OK",
+      costUsd: 0.0028426500000000004,
+      turns: 1,
+      usage: { input: 2, output: 4, cacheRead: 29585, cacheWrite: 12723 },
+      denials: [],
+      sessionId: "00000000-0000-4000-8000-000000000002",
+      terminalReason: "completed",
+    });
+  });
+
+  it("parses tool calls, an allowed and a denied permission, and an interrupted turn", () => {
+    const events = parseAll(realTranscript("stream-permissions.jsonl"));
+    expect(events.some((e) => e.kind === "stderr")).toBe(false);
+    const tools = events.filter((e) => e.kind === "tool-use") as Array<Extract<ClaudeEvent, { kind: "tool-use" }>>;
+    expect(tools.map((t) => [t.name, t.input.command])).toEqual([
+      ["Bash", "touch a.txt"],
+      ["Bash", "touch b.txt"],
+      ["Bash", "touch c.txt"],
+    ]);
+    const results = events.filter((e) => e.kind === "tool-result") as Array<Extract<ClaudeEvent, { kind: "tool-result" }>>;
+    expect(results.map((r) => [r.toolUseId, r.isError, r.text.slice(0, 40)])).toEqual([
+      [tools[0].id, false, "(Bash completed with no output)"],
+      [tools[1].id, true, "The user denied this in lu-minal."],
+      [tools[2].id, true, "The user doesn't want to proceed with th"],
+    ]);
+    expect(results[0].meta).toMatchObject({ stdout: "", stderr: "", interrupted: false });
+    // The interrupt's receipt.
+    expect(events.filter((e) => e.kind === "control-response")).toEqual([
+      { kind: "control-response", requestId: "interrupt_mvnvzyjv000f", ok: true, error: null },
+    ]);
+    const [first, second] = events.filter((e) => e.kind === "result") as Array<Extract<ClaudeEvent, { kind: "result" }>>;
+    expect(first).toMatchObject({ ok: true, terminalReason: "completed", turns: 3 });
+    expect(first.denials).toEqual([{ tool: "Bash", input: { command: "touch b.txt", description: "Create file b.txt" }, toolUseId: tools[1].id }]);
+    expect(second).toMatchObject({ ok: false, subtype: "error_during_execution", text: "", terminalReason: "aborted_tools" });
+    // Claude Code prints its init line again at the start of every turn.
+    expect(events.filter((e) => e.kind === "init")).toHaveLength(2);
   });
 });

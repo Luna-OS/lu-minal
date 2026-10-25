@@ -23,6 +23,28 @@ export interface ProviderOverride {
   models?: string[];
 }
 
+/**
+ * A coding-agent CLI that speaks the Agent Client Protocol (ACP), run as a team member
+ * (src/agents/acp/). The key under `acpAgents` is its provider id; an entry with a builtin id
+ * ("opencode-cli", "gemini-cli") changes that agent's command, arguments or environment.
+ */
+export interface AcpAgentConfig {
+  name?: string;
+  /** The program: a name on the PATH or a path ("~/..." works). */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** Model ids to offer in the picker. */
+  models?: string[];
+  /** Arguments that pick a model, with "{model}" for the id, e.g. ["--model", "{model}"]. */
+  modelArgs?: string[];
+  /** How the agent names lu-minal's MCP tools, e.g. "luminal_" (default: the bare tool name). */
+  toolPrefix?: string;
+  docs?: string;
+  /** How to sign in, shown when the agent asks for it. */
+  signIn?: string;
+}
+
 export interface Config {
   /** The active theme's name. */
   theme: string;
@@ -49,6 +71,8 @@ export interface Config {
    */
   claudeUseApiKey: boolean;
   providers: Record<string, ProviderOverride>;
+  /** ACP agents (OpenCode, Gemini CLI, custom ones) by provider id. */
+  acpAgents: Record<string, AcpAgentConfig>;
   /** Folders opened recently, newest first. */
   recent: string[];
   [key: string]: unknown;
@@ -70,6 +94,7 @@ export function defaultConfig(): Config {
     claudePath: null,
     claudeUseApiKey: false,
     providers: {},
+    acpAgents: {},
     recent: [],
   };
 }
@@ -92,6 +117,7 @@ export function mergeConfig(stored: unknown): Config {
   }
   if (!Array.isArray(out.forgejo)) out.forgejo = base.forgejo;
   if (!isObject(out.providers)) out.providers = {};
+  if (!isObject(out.acpAgents)) out.acpAgents = {};
   if (!Array.isArray(out.recent)) out.recent = [];
   if (typeof out.theme !== "string" || !out.theme) out.theme = base.theme;
   return out;

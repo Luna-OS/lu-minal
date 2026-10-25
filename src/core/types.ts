@@ -58,7 +58,7 @@ interface LogBase {
 
 export type LogEntry =
   /** A message to this agent from the user ("you") or from a teammate. */
-  | (LogBase & { kind: "user"; from: string; text: string })
+  | (LogBase & { kind: "user"; from: string; text: string; attachments?: string[] })
   | (LogBase & { kind: "text"; text: string; streaming?: boolean })
   | (LogBase & { kind: "reasoning"; text: string; streaming?: boolean })
   | (LogBase & {

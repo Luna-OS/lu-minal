@@ -2,6 +2,7 @@
 // its panel draws). Drivers (src/agents/) write into it; the UI only reads it.
 import type { ModelRef } from "../providers/models.js";
 import { formatModelRef } from "../providers/models.js";
+import type { Attachment } from "./attachments.js";
 import { newId, type Notifier } from "./emitter.js";
 import { verdictFor } from "./permissions.js";
 import type {
@@ -19,11 +20,13 @@ import { workVerb } from "./verbs.js";
 export interface AgentInput {
   from: string;
   text: string;
+  /** Pictures and files sent with the message (the user's only). */
+  attachments?: Attachment[];
 }
 
 /** What runs an agent: the native loop for API models or the Claude Code CLI. */
 export interface AgentDriver {
-  readonly kind: "native" | "claude-code";
+  readonly kind: "native" | "claude-code" | "acp";
   /** Starts the driver (spawns the CLI, resolves the model). */
   start(): Promise<void>;
   /** Hands the agent a message. Starts a turn when idle; otherwise it is read at the next step. */
@@ -300,7 +303,8 @@ export class Agent {
 
   /** Hands the agent a message (from the user or a teammate) and logs it. */
   deliver(input: AgentInput): void {
-    this.append({ kind: "user", from: input.from, text: input.text });
+    const names = input.attachments?.map((a) => a.name);
+    this.append({ kind: "user", from: input.from, text: input.text, ...(names?.length ? { attachments: names } : {}) });
     if (!this.driver) {
       this.error("This agent is not running.");
       return;

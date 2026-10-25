@@ -16,12 +16,13 @@ platform (Bun-compiled, see `scripts/build-binaries.ts`), and on macOS also as a
 | Path | What it is |
 | --- | --- |
 | `src/cli.tsx` | Entry: arguments, sub-commands (`models`, `login`, `roblox install`, ...), starts the UI. |
-| `src/core/` | State: `Hub` (the app), `Project` (a tab), `Agent` (one agent and its log), config, permissions. |
+| `src/core/` | State: `Hub` (the app), `Project` (a tab), `Agent` (one agent and its log), config, permissions, statistics, attachments (dropped files, clipboard pictures). |
 | `src/platform/` | Paths per OS, finding / spawning programs (Windows `.cmd` shims), opening URLs. |
 | `src/providers/` | Catalog (models.dev), auth store, provider registry, OpenRouter OAuth, the wire clients. |
 | `src/providers/wire/` | OpenAI chat completions, OpenAI Responses, Anthropic Messages – streaming + tool calls. |
 | `src/agents/native/` | The agent loop for API models (stream → tool calls → results → repeat). |
 | `src/agents/claude-code/` | Claude Code CLI: discovery, account, plan usage, stream-json events, the driver. |
+| `src/agents/acp/` | ACP agents (OpenCode, Gemini CLI, custom): JSON-RPC peer, presets, models, the driver. See [acp.md](acp.md). |
 | `src/agents/prompts.ts` | System prompts for leads and workers (the team protocol). |
 | `src/tools/` | Tools: files, shell, web fetch, team (messages, spawn, tasks), themes, Roblox. |
 | `src/mcp/` | A minimal MCP server (Streamable HTTP) that gives Claude Code agents the team/theme/Roblox tools and routes their permission prompts into lu-minal. |
@@ -107,6 +108,9 @@ runs the official `claude` program:
 | Plan limits | every `rate_limit_event` from running agents, plus `claude -p /usage …` every `usagePollSeconds` where the CLI answers it (undocumented, so it is best effort) |
 | Cloud | `claude --cloud "<task>"` starts a session on claude.ai/code (interactive), `claude -p "<text>" --cloud <id> --output-format json` messages it, `claude --teleport <id>` brings it into the terminal |
 | Subscription billing | Claude Code processes start without `ANTHROPIC_API_KEY` (with `-p` it would win over the claude.ai login) unless `claudeUseApiKey` is set |
+| Interrupt | a stream-json `control_request {subtype:"interrupt"}`. Claude Code answers at once with `{still_queued: []}` and ends the turn with an error_during_execution result (terminal_reason "aborted_tools"). If the turn doesn't end within 3 s, the CLI refuses, or esc is pressed again: SIGINT on macOS / Linux, then the process is stopped; the next message resumes with `--resume` |
+| MCP config | one http entry per agent with a bearer token and `"timeout": 86400000` (HTTP servers otherwise get 60 s per request), plus MCP_TOOL_TIMEOUT in the environment |
+| Pictures | image content blocks in the stream-json user message (base64); other files are listed by path, small text files inlined |
 
 ## Cross-platform rules
 

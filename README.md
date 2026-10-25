@@ -34,7 +34,8 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
   (`task_add` / `task_update`) – workers report to the lead, coordinate on shared files, and you
   can message anyone with `@name …` (or `@* …` for everyone).
 - **Mixed providers in one team.** A Claude Opus lead can run MiniMax, OpenRouter or free OpenCode
-  workers – they all speak the same team protocol.
+  workers – they all speak the same team protocol. Other coding agents join too: the OpenCode CLI
+  and Gemini CLI run as team members over the [Agent Client Protocol](docs/acp.md).
 - **Claude without an API key.** Sign in with your Claude subscription: lu-minal drives the official
   Claude Code CLI and never touches your tokens.
 - **All the providers.** The [models.dev](https://models.dev) catalog (230+ providers): OpenCode
@@ -42,27 +43,54 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
   Google Gemini, MiniMax, Groq, DeepSeek, Z.ai, Moonshot, xAI, Mistral, Ollama and LM Studio
   locally, and any OpenAI-compatible endpoint you add.
 - **Live plan limits.** The 5-hour session and the weekly limit of your Claude plan, as moons that
-  fill up, live from every running agent and polled in the background.
+  fill up, live from every running agent and polled in the background. `/usage` shows it all like
+  the Claude app does – context window per agent, session, weekly limits per model, extra credits –
+  plus every other model in use (OpenRouter credits, tokens and cost).
+- **Statistics.** `/stats`: tokens in and out, cost, lines changed and sessions – in total, per
+  day, per model and per project.
+- **Pictures and files.** Drop files on the terminal, paste a screenshot with ctrl+v (alt+v), or
+  pick files with `/attach`. Models that can see get the picture; text files go into the message.
+- **Claude cloud sessions.** `/cloud` starts a task on claude.ai/code, sends it follow-ups,
+  and brings a session back into this terminal (`claude --teleport`).
+- **Close and come back.** lu-minal saves the session as you work: quit, start it again, and every
+  tab, agent, log and conversation is back where it was.
 - **Tabs per project.** Open a folder, or clone a repository from **GitHub** or any **Forgejo /
   Gitea** instance (Codeberg by default) straight into a new tab.
 - **Themes.** Moon (the default), Moon Day, Astra, Tokyo Night, Catppuccin, Dracula, Nord,
   Gruvbox, Rosé Pine, Mono – or ask an agent to design a new one (`create_theme`).
 - **Roblox Studio.** A Studio plugin connects to lu-minal, and agents can read the place tree, edit
   scripts, create instances and run Luau in Studio.
-- **Windows, macOS and Linux.** `npx lu-minal`, a standalone binary per platform, and a native
-  macOS app written in Swift.
+- **Windows, macOS and Linux.** A standalone binary per platform, a native macOS app written in
+  Swift, or a build from source with Node.
 
 ## Install
 
 | | |
 | --- | --- |
-| **npm** (any OS, Node 22+) | `npm i -g lu-minal` or `npx lu-minal` |
 | **macOS / Linux** | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` |
 | **Windows** (PowerShell) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` |
-| **macOS app** | `lu-minal.app` from the [releases](https://github.com/Luna-OS/lu-minal/releases) – a native Swift window running lu-minal |
+| **macOS app** | `lu-minal-macos-app.dmg` (or `.zip`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest): **LuMinal.app**, a native Swift window running lu-minal |
+| **Standalone binary** | `lu-minal-linux-x64`, `lu-minal-macos-arm64`, `lu-minal-windows-x64.exe`, … from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), with `SHA256SUMS` (all files: [docs/install.md](docs/install.md)) |
+| **From source** (any OS, Node 22+) | `git clone`, `npm ci`, `npm run build`, `npm link` – see [From source](#from-source) |
 
 Then run `lu-minal` in a project folder. Details for every platform (Windows Terminal profile,
 the Linux desktop entry, terminals with true colour) are in [docs/install.md](docs/install.md).
+
+### From source
+
+lu-minal is not published to npm yet. With Node.js 22 or newer and git, on any system:
+
+```sh
+git clone https://github.com/Luna-OS/lu-minal
+cd lu-minal
+npm ci
+npm run build
+npm link        # puts lu-minal on your PATH
+```
+
+To update, run `git pull`, `npm ci` and `npm run build` in that folder; `npm unlink -g lu-minal`
+removes it. If `npm link` fails with EACCES, your global npm folder belongs to root: use a Node
+version manager (nvm, fnm, Volta) or point npm at your home folder (`npm config set prefix ~/.local`).
 
 ## Sign in
 
@@ -74,6 +102,7 @@ Press **ctrl+l** (or `/login`):
 | **OpenCode Zen** | Nothing to do: the free models work without a key. Add a key for the paid ones. |
 | **OpenRouter** | "Sign in with the browser" creates a key for lu-minal (OAuth) – or paste one. |
 | **Anthropic, OpenAI, Gemini, MiniMax, …** | Paste an API key, or set the usual environment variable (`MINIMAX_API_KEY`, …). |
+| **OpenCode CLI, Gemini CLI** | Install the CLI; lu-minal runs its own sign-in (`opencode auth login`). Models are `opencode-cli/<provider/model>` (e.g. `opencode-cli/opencode/big-pickle`) and `gemini-cli/<model>`; more agents go in config.json's `acpAgents` – see [docs/acp.md](docs/acp.md). |
 | **Ollama / LM Studio** | Start the local server; lu-minal finds the models. |
 | **GitHub / Forgejo** | For private repositories: the GitHub CLI or a token, a Forgejo token. |
 
@@ -85,10 +114,20 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
 2. Tell the lead what you want. It plans, fills the task board and spawns workers.
 3. Watch the panels. Focus one with **tab**, zoom it with **ctrl+f**, talk to it directly, or
    message anyone with `@vega make the lamp warmer`.
-4. Approve what needs approving with **y** (allow), **a** (always) or **n** (deny).
+4. Approve what needs approving with **y** (allow), **a** (always) or **n** (deny). Claude Code's
+   multiple-choice questions are asked in the chat instead: lu-minal tells Claude to ask in plain
+   text, and you answer with a message.
+5. Add pictures and files to a message: drop them on the terminal, paste a screenshot with
+   **ctrl+v** (or **alt+v**), or use `/attach`. They show as chips above the prompt; backspace on
+   an empty prompt removes the last one.
 
 **Permission modes** (shift+tab): *edits on* (the default – edits run, commands ask), *ask first*,
-*do everything*, *plan only* (read-only).
+*do everything*, *plan only* (read-only). Reading credential stores, writing into `.git` or agent
+settings, and fetching local addresses always ask, even with edits on.
+
+**Trust:** a repository you clone starts untrusted – Claude Code agents there don't load its own
+`.claude` settings, CLAUDE.md or `.mcp.json` servers until you say so (lu-minal asks after the
+clone; `/trust` changes it). How lu-minal keeps agents in check: [docs/security.md](docs/security.md).
 
 **Models:** pick one per agent (ctrl+o), for example a Claude Opus lead with `minimax/MiniMax-M3`
 and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-speech`.
@@ -110,7 +149,12 @@ and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-
 | ctrl+f | zoom |
 | pgup, pgdn | scroll |
 | esc | interrupt the focused agent |
+| ctrl+v, alt+v | paste a screenshot from the clipboard |
 | ctrl+c twice, ctrl+q | quit |
+
+For a Claude Code agent, esc asks the CLI to stop the turn. If it hasn't stopped after 3 s (or you
+press esc again), lu-minal sends SIGINT (macOS / Linux) and then stops the process; the next
+message resumes the same conversation.
 
 Every key has a slash command too (`/help` lists them), since some terminals keep certain keys for
 themselves.
@@ -140,8 +184,9 @@ localhost when it asks, and click **Connect** on the lu-minal toolbar. Agents th
 | Cache (model catalog) | `%LOCALAPPDATA%\lu-minal\cache` | `~/Library/Caches/lu-minal` | `$XDG_CACHE_HOME/lu-minal` |
 | Session (open tabs) | `%LOCALAPPDATA%\lu-minal\state` | `~/Library/Application Support/lu-minal` | `$XDG_STATE_HOME/lu-minal` |
 
-`lu-minal --continue` reopens the tabs of the last session (Claude Code agents resume their
-conversations).
+lu-minal reopens the last session on its own: every tab with its agents, logs, task board and
+conversations (Claude Code and ACP agents resume their sessions). `lu-minal --fresh` starts
+without them. Pictures you attached are kept in the state folder's `attachments/` for 30 days.
 
 ## Development
 
@@ -150,8 +195,9 @@ npm install
 npm run dev          # run from source
 npm test             # vitest
 npm run typecheck
-npm run build        # dist/ for npm
+npm run build        # dist/ (node dist/cli.js; npm link puts it on the PATH)
 npm run build:bin    # standalone binaries for every platform (needs Bun)
+npm run build:app    # macOS only: LuMinal.app in macos/build (needs Xcode)
 ```
 
 How it fits together: [docs/architecture.md](docs/architecture.md).

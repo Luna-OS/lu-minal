@@ -9,7 +9,7 @@ import type { Theme } from "../../themes/types.js";
 import { formatCost, formatCount, formatElapsed, formatTokens } from "../format.js";
 import type { Rect } from "../layout.js";
 import type { Seg } from "../log-lines.js";
-import { truncate, width as textWidth } from "../text.js";
+import { truncate, width as textWidth, wrap } from "../text.js";
 import { MoonGauge } from "./MoonGauge.js";
 import { Segs, segsWidth } from "./RowView.js";
 
@@ -98,6 +98,9 @@ export function Header({ hub, project, rect, now }: { hub: Hub; project: Project
     { text: " · ", color: c.faint },
     { text: formatElapsed(now - project.createdAt), color: c.muted },
   ];
+  if (!project.trusted) {
+    left.push({ text: " · ", color: c.faint }, { text: "▲ untrusted (/trust)", color: c.warning });
+  }
   const right: Seg[] = [
     { text: `↓ ${formatTokens(t.tokens)}`, color: c.muted },
     { text: " · ", color: c.faint },
@@ -132,6 +135,8 @@ export function Footer({ hub, project, rect }: { hub: Hub; project: Project | un
   ];
   if (studio.connected) {
     left.push({ text: " · ", color: c.faint }, { text: `◆ studio${studio.place ? ` ${studio.place.name}` : ""}`, color: c.success });
+  } else if (studio.needsReinstall) {
+    left.push({ text: " · ", color: c.faint }, { text: "▲ studio: reinstall the plugin (/roblox)", color: c.warning });
   }
   const right: Seg[] = [
     { text: `Σ ${formatTokens(hub.stats.totalTokens())} `, color: c.faint },
@@ -147,20 +152,22 @@ export function Footer({ hub, project, rect }: { hub: Hub; project: Project | un
 export function Toasts({ toasts, theme, width }: { toasts: Toast[]; theme: Theme; width: number }) {
   if (!toasts.length) return null;
   const c = theme.colors;
-  const maxW = Math.min(64, Math.max(20, width - 4));
+  // Wider on wide terminals, and wrapped (up to three lines) instead of cut after the first.
+  const maxW = Math.min(Math.max(64, Math.floor(width / 2)), Math.max(20, width - 4));
   return (
     <Box position="absolute" top={2} left={Math.max(0, width - maxW - 2)} width={maxW} flexDirection="column">
-      {toasts.map((t) => {
+      {toasts.flatMap((t) => {
         const color = t.level === "error" ? c.error : t.level === "warning" ? c.warning : t.level === "success" ? c.success : c.accent2;
         const mark = t.level === "error" ? "✗" : t.level === "warning" ? "▲" : t.level === "success" ? "✓" : "◆";
-        const text = truncate(t.text, maxW - 4);
-        return (
-          <Text key={t.id} backgroundColor={c.popover} wrap="truncate">
-            <Text color={color} backgroundColor={c.popover}>{` ${mark} `}</Text>
-            <Text color={c.text} backgroundColor={c.popover}>{text}</Text>
-            <Text backgroundColor={c.popover}>{" ".repeat(Math.max(1, maxW - 3 - textWidth(text)))}</Text>
+        const lines = wrap(t.text, maxW - 4);
+        const shown = lines.length > 3 ? [...lines.slice(0, 2), truncate(lines.slice(2).join(" "), maxW - 4)] : lines;
+        return shown.map((line, i) => (
+          <Text key={`${t.id}-${i}`} backgroundColor={c.popover} wrap="truncate">
+            <Text color={color} backgroundColor={c.popover}>{i === 0 ? ` ${mark} ` : "   "}</Text>
+            <Text color={c.text} backgroundColor={c.popover}>{line}</Text>
+            <Text backgroundColor={c.popover}>{" ".repeat(Math.max(1, maxW - 3 - textWidth(line)))}</Text>
           </Text>
-        );
+        ));
       })}
     </Box>
   );

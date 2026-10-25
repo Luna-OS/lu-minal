@@ -85,7 +85,12 @@ export function toAnthropicMessages(messages: ChatMessage[]): AnthropicMessage[]
 
   for (const m of messages) {
     if (m.role === "user") {
-      append("user", m.content ? [{ type: "text", text: m.content }] : []);
+      // Pictures first, then the text that talks about them (Anthropic's recommended order).
+      const images: Block[] = (m.images ?? []).map((img) => ({
+        type: "image",
+        source: { type: "base64", media_type: img.mediaType, data: img.data },
+      }));
+      append("user", [...images, ...(m.content ? [{ type: "text", text: m.content }] : [])]);
     } else if (m.role === "tool") {
       append("user", [
         {

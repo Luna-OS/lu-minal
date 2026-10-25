@@ -2,7 +2,9 @@
 // its panel draws). Drivers (src/agents/) write into it; the UI only reads it.
 import type { ModelRef } from "../providers/models.js";
 import { formatModelRef } from "../providers/models.js";
+import type { Attachment } from "./attachments.js";
 import { newId, type Notifier } from "./emitter.js";
+import { redactSecrets } from "./secrets.js";
 import { verdictFor } from "./permissions.js";
 import type {
   AgentRole,
@@ -19,11 +21,13 @@ import { workVerb } from "./verbs.js";
 export interface AgentInput {
   from: string;
   text: string;
+  /** Pictures and files sent with the message (the user's only). */
+  attachments?: Attachment[];
 }
 
 /** What runs an agent: the native loop for API models or the Claude Code CLI. */
 export interface AgentDriver {
-  readonly kind: "native" | "claude-code";
+  readonly kind: "native" | "claude-code" | "acp";
   /** Starts the driver (spawns the CLI, resolves the model). */
   start(): Promise<void>;
   /** Hands the agent a message. Starts a turn when idle; otherwise it is read at the next step. */
@@ -109,7 +113,7 @@ export class Agent {
   driver: AgentDriver | null = null;
 
   /** Told about every usage report and every diff (the Hub keeps statistics with them). */
-  onUsage: ((u: { input: number; output: number; costUsd: number }) => void) | null = null;
+  onUsage: ((u: { input: number; output: number; costUsd: number; turn: boolean }) => void) | null = null;
   onLines: ((added: number, removed: number) => void) | null = null;
 
   constructor(
@@ -193,12 +197,14 @@ export class Agent {
   }
 
   info(text: string): void {
-    this.append({ kind: "info", text });
+    this.append({ kind: "info", text: redactSecrets(text) });
   }
 
+  /** Logs an error (provider and CLI errors can echo a key: known secrets are redacted). */
   error(text: string): void {
-    this.lastError = text;
-    this.append({ kind: "error", text });
+    const shown = redactSecrets(text);
+    this.lastError = shown;
+    this.append({ kind: "error", text: shown });
   }
 
   clearLog(): void {
@@ -240,13 +246,14 @@ export class Agent {
     this.changed();
   }
 
-  addUsage(u: { input?: number; output?: number; context?: number; costUsd?: number }): void {
+  /** `turn`: this report is the one for a model request (drivers report a request in pieces). */
+  addUsage(u: { input?: number; output?: number; context?: number; costUsd?: number; turn?: boolean }): void {
     if (u.input) this.tokensIn += u.input;
     if (u.output) this.tokensOut += u.output;
     if (u.context !== undefined) this.contextTokens = u.context;
     if (u.costUsd) this.costUsd += u.costUsd;
-    if (u.input || u.output || u.costUsd) {
-      this.onUsage?.({ input: u.input ?? 0, output: u.output ?? 0, costUsd: u.costUsd ?? 0 });
+    if (u.input || u.output || u.costUsd || u.turn) {
+      this.onUsage?.({ input: u.input ?? 0, output: u.output ?? 0, costUsd: u.costUsd ?? 0, turn: u.turn ?? false });
     }
     this.changed();
   }
@@ -300,7 +307,8 @@ export class Agent {
 
   /** Hands the agent a message (from the user or a teammate) and logs it. */
   deliver(input: AgentInput): void {
-    this.append({ kind: "user", from: input.from, text: input.text });
+    const names = input.attachments?.map((a) => a.name);
+    this.append({ kind: "user", from: input.from, text: input.text, ...(names?.length ? { attachments: names } : {}) });
     if (!this.driver) {
       this.error("This agent is not running.");
       return;
@@ -322,8 +330,10 @@ export class Agent {
    */
   async requestApproval(request: Omit<ApprovalRequest, "id" | "agentId">): Promise<ApprovalDecision> {
     const verdict = verdictFor(this.permissionMode, request.risk);
-    if (verdict === "allow" || this.allowed.has(request.allowKey)) return "allow";
+    // The mode's "no" wins over the "always" list: plan mode stays read-only even for actions the
+    // user allowed for good earlier in another mode.
     if (verdict === "deny") return "deny";
+    if (verdict === "allow" || this.allowed.has(request.allowKey)) return "allow";
     const full: ApprovalRequest = { ...request, id: newId("ask"), agentId: this.id };
     const entry = this.append({ kind: "approval", request: full });
     const decision = await new Promise<ApprovalDecision>((resolve) => {

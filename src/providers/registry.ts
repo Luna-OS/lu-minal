@@ -1,11 +1,14 @@
 // The provider registry: the catalog plus the user's sign-ins and config overrides, answering
 // "which providers and models are there", "which can I use right now" and "how do I reach this
 // model" (endpoint, key, headers, wire). Pure lookups over the data it is given; the only I/O is
-// reading auth.json through the AuthStore.
+// reading auth.json through the AuthStore and looking for ACP agents' programs (kept a minute).
+import { staticAcpModels } from "../agents/acp/models.js";
+import { acpPresets, findAcpProgram, type AcpPreset } from "../agents/acp/presets.js";
 import type { Config, ProviderOverride } from "../core/config.js";
 import type { ClaudeAccount } from "../core/types.js";
 import { keyFor, readEnv, type AuthStore } from "./auth.js";
 import {
+  acpProviderInfo,
   CLAUDE_CODE_ALIASES,
   CLAUDE_CODE_PROVIDER_ID,
   FEATURED_ORDER,
@@ -36,13 +39,48 @@ export interface RegistryDeps {
   /** Who is signed in to Claude Code; null while unknown. */
   claudeAccount: () => ClaudeAccount | null;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Where an ACP agent's program is (null: not installed). Defaults to findAcpProgram, whose
+   * answers are kept for a minute (refreshAcp() forgets them).
+   */
+  acpProgram?: (preset: AcpPreset) => string | null;
 }
+
+/** How long a "where is opencode / gemini" answer is trusted. */
+const ACP_PROGRAM_TTL_MS = 60_000;
 
 /** OpenRouter's app attribution headers. */
 export const OPENROUTER_HEADERS: Readonly<Record<string, string>> = {
   "HTTP-Referer": "https://github.com/Luna-OS/lu-minal",
   "X-Title": "lu-minal",
 };
+
+/**
+ * Where the well-known providers' keys may go: the catalog (models.dev, cached on disk) names each
+ * model's endpoint, and a tampered answer must not send an OpenAI or Anthropic key to another host.
+ * A base URL the user set in config.json is the user's own choice and isn't checked.
+ */
+export const KEY_HOSTS: Readonly<Record<string, readonly string[]>> = {
+  anthropic: ["anthropic.com"],
+  openai: ["openai.com"],
+  openrouter: ["openrouter.ai"],
+  google: ["googleapis.com"],
+  opencode: ["opencode.ai"],
+  groq: ["groq.com"],
+  xai: ["x.ai"],
+  mistral: ["mistral.ai"],
+};
+
+/** Whether `url`'s host is one of `domains` or below one of them. */
+function hostIn(url: string, domains: readonly string[]): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  return domains.some((d) => host === d || host.endsWith(`.${d}`));
+}
 
 /** The key OpenCode Zen accepts for its free models (the OpenCode CLI sends the same). */
 export const OPENCODE_PUBLIC_KEY = "public";
@@ -111,7 +149,8 @@ const byDateDesc = (a: ModelInfo, b: ModelInfo) => {
 };
 
 const aliasRank = (m: ModelInfo) => {
-  if (m.provider !== CLAUDE_CODE_PROVIDER_ID) return CLAUDE_CODE_ALIASES.length;
+  // "default" (the CLI's own choice) leads every CLI provider's list: Claude Code's and ACP agents'.
+  if (m.provider !== CLAUDE_CODE_PROVIDER_ID) return m.id === "default" && m.wire === null && m.baseURL === null ? 0 : CLAUDE_CODE_ALIASES.length;
   const i = (CLAUDE_CODE_ALIASES as readonly string[]).indexOf(m.id);
   return i === -1 ? CLAUDE_CODE_ALIASES.length : i;
 };
@@ -140,6 +179,7 @@ export class ProviderRegistry {
   private catalogProviders = new Map<string, ProviderInfo>();
   private catalogModels = new Map<string, ModelInfo[]>();
   private localModels = new Map<string, ModelInfo[]>();
+  private acpPrograms = new Map<string, { exe: string | null; at: number }>();
 
   constructor(private readonly deps: RegistryDeps) {
     this.setCatalog(deps.catalog);
@@ -167,9 +207,46 @@ export class ProviderRegistry {
     this.deps.config = config;
   }
 
-  /** The models a local server reported (Ollama's /api/tags); replaces earlier ones. */
+  /**
+   * The models a local server reported (Ollama's /api/tags), or an ACP agent's own list
+   * (listAcpModels, e.g. `opencode models`); replaces earlier ones.
+   */
   setLocalModels(providerId: string, models: ModelInfo[]): void {
     this.localModels.set(providerId, models.map((m) => ({ ...m, provider: providerId })));
+  }
+
+  // ---- ACP agents -------------------------------------------------------------------------------
+
+  /** Every ACP agent (builtin and from config.json) whose id doesn't clash with another provider. */
+  acpPresets(): AcpPreset[] {
+    const providers = this.deps.config.providers;
+    return acpPresets(this.deps.config).filter(
+      (p) => !this.catalogProviders.has(p.id) && (p.builtin || !(isObject(providers) && Object.hasOwn(providers, p.id))),
+    );
+  }
+
+  /** The ACP agent behind a provider id, or null when it is none. */
+  acpPreset(id: string): AcpPreset | null {
+    if (this.catalogProviders.has(id)) return null;
+    return this.acpPresets().find((p) => p.id === id) ?? null;
+  }
+
+  /** The full path of an ACP agent's program, or null when it isn't installed. */
+  acpProgram(id: string): string | null {
+    const preset = this.acpPreset(id);
+    if (!preset) return null;
+    if (this.deps.acpProgram) return this.deps.acpProgram(preset);
+    const key = `${preset.id}\u0000${preset.command}`;
+    const hit = this.acpPrograms.get(key);
+    if (hit && Date.now() - hit.at < ACP_PROGRAM_TTL_MS) return hit.exe;
+    const exe = findAcpProgram(preset, { env: this.env });
+    this.acpPrograms.set(key, { exe, at: Date.now() });
+    return exe;
+  }
+
+  /** Forgets where the ACP agents are (after an install). */
+  refreshAcp(): void {
+    this.acpPrograms.clear();
   }
 
   // ---- providers --------------------------------------------------------------------------------
@@ -182,7 +259,7 @@ export class ProviderRegistry {
 
   /** A catalog provider with config.json's overrides applied. */
   private effective(base: ProviderInfo): ProviderInfo {
-    if (base.kind === "claude-code") return base;
+    if (base.kind === "claude-code" || base.kind === "acp") return base;
     const o = this.override(base.id);
     if (!o) return base;
     const baseURL = o.baseURL ?? base.baseURL;
@@ -198,7 +275,7 @@ export class ProviderRegistry {
 
   /** A provider config.json declares that the catalog doesn't know (an OpenAI-compatible server). */
   private custom(id: string): ProviderInfo | null {
-    if (this.catalogProviders.has(id)) return null;
+    if (this.catalogProviders.has(id) || this.acpPreset(id)?.builtin) return null;
     const o = this.override(id);
     if (!o?.baseURL) return null;
     const local = isLoopback(o.baseURL);
@@ -220,9 +297,10 @@ export class ProviderRegistry {
     return !this.catalogProviders.has(id) && this.custom(id) !== null;
   }
 
-  /** Every provider: featured first, then by name, plus custom ones from config.json. */
+  /** Every provider: featured first, then by name, plus ACP agents and custom ones from config.json. */
   providers(): ProviderInfo[] {
     const list = this.catalog.providers.map((p) => this.effective(p));
+    for (const preset of this.acpPresets()) list.push(acpProviderInfo(preset));
     const providers = this.deps.config.providers;
     if (isObject(providers)) {
       for (const id of Object.keys(providers)) {
@@ -236,6 +314,8 @@ export class ProviderRegistry {
   provider(id: string): ProviderInfo | undefined {
     const base = this.catalogProviders.get(id);
     if (base) return this.effective(base);
+    const acp = this.acpPreset(id);
+    if (acp) return acpProviderInfo(acp);
     return this.custom(id) ?? undefined;
   }
 
@@ -244,7 +324,7 @@ export class ProviderRegistry {
   /** A model the catalog doesn't list, as far as the provider tells. */
   private synthesize(provider: ProviderInfo, id: string): ModelInfo {
     const local = provider.kind === "local";
-    const claude = provider.kind === "claude-code";
+    const claude = provider.kind === "claude-code" || provider.kind === "acp";
     const free = local || (provider.id === "openrouter" && id.endsWith(":free"));
     return {
       id,
@@ -291,6 +371,10 @@ export class ProviderRegistry {
     };
     for (const m of this.localModels.get(providerId) ?? []) add(m);
     for (const m of this.catalogModels.get(providerId) ?? []) add(m);
+    if (provider.kind === "acp") {
+      const preset = this.acpPreset(providerId);
+      if (preset) for (const m of staticAcpModels(preset)) add(m);
+    }
     for (const id of this.override(providerId)?.models ?? []) {
       if (!seen.has(id)) {
         seen.add(id);
@@ -318,6 +402,7 @@ export class ProviderRegistry {
     return (
       provider.kind === "local" ||
       provider.kind === "claude-code" ||
+      provider.kind === "acp" ||
       provider.id === "openrouter" ||
       this.isCustom(provider.id)
     );
@@ -343,7 +428,8 @@ export class ProviderRegistry {
   freeModels(opts: { connectedOnly?: boolean } = {}): ModelInfo[] {
     const out: Array<{ m: ModelInfo; connected: boolean; local: boolean; rank: number }> = [];
     for (const p of this.providers()) {
-      if (!p.supported) continue;
+      // ACP agents' free models are the same ones their providers list directly (OpenCode Zen).
+      if (!p.supported || p.kind === "acp") continue;
       const connected = this.isConnected(p.id);
       if (opts.connectedOnly && !connected) continue;
       for (const m of this.models(p.id)) {
@@ -386,6 +472,8 @@ export class ProviderRegistry {
       const account = this.deps.claudeAccount();
       return Boolean(account?.installed && account.loggedIn);
     }
+    // An ACP agent keeps its own sign-in: installed is as much as lu-minal can tell.
+    if (p.kind === "acp") return this.acpProgram(p.id) !== null;
     if (p.kind === "local" || p.auth === "none" || p.auth === "optional") return true;
     return this.keyOf(p) !== null && this.missingVars(p.baseURL).length === 0;
   }
@@ -398,6 +486,13 @@ export class ProviderRegistry {
       const account = this.deps.claudeAccount();
       if (account?.installed) return "Run /login claude to sign in with your Claude subscription.";
       return "Install Claude Code (npm install -g @anthropic-ai/claude-code) and run /login claude.";
+    }
+    if (p.kind === "acp") {
+      const preset = this.acpPreset(p.id);
+      if (!preset) return `Add ${p.id} under acpAgents in config.json.`;
+      if (this.acpProgram(p.id)) return preset.signIn;
+      if (!preset.builtin) return `${preset.name} isn't installed: \`${preset.command}\` was not found (acpAgents.${preset.id}.command in config.json).`;
+      return `Install ${preset.name}${preset.install ? ` (${preset.install})` : ""}. ${preset.signIn}`;
     }
     if (!p.supported) {
       return `lu-minal can't talk to ${p.name} yet; set providers.${p.id}.baseURL in config.json to a compatible endpoint.`;
@@ -453,6 +548,13 @@ export class ProviderRegistry {
       return { ref, provider, model, endpoint: null, wire: null };
     }
 
+    if (provider.kind === "acp") {
+      if (!this.acpProgram(provider.id)) {
+        throw new ProviderNotReadyError(`${provider.name} isn't installed.`, provider.id, this.connectionHint(provider.id));
+      }
+      return { ref, provider, model, endpoint: null, wire: null };
+    }
+
     const wire = model.wire;
     const template = model.baseURL;
     if (!provider.supported || !wire || !template) {
@@ -487,6 +589,15 @@ export class ProviderRegistry {
       } else if (provider.auth === "api-key" || provider.auth === "oauth") {
         throw new ProviderNotReadyError(`${provider.name} needs an API key.`, provider.id, this.connectionHint(provider.id));
       }
+    }
+
+    const pinned = KEY_HOSTS[provider.id];
+    if (apiKey && pinned && !this.override(provider.id)?.baseURL && !hostIn(baseURL, pinned)) {
+      throw new ProviderNotReadyError(
+        `The model catalog sends ${provider.name} requests to ${baseURL}, which isn't ${pinned.join(" or ")}; lu-minal won't send your ${provider.name} key there.`,
+        provider.id,
+        `If that address is right, set providers.${provider.id}.baseURL in config.json.`,
+      );
     }
 
     const headers: Record<string, string> = {

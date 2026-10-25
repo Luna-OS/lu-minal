@@ -3,6 +3,8 @@
 // doesn't have (Claude through the Claude Code CLI, and a local Ollama server).
 import fs from "node:fs";
 import path from "node:path";
+import { staticAcpModels } from "../agents/acp/models.js";
+import { builtinAcpPresets, type AcpPreset } from "../agents/acp/presets.js";
 import { FALLBACK_MODELS_DEV } from "./catalog-fallback.js";
 import type { ModelInfo, ProviderAuth, ProviderInfo, ProviderKind } from "./models.js";
 import type { FetchLike, WireKind } from "./types.js";
@@ -223,6 +225,7 @@ export function parseModelsDev(json: unknown): { providers: ProviderInfo[]; mode
         maxOutput: positive(limit.output),
         toolCall: m.tool_call === true,
         reasoning: m.reasoning === true,
+        vision: isObject(m.modalities) && Array.isArray(m.modalities.input) && m.modalities.input.includes("image"),
         free: cost ? cost.input === 0 && cost.output === 0 : LOCAL_FREE.has(id),
         cost,
         status: str(m.status),
@@ -282,6 +285,43 @@ export function builtinProviders(): ProviderInfo[] {
       supported: true,
     },
   ];
+}
+
+/**
+ * A coding-agent CLI that speaks the Agent Client Protocol, as a provider: "opencode-cli" (OpenCode,
+ * `opencode acp`), "gemini-cli" (Gemini CLI, `gemini --experimental-acp`) and the `acpAgents` of
+ * config.json. It signs in on its own (`auth: "cli"`) and has no HTTP endpoint lu-minal talks to.
+ */
+export function acpProviderInfo(preset: Pick<AcpPreset, "id" | "name" | "docs">): ProviderInfo {
+  return {
+    id: preset.id,
+    name: preset.name,
+    kind: "acp",
+    auth: "cli",
+    wire: null,
+    baseURL: null,
+    env: [],
+    doc: preset.docs,
+    supported: true,
+    featured: false,
+  };
+}
+
+/**
+ * The builtin ACP agents as providers ("opencode-cli", "gemini-cli"). They are not part of
+ * buildCatalog's list: the registry adds them, together with config.json's acpAgents, because
+ * whether they can be used depends on the config and on what is installed.
+ */
+export function acpBuiltinProviders(): ProviderInfo[] {
+  return builtinAcpPresets().map(acpProviderInfo);
+}
+
+/**
+ * The builtin ACP agents' static models: "default" for each (the agent's own choice) and Gemini
+ * CLI's Gemini models. OpenCode's own list comes from `opencode models` (listAcpModels).
+ */
+export function acpBuiltinModels(): ModelInfo[] {
+  return builtinAcpPresets().flatMap(staticAcpModels);
 }
 
 const DATED_ID = /-\d{8}$/;

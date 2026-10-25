@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { Agent } from "../../src/core/agent.js";
+import { defaultConfig } from "../../src/core/config.js";
+import { Hub } from "../../src/core/hub.js";
+import { Project } from "../../src/core/project.js";
 import { dayKey, StatsStore } from "../../src/core/stats.js";
+import { AuthStore } from "../../src/providers/auth.js";
+import { ThemeManager } from "../../src/themes/manager.js";
 import { sparkline } from "../../src/ui/format.js";
 
 const DAY = 86_400_000;
@@ -32,6 +38,20 @@ describe("StatsStore", () => {
     expect(s.since).toBe(dayKey(now - 60 * DAY));
   });
 
+  it("counts only the turns a report says it closes", () => {
+    const stats = new StatsStore(null);
+    const at = Date.now();
+    // One Claude Code reply: its context, its output, the cost from the result.
+    stats.record({ at, provider: "claude-code", model: "haiku", project, input: 4151, output: 0, costUsd: 0, turns: 1 });
+    stats.record({ at, provider: "claude-code", model: "haiku", project, input: 0, output: 12, costUsd: 0, turns: 0 });
+    stats.record({ at, provider: "claude-code", model: "haiku", project, input: 0, output: 0, costUsd: 0.01, turns: 0 });
+    // A report that says nothing is still nothing.
+    stats.record({ at, provider: "claude-code", model: "haiku", project, input: 0, output: 0, costUsd: 0, turns: 0 });
+    const s = stats.summary(at);
+    expect(s.allTime).toEqual({ input: 4151, output: 12, costUsd: 0.01, turns: 1 });
+    expect(s.projects[0].turns).toBe(1);
+  });
+
   it("survives a restart through its file", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lu-stats-"));
     const file = path.join(dir, "stats.json");
@@ -54,6 +74,30 @@ describe("StatsStore", () => {
     const file = path.join(dir, "stats.json");
     fs.writeFileSync(file, "{not json");
     expect(new StatsStore(file).summary().allTime.turns).toBe(0);
+  });
+});
+
+describe("the Hub's statistics", () => {
+  it("count a turn where an agent's usage report says one ended", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lu-stats-"));
+    const hub = new Hub({
+      config: defaultConfig(),
+      configPath: null,
+      auth: new AuthStore(path.join(dir, "auth.json")),
+      themes: new ThemeManager({ dir: path.join(dir, "themes") }),
+      cacheDir: dir,
+      stateDir: dir,
+      offline: true,
+      servers: false,
+    });
+    const p = new Project({ cwd: dir, name: "demo" }, hub.notifier, hub);
+    const agent = new Agent({ name: "luna", role: "lead", model: { provider: "claude-code", model: "haiku" } }, hub.notifier, "auto-edit");
+    (hub as unknown as { watchUsage(p: Project, a: Agent): void }).watchUsage(p, agent);
+    agent.addUsage({ input: 4151, context: 4151, turn: true });
+    agent.addUsage({ output: 12 });
+    agent.addUsage({ costUsd: 0.01 });
+    expect(hub.stats.summary().allTime).toEqual({ input: 4151, output: 12, costUsd: 0.01, turns: 1 });
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

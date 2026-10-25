@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   cloudReadiness,
   cloudStartCommand,
@@ -35,6 +35,18 @@ describe("cloudStartCommand", () => {
     if (linux.transcript) expect(linux.args).toEqual(["-q", "-e", "-c", "/usr/bin/claude --cloud 'fix '\\''it'\\'''", "/tmp/t.log"]);
   });
 
+  it.runIf(process.platform !== "win32")("records into a private folder of its own, removed with the transcript", async () => {
+    const c = cloudStartCommand("/usr/bin/claude", "fix it", { platform: process.platform });
+    if (!c.transcript) return; // no `script` here
+    const dir = path.dirname(c.transcript);
+    expect(path.dirname(dir)).toBe(path.resolve(os.tmpdir()));
+    expect(path.basename(dir)).toMatch(/^lu-minal-cloud-/);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(c.args).toContain(c.transcript);
+    expect(sessionFromTranscript(c.transcript)).toBeNull();
+    await vi.waitFor(() => expect(fs.existsSync(dir)).toBe(false));
+  });
+
   it("quotes for a POSIX shell", () => {
     expect(shQuote("plain-arg_1")).toBe("plain-arg_1");
     expect(shQuote("two words")).toBe("'two words'");
@@ -64,15 +76,17 @@ describe("transcripts and replies", () => {
     expect(parseSendResult("", "error: not signed in")).toMatchObject({ ok: false, error: "error: not signed in" });
   });
 
-  it("sends with -p --cloud and json output", async () => {
+  it("sends with -p --cloud and json output, with only the user's own settings unless the folder is trusted", async () => {
     let seen: string[] = [];
     const run = async (_exe: string, args: string[]): Promise<RunResult> => {
       seen = args;
       return { code: 0, stdout: '{"ok":true,"session_id":"session_q","url":"https://claude.ai/code/session_q"}\n', stderr: "", timedOut: false };
     };
     const r = await sendToCloud("claude", "session_q", "also add tests", { run: run as never });
-    expect(seen).toEqual(["-p", "also add tests", "--cloud", "session_q", "--output-format", "json"]);
+    expect(seen).toEqual(["-p", "also add tests", "--cloud", "session_q", "--output-format", "json", "--setting-sources", "user", "--strict-mcp-config"]);
     expect(r.ok).toBe(true);
+    await sendToCloud("claude", "session_q", "also add tests", { run: run as never, trusted: true });
+    expect(seen).toEqual(["-p", "also add tests", "--cloud", "session_q", "--output-format", "json"]);
   });
 });
 

@@ -7,6 +7,7 @@ import type { Project } from "../core/project.js";
 import { PERMISSION_MODES, type PermissionMode } from "../core/types.js";
 import { parseModelRef } from "../providers/models.js";
 import type { UiServices } from "./store.js";
+import { resolvePath } from "../tools/fs.js";
 
 export interface CommandContext {
   hub: Hub;
@@ -16,6 +17,8 @@ export interface CommandContext {
   /** Puts text into the focused agent's prompt. */
   setPrompt: (text: string) => void;
   toggleZoom: () => void;
+  /** Attaches files (by path) to the focused agent's next message. */
+  attach: (paths: string[]) => void;
   /** Opens one of the dialogs (implemented in dialogs/index.tsx). */
   dialogs: DialogLaunchers;
 }
@@ -23,6 +26,7 @@ export interface CommandContext {
 export interface DialogLaunchers {
   newTab(): void;
   newAgent(): void;
+  attach(): void;
   login(provider?: string): void;
   model(agent: Agent): void;
   theme(): void;
@@ -81,6 +85,19 @@ export const COMMANDS: Command[] = [
     },
   },
   { name: "agents", aliases: ["team"], description: "The agents in this project", run: (ctx) => ctx.dialogs.agents() },
+  {
+    name: "attach",
+    aliases: ["file", "image"],
+    args: "[path]",
+    description: "Attach a picture or file to the next message (also ctrl+v / alt+v for a screenshot, or drop files on the terminal)",
+    keys: "ctrl+v",
+    run: (ctx, args) => {
+      const p = args.trim();
+      if (!p) return ctx.dialogs.attach();
+      const base = ctx.project?.cwd ?? process.cwd();
+      ctx.attach([resolvePath(base, p)]);
+    },
+  },
   { name: "tasks", aliases: ["board"], description: "The project's shared task board", run: (ctx) => ctx.dialogs.tasks() },
   {
     name: "model",
@@ -121,6 +138,25 @@ export const COMMANDS: Command[] = [
   { name: "stats", aliases: ["statistics", "tokens"], description: "Token statistics: today, this week, all time, by model and project", run: (ctx) => ctx.dialogs.stats() },
   { name: "cloud", aliases: ["web", "remote"], description: "Claude on the web: start, message and teleport cloud sessions", run: (ctx) => ctx.dialogs.cloud() },
   { name: "roblox", aliases: ["studio"], description: "Connect Roblox Studio", run: (ctx) => ctx.dialogs.roblox() },
+  {
+    name: "trust",
+    args: "[on|off]",
+    description: "Trust this folder's own agent settings (.claude hooks and rules, CLAUDE.md, .mcp.json servers)",
+    run: (ctx, args) => {
+      const p = needProject(ctx);
+      if (!p) return;
+      const a = args.trim().toLowerCase();
+      const trusted = a === "on" || a === "yes" ? true : a === "off" || a === "no" ? false : !p.trusted;
+      void ctx.hub.setTrust(p, trusted).then(() =>
+        ctx.hub.toast(
+          trusted
+            ? `Trusted ${p.name}: Claude Code agents load its .claude settings, CLAUDE.md and .mcp.json servers.`
+            : `${p.name} is not trusted: Claude Code agents start with your own settings only.`,
+          trusted ? "warning" : "info",
+        ),
+      );
+    },
+  },
   {
     name: "perm",
     aliases: ["permissions", "mode"],

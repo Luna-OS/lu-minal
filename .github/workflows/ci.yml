@@ -1,0 +1,182 @@
+# CI: tests on Windows, macOS and Linux, the standalone binaries for every platform, the native
+# macOS app, and the Windows binary and installers on a real Windows machine.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Bun that compiles the standalone binaries (bump it here and in release.yml together).
+  BUN_VERSION: "1.4.4"
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  binaries:
+    name: Binaries (all platforms)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci
+      - name: Build every target
+        run: bun scripts/build-binaries.ts --target=all --outdir=dist-bin --smoke
+      - name: Smoke test the Linux binary
+        run: |
+          ./dist-bin/lu-minal-linux-x64 --version
+          ./dist-bin/lu-minal-linux-x64 --help | head -n 3
+          (cd dist-bin && sha256sum -c SHA256SUMS)
+      - name: Smoke test the musl binary on Alpine
+        # Bun's musl runtime links libstdc++, which Alpine installs on demand.
+        run: docker run --rm -v "$PWD/dist-bin:/bin-lu:ro" alpine:3 sh -c "apk add --no-cache libstdc++ >/dev/null && /bin-lu/lu-minal-linux-x64-musl --version"
+      - name: Install with install.sh from the local build
+        env:
+          LU_MINAL_BASE_URL: ${{ github.workspace }}/dist-bin
+          LU_MINAL_INSTALL_DIR: ${{ runner.temp }}/lu-minal-bin
+          LU_MINAL_NO_DESKTOP: "1"
+        run: |
+          sh install.sh
+          "$LU_MINAL_INSTALL_DIR/lu-minal" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lu-minal-binaries
+          path: dist-bin/
+          if-no-files-found: error
+          retention-days: 5
+
+  macos-app:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci
+      - name: Toolchain
+        id: toolchain
+        run: |
+          sw_vers
+          xcodebuild -version || true
+          swift --version
+          # Part of the cache key: modules built by another Swift compiler cannot be reused.
+          echo "swift=$(swift --version 2>&1 | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: macos/.build
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
+      - name: Build the macOS binaries (arm64 and x64)
+        run: |
+          bun scripts/build-binaries.ts --target=macos --outdir=dist-bin --smoke
+          codesign --verify --verbose=2 dist-bin/lu-minal-macos-arm64 dist-bin/lu-minal-macos-x64
+      - name: Build, bundle and sign LuMinal.app
+        run: bash macos/scripts/bundle-app.sh --binary dist-bin/lu-minal-macos-arm64 --binary dist-bin/lu-minal-macos-x64 --out dist-app
+      - name: Check the bundle
+        run: |
+          plutil -p dist-app/LuMinal.app/Contents/Info.plist
+          codesign --display --verbose=2 dist-app/LuMinal.app
+          lipo -info dist-app/LuMinal.app/Contents/MacOS/LuMinal dist-app/LuMinal.app/Contents/Resources/bin/lu-minal
+          dist-app/LuMinal.app/Contents/Resources/bin/lu-minal --version
+      - name: Install with install.sh from the local build
+        env:
+          LU_MINAL_BASE_URL: ${{ github.workspace }}/dist-bin
+          LU_MINAL_INSTALL_DIR: ${{ runner.temp }}/lu-minal-bin
+        run: |
+          sh install.sh
+          "$LU_MINAL_INSTALL_DIR/lu-minal" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lu-minal-macos-app
+          path: dist-app/lu-minal-macos-app.zip
+          if-no-files-found: error
+          retention-days: 5
+
+  windows-smoke:
+    name: Windows binary and installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci
+      - name: Build the Windows binary (with version info)
+        run: bun scripts/build-binaries.ts --target=windows-x64 --outdir=dist-bin --smoke
+      - name: Run lu-minal.exe --version
+        shell: pwsh
+        run: |
+          Copy-Item dist-bin\lu-minal-windows-x64.exe "$env:RUNNER_TEMP\lu-minal.exe"
+          & "$env:RUNNER_TEMP\lu-minal.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "lu-minal.exe --version failed" }
+          (Get-Item "$env:RUNNER_TEMP\lu-minal.exe").VersionInfo | Format-List ProductName, FileVersion, CompanyName
+      - name: install.ps1 in Windows PowerShell 5.1 (irm | iex style)
+        shell: powershell
+        env:
+          LU_MINAL_BASE_URL: ${{ github.workspace }}\dist-bin
+          LU_MINAL_INSTALL_DIR: ${{ runner.temp }}\lu-minal-ps5
+          LU_MINAL_NO_PATH: "1"
+          LU_MINAL_WINDOWS_TERMINAL: "1"
+        run: |
+          Get-Content -Raw -LiteralPath .\install.ps1 | Invoke-Expression
+          & "$env:LU_MINAL_INSTALL_DIR\lu-minal.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "the installed lu-minal.exe did not start" }
+          $fragment = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\lu-minal\lu-minal.json'
+          if (-not (Test-Path -LiteralPath $fragment)) { throw "no Windows Terminal fragment at $fragment" }
+          $json = Get-Content -Raw -LiteralPath $fragment | ConvertFrom-Json
+          if ($json.profiles[0].colorScheme -ne 'Moon Dark') { throw 'the fragment has the wrong colour scheme' }
+          Write-Host $json.profiles[0].commandline
+      - name: install.ps1 in PowerShell 7 (PATH update)
+        shell: pwsh
+        env:
+          LU_MINAL_BASE_URL: ${{ github.workspace }}\dist-bin
+          LU_MINAL_INSTALL_DIR: ${{ runner.temp }}\lu-minal-ps7
+          LU_MINAL_WINDOWS_TERMINAL: "0"
+        run: |
+          Get-Content -Raw -LiteralPath .\install.ps1 | Invoke-Expression
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not ($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $env:LU_MINAL_INSTALL_DIR.TrimEnd('\') })) {
+            throw "install.ps1 did not add $env:LU_MINAL_INSTALL_DIR to the user PATH"
+          }
+          lu-minal.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "lu-minal.exe is not on the PATH of this session" }

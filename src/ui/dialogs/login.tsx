@@ -1,11 +1,12 @@
 // Sign-ins: Claude through Claude Code (no API key), OpenRouter in the browser, OpenCode Zen's free
-// models without anything, API keys for every other provider, and GitHub / Forgejo for repositories.
+// models without anything, API keys for every other provider, other coding agents (OpenCode, Gemini
+// CLI over ACP) through their own CLIs, and GitHub / Forgejo for repositories.
 import React from "react";
 import type { Hub } from "../../core/hub.js";
-import { findProgram, openExternal } from "../../platform/process.js";
+import { openExternal } from "../../platform/process.js";
 import type { ProviderInfo } from "../../providers/models.js";
 import { normalizeInstanceUrl, forgejoTokenUrl } from "../../git/forgejo.js";
-import { ghLoginArgs, githubTokenUrl } from "../../git/github.js";
+import { findGh, ghLoginArgs, githubTokenUrl } from "../../git/github.js";
 import type { UiServices } from "../store.js";
 import { InputDialog, MessageDialog } from "./InputDialog.js";
 import { ListDialog, type ListItem } from "./ListDialog.js";
@@ -33,6 +34,11 @@ function providerItem(hub: Hub, p: ProviderInfo, group: string): ListItem {
       hint = [acc.email, acc.plan].filter(Boolean).join(" · ") || "signed in";
       badge = { text: "✓ signed in", color: c.success };
     }
+  } else if (p.kind === "acp") {
+    const preset = hub.registry.acpPreset(p.id);
+    // The badge says whether it is installed; the hint is what to do about it.
+    hint = connected ? (preset?.signIn ?? "signs in with its own CLI") : (preset?.install ?? hub.registry.connectionHint(p.id));
+    badge = connected ? { text: "✓ installed", color: c.success } : { text: "not installed", color: c.faint };
   } else if (p.auth === "optional") {
     const src = keySource(hub, p);
     hint = src ? "key saved - free and paid models" : "free models work without a key";
@@ -59,13 +65,15 @@ function LoginDialog({ hub, ui, close, preselect }: { hub: Hub; ui: UiServices; 
   const c = hub.theme.colors;
   const providers = hub.registry.providers();
   const featured = providers.filter((p) => p.featured);
-  const rest = providers.filter((p) => !p.featured);
+  const agents = providers.filter((p) => !p.featured && p.kind === "acp");
+  const rest = providers.filter((p) => !p.featured && p.kind !== "acp");
   const items: ListItem[] = [
     ...featured.map((p) => providerItem(hub, p, "AI providers")),
     ...(all
       ? rest.map((p) => providerItem(hub, p, `All providers (${rest.length})`))
       : [{ id: "more", label: `All providers… (${rest.length} more)`, hint: "models.dev catalog", group: "AI providers" }]),
-    { id: "git:github", label: "GitHub", hint: "open repositories in new tabs", group: "Repositories", badge: hub.auth.secretFor("github") || process.env.GITHUB_TOKEN ? { text: "✓ token", color: c.success } : undefined },
+    ...agents.map((p) => providerItem(hub, p, "Coding agents")),
+    { id: "git:github", label: "GitHub", hint: "open repositories in new tabs", group: "Repositories", badge: hub.auth.secretFor("github") || process.env.GITHUB_TOKEN || process.env.GH_TOKEN ? { text: "✓ token", color: c.success } : findGh() ? { text: "gh", color: c.faint } : undefined },
     ...hub.config.forgejo.map((f) => ({
       id: `git:forgejo:${f.url}`,
       label: f.name,
@@ -109,6 +117,10 @@ function hostOf(url: string): string {
 
 async function signOut(hub: Hub, ui: UiServices, id: string): Promise<void> {
   if (id === "provider:claude-code") return hub.logoutClaude(ui.runInTerminal);
+  if (id.startsWith("provider:") && hub.registry.provider(id.slice("provider:".length))?.kind === "acp") {
+    hub.toast("This agent signs out in its own CLI (e.g. opencode auth logout).", "info");
+    return;
+  }
   if (id.startsWith("provider:")) return hub.removeKey(id.slice("provider:".length));
   if (id === "git:github") {
     hub.auth.remove("github");
@@ -130,6 +142,10 @@ async function signIn(hub: Hub, ui: UiServices, id: string): Promise<void> {
   if (id.startsWith("provider:")) {
     const p = hub.registry.provider(id.slice("provider:".length));
     if (!p) return;
+    if (p.kind === "acp") {
+      await hub.loginAcp(p.id, ui.runInTerminal);
+      return;
+    }
     if (p.kind === "local" || p.auth === "none") {
       hub.toast(`${p.name} needs no sign-in - start its server and pick a model.`, "info");
       if (p.id === "ollama") void hub.refreshLocalModels();
@@ -209,7 +225,7 @@ async function browserLogin(hub: Hub, ui: UiServices): Promise<void> {
   const opened = await openExternal(login.url);
   const c = hub.theme.colors;
   const id = "openrouter-wait";
-  let closeFn: (() => void) | null = null;
+  let closeFn = null as (() => void) | null;
   login.result.then(
     () => closeFn?.(),
     () => closeFn?.(),
@@ -240,7 +256,7 @@ async function browserLogin(hub: Hub, ui: UiServices): Promise<void> {
 }
 
 function githubChoice(hub: Hub, ui: UiServices): void {
-  const gh = findProgram("gh");
+  const gh = findGh();
   ui.openDialog({
     id: "github",
     render: (close) => (

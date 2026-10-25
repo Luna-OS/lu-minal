@@ -3,6 +3,7 @@
 // dialog reads totals, the last days and the top models from it.
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomicSync } from "../platform/files.js";
 
 export interface UsageAmount {
   input: number;
@@ -34,6 +35,8 @@ export interface UsageRecord {
   input: number;
   output: number;
   costUsd: number;
+  /** Model turns this report closes (1 when left out). */
+  turns?: number;
 }
 
 export interface StatsSummary {
@@ -106,10 +109,10 @@ export class StatsStore {
 
   /** Adds one usage report. */
   record(r: UsageRecord): void {
-    if (!r.input && !r.output && !r.costUsd) return;
+    if (!r.input && !r.output && !r.costUsd && !r.turns) return;
     const day = dayKey(r.at);
     const key = `${r.provider}/${r.model}`;
-    const amount: UsageAmount = { input: r.input, output: r.output, costUsd: r.costUsd, turns: 1 };
+    const amount: UsageAmount = { input: r.input, output: r.output, costUsd: r.costUsd, turns: r.turns ?? 1 };
     const byModel = (this.data.days[day] ??= {});
     add((byModel[key] ??= zero()), amount);
     if (this.total !== null) this.total += r.input + r.output;
@@ -214,9 +217,7 @@ export class StatsStore {
     if (!this.dirty || !this.file) return;
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.data));
-      fs.renameSync(tmp, this.file);
+      writeFileAtomicSync(this.file, JSON.stringify(this.data));
       this.dirty = false;
     } catch {
       // Statistics are a nicety; a failed write is retried with the next change.

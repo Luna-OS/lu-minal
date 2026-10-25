@@ -4,6 +4,7 @@ import React from "react";
 import type { Hub } from "../../core/hub.js";
 import type { Project } from "../../core/project.js";
 import { cloudReadiness, CLOUD_HOME, type CloudSession } from "../../cloud/claude-cloud.js";
+import { samePath } from "../../platform/paths.js";
 import { openExternal } from "../../platform/process.js";
 import { formatAgo } from "../format.js";
 import type { UiServices } from "../store.js";
@@ -27,8 +28,8 @@ function CloudDialog({ hub, ui, project, close }: { hub: Hub; ui: UiServices; pr
   }, [project.cwd]);
   const c = hub.theme.colors;
   const signedIn = Boolean(hub.claudeAccount?.loggedIn);
-  const here = hub.cloudSessions.filter((s) => s.cwd === project.cwd);
-  const elsewhere = hub.cloudSessions.filter((s) => s.cwd !== project.cwd);
+  const here = hub.cloudSessions.filter((s) => samePath(s.cwd, project.cwd));
+  const elsewhere = hub.cloudSessions.filter((s) => !samePath(s.cwd, project.cwd));
   const item = (s: CloudSession, group: string): ListItem => ({
     id: `s:${s.id}`,
     label: s.task.length > 50 ? `${s.task.slice(0, 49)}…` : s.task,

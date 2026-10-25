@@ -146,7 +146,17 @@ export function entryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
             { text: "◂ ", color: opts.colorOf(entry.from) },
             { text: `${entry.from} `, color: opts.colorOf(entry.from), bold: true },
           ];
-      return prose(key, entry.text, w, prefix, { text: "", color: mine ? c.text : c.muted }, theme, opts.maxTextLines ? 4 : 0);
+      const rows = prose(key, entry.text, w, prefix, { text: "", color: mine ? c.text : c.muted }, theme, opts.maxTextLines ? 4 : 0);
+      if (entry.attachments?.length) {
+        rows.push({
+          key: `${key}:att`,
+          segs: [
+            { text: "  ▣ ", color: c.accent2 },
+            { text: truncate(entry.attachments.join(" · "), Math.max(4, w - 4)), color: c.muted },
+          ],
+        });
+      }
+      return rows;
     }
     case "text":
       return prose(key, entry.text, w, [], { text: "", color: c.text }, theme, opts.maxTextLines);

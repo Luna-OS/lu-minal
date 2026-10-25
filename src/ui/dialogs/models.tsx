@@ -11,8 +11,9 @@ function contextLabel(n: number | null): string {
   return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M ctx` : `${Math.round(n / 1000)}k ctx`;
 }
 
-function priceLabel(m: ModelInfo): string {
+function priceLabel(hub: Hub, m: ModelInfo): string {
   if (m.provider === "claude-code") return "your plan";
+  if (hub.registry.provider(m.provider)?.kind === "acp") return m.free ? "free" : "own CLI";
   if (m.free) return "free";
   if (!m.cost) return "";
   const f = (n: number) => (n >= 10 ? n.toFixed(0) : n.toFixed(2).replace(/\.?0+$/, ""));
@@ -22,7 +23,7 @@ function priceLabel(m: ModelInfo): string {
 export function modelItem(hub: Hub, m: ModelInfo, group?: string): ListItem {
   const connected = hub.registry.isConnected(m.provider);
   const ref = formatModelRef({ provider: m.provider, model: m.id });
-  const hint = [m.name !== m.id ? m.name : "", contextLabel(m.contextWindow), priceLabel(m)].filter(Boolean).join(" · ");
+  const hint = [m.name !== m.id ? m.name : "", contextLabel(m.contextWindow), priceLabel(hub, m)].filter(Boolean).join(" · ");
   const c = hub.theme.colors;
   return {
     id: ref,

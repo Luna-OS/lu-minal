@@ -2,6 +2,7 @@
 // and record it in the agent's log (the "▸ read PLAN.md / └ 94 lines" rows).
 import type { Agent } from "../core/agent.js";
 import type { Project } from "../core/project.js";
+import { redactSecrets } from "../core/secrets.js";
 import type { ToolApproval, ToolContext, ToolResult, ToolServices, Tool } from "./types.js";
 
 /** Builds the context a tool runs in for `agent`. */
@@ -67,6 +68,9 @@ export async function runToolCall(opts: {
   const { agent, tool, name, toolCallId, ctx } = opts;
   const args = normalizeArgs(opts.args);
   if (!tool) {
+    if (!opts.quiet) {
+      agent.append({ kind: "tool", toolCallId, name, verb: name, status: "error", detail: "unknown tool" });
+    }
     return { content: `Unknown tool "${name}".`, isError: true };
   }
   if (tool.leadOnly && ctx.role !== "lead") {
@@ -90,7 +94,22 @@ export async function runToolCall(opts: {
         status: "running",
       });
 
-  const finish = (result: ToolResult): ToolResult => {
+  const finish = (raw: ToolResult): ToolResult => {
+    // Keys and tokens lu-minal knows never reach the model or the panel (a command that prints
+    // the environment, a file that holds one).
+    const result: ToolResult = {
+      ...raw,
+      content: redactSecrets(raw.content),
+      ...(raw.display
+        ? {
+            display: {
+              ...raw.display,
+              ...(raw.display.detail !== undefined ? { detail: redactSecrets(raw.display.detail) } : {}),
+              ...(raw.display.target !== undefined ? { target: redactSecrets(raw.display.target) } : {}),
+            },
+          }
+        : {}),
+    };
     if (entry) {
       const d = result.display ?? {};
       agent.update(entry.id, {

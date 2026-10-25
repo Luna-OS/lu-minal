@@ -58,6 +58,8 @@ export function ConfirmDialog(props: {
   no?: string;
   onYes: () => void;
   onNo: () => void;
+  /** Enter means no (and "no" is the highlighted answer): only y says yes. For risky questions. */
+  defaultNo?: boolean;
 }) {
   const size = useWindowSize();
   const c = props.theme.colors;
@@ -65,8 +67,17 @@ export function ConfirmDialog(props: {
   const text = props.lines.flatMap((l) => wrap(l, width - 4));
   useInput((input, key) => {
     if (key.escape || input === "n" || input === "N") return props.onNo();
-    if (key.return || input === "y" || input === "Y") return props.onYes();
+    if (input === "y" || input === "Y") return props.onYes();
+    if (key.return) return props.defaultNo ? props.onNo() : props.onYes();
   });
+  const button = (label: string, highlighted: boolean) =>
+    highlighted ? (
+      <Text color={c.bg} backgroundColor={c.accent} bold>
+        {label}
+      </Text>
+    ) : (
+      <Text color={c.muted}>{label}</Text>
+    );
   return (
     <DialogBox theme={props.theme} width={width} height={text.length + 5} title={props.title}>
       {text.map((l, i) => (
@@ -76,9 +87,9 @@ export function ConfirmDialog(props: {
       ))}
       <Text> </Text>
       <Text wrap="truncate">
-        <Text color={c.bg} backgroundColor={c.accent} bold>{` y ${props.yes ?? "yes"} `}</Text>
+        {button(` y ${props.yes ?? "yes"} `, !props.defaultNo)}
         <Text>{"  "}</Text>
-        <Text color={c.muted}>{` n ${props.no ?? "no"} `}</Text>
+        {button(` n ${props.no ?? "no"} `, Boolean(props.defaultNo))}
       </Text>
     </DialogBox>
   );
@@ -90,6 +101,9 @@ export function MessageDialog(props: {
   title: string;
   lines: Array<string | { text: string; color?: string }>;
   hints?: string;
+  hintsColor?: string;
+  /** Mention the arrow keys when the text scrolls (off while onKey takes every key). */
+  scrollHint?: boolean;
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
@@ -100,14 +114,25 @@ export function MessageDialog(props: {
     const item = typeof l === "string" ? { text: l } : l;
     return wrap(item.text, width - 4).map((t) => ({ text: t, color: item.color }));
   });
+  const height = Math.min(rows.length + 4, Math.max(6, size.rows - 2));
+  // Only the rows that fit (more would be squashed over each other); the arrows scroll the rest in.
+  const room = Math.max(1, height - 4);
+  const maxTop = Math.max(0, rows.length - room);
+  const [top, setTop] = useState(0);
+  const first = Math.min(top, maxTop);
   useInput((input, key) => {
     if (props.onKey?.(input)) return;
+    if (key.upArrow) return setTop(Math.max(0, first - 1));
+    if (key.downArrow) return setTop(Math.min(maxTop, first + 1));
+    if (key.pageUp) return setTop(Math.max(0, first - room));
+    if (key.pageDown) return setTop(Math.min(maxTop, first + room));
     if (key.escape || key.return) props.onClose();
   });
+  const hints = props.hints ?? "enter / esc close";
   return (
-    <DialogBox theme={props.theme} width={width} height={Math.min(rows.length + 4, size.rows - 2)} title={props.title} hints={props.hints ?? "enter / esc close"}>
-      {rows.map((r, i) => (
-        <Text key={i} color={r.color ?? c.muted} wrap="truncate">
+    <DialogBox theme={props.theme} width={width} height={height} title={props.title} hints={maxTop && props.scrollHint !== false ? `↑↓ scroll · ${hints}` : hints} hintsColor={props.hintsColor}>
+      {rows.slice(first, first + room).map((r, i) => (
+        <Text key={first + i} color={r.color ?? c.muted} wrap="truncate">
           {r.text || " "}
         </Text>
       ))}

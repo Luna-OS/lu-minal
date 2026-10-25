@@ -14,9 +14,20 @@ export interface RetryOptions {
 
 const NETWORK_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_SOCKET"]);
 
+/**
+ * A 429 that won't clear up by waiting: a free tier's quota is used up (OpenCode Zen's
+ * "FreeUsageLimitError", "quota exceeded", "insufficient_quota").
+ */
+export function isQuotaExhausted(error: unknown): boolean {
+  if (!(error instanceof ProviderError) || error.status !== 429) return false;
+  return /free\s*usage\s*limit|FreeUsageLimitError|quota\s*(exceeded|reached)|insufficient_quota|exceeded your current quota/i.test(
+    `${error.message} ${error.body}`,
+  );
+}
+
 /** Whether an error is worth retrying: a retryable HTTP status or a dropped connection. */
 export function isRetryable(error: unknown): boolean {
-  if (error instanceof ProviderError) return error.retryable;
+  if (error instanceof ProviderError) return error.retryable && !isQuotaExhausted(error);
   if (!(error instanceof Error)) return false;
   if (error.name === "AbortError") return false;
   const code = (error as { code?: string }).code ?? (error.cause as { code?: string } | undefined)?.code;

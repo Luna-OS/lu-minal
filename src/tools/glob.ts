@@ -84,13 +84,9 @@ function globSource(glob: string): string {
         let j = i + 2;
         while (glob[j] === "*") j++;
         if (atStart && glob[j] === "/") {
-          out += "(?:[^/]*(?:/|$))*?";
-          // "**/" matches zero or more whole directories: "(?:.*/)?".
-          out = out.slice(0, -"(?:[^/]*(?:/|$))*?".length) + "(?:.*/)?";
-          i = j; // skip the "/"
-        } else if (atStart && j >= glob.length) {
-          out += ".*";
-          i = j - 1;
+          // "**/" matches zero or more whole directories.
+          out += "(?:.*/)?";
+          i = j; // the "/" is part of it
         } else {
           out += ".*";
           i = j - 1;
@@ -246,11 +242,14 @@ export interface WalkOptions {
   maxFiles?: number;
   /** Stop after looking at this many directory entries (huge trees). */
   maxEntries?: number;
+  /** List symlinked files (default true; a search leaves them out, as ripgrep does). */
+  links?: boolean;
 }
 
 /**
  * Lists the files under `root` (async, so the UI keeps drawing): skips SKIP_DIRS and what the
- * ignore rules exclude, and does not follow symlinked folders. Symlinked files are included.
+ * ignore rules exclude, and does not follow symlinked folders. Symlinked files are included
+ * unless `links` is false.
  */
 export async function walkFiles(root: string, opts: WalkOptions = {}): Promise<{ files: WalkedFile[]; truncated: boolean }> {
   const files: WalkedFile[] = [];
@@ -280,6 +279,7 @@ export async function walkFiles(root: string, opts: WalkOptions = {}): Promise<{
       let isDir = entry.isDirectory();
       let isFile = entry.isFile();
       if (entry.isSymbolicLink()) {
+        if (opts.links === false) continue;
         try {
           const st = await fs.promises.stat(abs);
           // Symlinked folders are not followed (loops); symlinked files are listed.

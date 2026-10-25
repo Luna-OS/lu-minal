@@ -18,9 +18,17 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+/** A picture sent with a user message (base64, one of the IMAGE_TYPES in core/attachments). */
+export interface ImagePart {
+  mediaType: string;
+  data: string;
+}
+
 export interface UserMessage {
   role: "user";
   content: string;
+  /** Pictures for models that can see (each wire puts them in its own block shape). */
+  images?: ImagePart[];
 }
 
 export interface AssistantMessage {

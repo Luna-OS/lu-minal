@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseModelRef, type ModelRef } from "../providers/models.js";
 import type { TeamApi, TeamMember } from "../tools/types.js";
 import { Agent } from "./agent.js";
+import type { Attachment } from "./attachments.js";
 import { newId, type Notifier } from "./emitter.js";
 import type {
   AgentSpec,
@@ -62,9 +63,16 @@ export class Project {
   permissionMode: PermissionMode;
   /** Where the project came from ("github:owner/name", "forgejo:...", "local"). */
   origin: string;
+  /**
+   * Whether the user trusts the folder's own agent settings (.claude/settings.json with its hooks
+   * and permission rules, .mcp.json servers). A folder the user opened is trusted; a repository
+   * cloned from a host is not until the user says so (setTrusted), and Claude Code agents then
+   * start with only the user's own settings and lu-minal's MCP server.
+   */
+  trusted: boolean;
 
   constructor(
-    opts: { name?: string; cwd: string; permissionMode?: PermissionMode; origin?: string },
+    opts: { name?: string; cwd: string; permissionMode?: PermissionMode; origin?: string; trusted?: boolean },
     private readonly notifier: Notifier,
     private readonly runtime: ProjectRuntime,
   ) {
@@ -72,6 +80,13 @@ export class Project {
     this.name = opts.name?.trim() || path.basename(this.cwd) || this.cwd;
     this.permissionMode = opts.permissionMode ?? "auto-edit";
     this.origin = opts.origin ?? "local";
+    this.trusted = opts.trusted ?? this.origin === "local";
+  }
+
+  /** Trusts (or stops trusting) the folder's own agent settings; agents started later follow it. */
+  setTrusted(trusted: boolean): void {
+    this.trusted = trusted;
+    this.changed();
   }
 
   changed(): void {
@@ -174,9 +189,9 @@ export class Project {
    * Sends `text` from `from` (an agent name or "you") to `to` (a name, "lead", or "*" for everyone
    * but the sender). Returns the names that got it.
    */
-  send(from: string, to: string, text: string): string[] {
+  send(from: string, to: string, text: string, attachments?: Attachment[]): string[] {
     const body = text.trim();
-    if (!body) return [];
+    if (!body && !attachments?.length) return [];
     const target = to.trim().replace(/^@/, "").toLowerCase();
     let recipients: Agent[];
     if (target === "*" || target === "all" || target === "everyone") {
@@ -185,7 +200,8 @@ export class Project {
       recipients = this.lead && this.lead.name !== from ? [this.lead] : [];
     } else {
       const agent = this.findAgent(target);
-      recipients = agent && agent.status !== "stopped" ? [agent] : [];
+      // Nobody messages themselves (an agent addressing its own name).
+      recipients = agent && agent.status !== "stopped" && agent.name !== from ? [agent] : [];
     }
     if (!recipients.length) return [];
     const message: TeamMessage = {
@@ -199,7 +215,7 @@ export class Project {
     if (this.messages.length > MAX_MESSAGES) this.messages.splice(0, this.messages.length - MAX_MESSAGES);
     const sender = this.findAgent(from);
     sender?.append({ kind: "message", to: message.to, text: body });
-    for (const r of recipients) r.deliver({ from, text: body });
+    for (const r of recipients) r.deliver({ from, text: body, attachments });
     this.changed();
     return recipients.map((r) => r.name);
   }

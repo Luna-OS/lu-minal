@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=lu-minal
+GenericName=Coding Agents Terminal
+Comment=A team of coding agents under the night sky
+Exec=lu-minal
+TryExec=lu-minal
+Icon=lu-minal
+Terminal=true
+Categories=Development;IDE;
+Keywords=terminal;agents;ai;claude;coding;tui;
+StartupNotify=false

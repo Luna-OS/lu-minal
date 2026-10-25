@@ -7,23 +7,25 @@ from the [models.dev](https://models.dev) catalog (OpenCode Zen's free models, O
 OpenAI, Gemini, ...). They talk to each other over the project's bus, share a task board, can switch
 the app's theme, and can drive Roblox Studio through a small bridge.
 
-It runs the same on **Windows, macOS and Linux**: as `npx lu-minal`, as a standalone binary per
-platform (Bun-compiled, see `scripts/build-binaries.ts`), and on macOS also as a native Swift app
-(`macos/`) that hosts the terminal in a Moon-styled window.
+It runs the same on **Windows, macOS and Linux**: as a standalone binary per platform
+(Bun-compiled, see `scripts/build-binaries.ts`), built from source with Node (`npm run build`,
+`dist/cli.js`), and on macOS also as a native Swift app (`macos/`) that hosts the terminal in a
+Moon-styled window.
 
 ## Module map
 
 | Path | What it is |
 | --- | --- |
 | `src/cli.tsx` | Entry: arguments, sub-commands (`models`, `login`, `roblox install`, ...), starts the UI. |
-| `src/core/` | State: `Hub` (the app), `Project` (a tab), `Agent` (one agent and its log), config, permissions. |
+| `src/core/` | State: `Hub` (the app), `Project` (a tab), `Agent` (one agent and its log), config, permissions, statistics, attachments (dropped files, clipboard pictures). |
 | `src/platform/` | Paths per OS, finding / spawning programs (Windows `.cmd` shims), opening URLs. |
 | `src/providers/` | Catalog (models.dev), auth store, provider registry, OpenRouter OAuth, the wire clients. |
 | `src/providers/wire/` | OpenAI chat completions, OpenAI Responses, Anthropic Messages – streaming + tool calls. |
 | `src/agents/native/` | The agent loop for API models (stream → tool calls → results → repeat). |
 | `src/agents/claude-code/` | Claude Code CLI: discovery, account, plan usage, stream-json events, the driver. |
+| `src/agents/acp/` | ACP agents (OpenCode, Gemini CLI, custom): JSON-RPC peer, presets, models, the driver. See [acp.md](acp.md). |
 | `src/agents/prompts.ts` | System prompts for leads and workers (the team protocol). |
-| `src/tools/` | Tools: files, shell, web fetch, team (messages, spawn, tasks), themes, Roblox. |
+| `src/tools/` | Tools: files, shell, web fetch, team (messages, spawn, tasks), themes, Roblox. Risk checks: `command-risk.ts` (which shell commands only read), `sensitive.ts` (secret stores, protected folders), `net-guard.ts` (local addresses). See [security.md](security.md). |
 | `src/mcp/` | A minimal MCP server (Streamable HTTP) that gives Claude Code agents the team/theme/Roblox tools and routes their permission prompts into lu-minal. |
 | `src/roblox/` | The Studio bridge (HTTP long-poll server) and plugin installer. `roblox/` has the plugin. |
 | `src/git/` | GitHub and Forgejo/Gitea repository lists and cloning. |
@@ -82,7 +84,8 @@ MiniMax models use the Anthropic wire) wins over the provider's.
 lu-minal adds two providers models.dev doesn't have:
 
 - `claude-code` – Claude through the Claude Code CLI and the user's subscription. Models are the
-  CLI's aliases (`default`, `opus`, `sonnet`, `haiku`, `fable`) plus every Anthropic model id.
+  CLI's aliases (`default`, `opus`, `sonnet`, `haiku`) plus every Anthropic model id (e.g.
+  `claude-fable-5-1`); any id the CLI accepts can be typed.
 - `ollama` – a local Ollama server (`http://127.0.0.1:11434/v1`), models read from `/api/tags`.
 
 Free models: models with input and output cost 0. OpenCode Zen's free models work **without a key**
@@ -101,9 +104,14 @@ runs the official `claude` program:
 | --- | --- |
 | Find it | `claude` on the PATH, `~/.local/bin`, `~/.claude/local`, `%APPDATA%\npm` (or `claudePath` in the config) |
 | Sign in | `claude auth login` in the real terminal (the UI suspends itself meanwhile) |
-| Who is signed in | `claude auth status --json` + `~/.claude.json` |
+| Who is signed in | `claude auth status` (JSON by default; exit code 0 when signed in) + `~/.claude.json` |
 | An agent | `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --model <m> --mcp-config <file> --permission-prompt-tool mcp__luminal__approve --append-system-prompt <team prompt>` in the project folder |
-| Plan limits | `claude -p /usage --output-format stream-json --verbose --no-session-persistence --strict-mcp-config` every `usagePollSeconds`, plus every `rate_limit_event` from running agents |
+| Plan limits | every `rate_limit_event` from running agents, plus `claude -p /usage …` every `usagePollSeconds` where the CLI answers it (undocumented, so it is best effort) |
+| Cloud | `claude --cloud "<task>"` starts a session on claude.ai/code (interactive), `claude -p "<text>" --cloud <id> --output-format json` messages it, `claude --teleport <id>` brings it into the terminal |
+| Subscription billing | Claude Code processes start without `ANTHROPIC_API_KEY` (with `-p` it would win over the claude.ai login) unless `claudeUseApiKey` is set |
+| Interrupt | a stream-json `control_request {subtype:"interrupt"}`. Claude Code answers at once with `{still_queued: []}` and ends the turn with an error_during_execution result (terminal_reason "aborted_tools"). If the turn doesn't end within 3 s, the CLI refuses, or esc is pressed again: SIGINT on macOS / Linux, then the process is stopped; the next message resumes with `--resume` |
+| MCP config | one http entry per agent with a bearer token and `"timeout": 86400000` (HTTP servers otherwise get 60 s per request), plus MCP_TOOL_TIMEOUT in the environment |
+| Pictures | image content blocks in the stream-json user message (base64); other files are listed by path, small text files inlined |
 
 ## Cross-platform rules
 
@@ -111,7 +119,14 @@ runs the official `claude` program:
   from `src/platform/paths.ts` (`%APPDATA%` / `%LOCALAPPDATA%` on Windows, `~/Library` on macOS,
   XDG on Linux).
 - Programs: find them with `findProgram` and start them with `spawnProgram` / `runProgram`
-  (`src/platform/process.ts`), which handle Windows `.cmd` shims and PATHEXT.
+  (`src/platform/process.ts`). They handle Windows `.cmd` shims, PATHEXT, any spelling of PATH
+  and quoted PATH entries; an npm shim whose argument cmd.exe can't carry (a line break, `%`) is
+  started through its node target.
+- Files: whole-file rewrites use `writeFileAtomicSync` / `writeFileAtomic` (`src/platform/files.ts`):
+  a temp file and a rename, retried on Windows while another process holds the target
+  (EPERM / EBUSY), then written in place; file modes are set on POSIX only.
+- Folders: compare them with `samePath` (case-insensitive on Windows); the file tools read Git
+  Bash paths (`/c/...`) as Windows paths.
 - The shell tool runs `bash` on macOS/Linux; on Windows it prefers Git Bash and falls back to
   PowerShell, and tells the model which one it got.
 - Line endings: tools keep a file's existing `\r\n` when editing it.

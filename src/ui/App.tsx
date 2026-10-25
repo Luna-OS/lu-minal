@@ -4,6 +4,15 @@
 import { Box, Text, useAnimation, useApp, useInput, usePaste, useWindowSize, type Key } from "ink";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { Agent } from "../core/agent.js";
+import {
+  attachmentFromPath,
+  attachmentsDir,
+  clipboardHint,
+  clipboardImage,
+  describeAttachment,
+  droppedFiles,
+  type Attachment,
+} from "../core/attachments.js";
 import type { Hub, TerminalRunner } from "../core/hub.js";
 import type { Project } from "../core/project.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
@@ -45,6 +54,7 @@ function Screen({ onExit }: { onExit: () => void }) {
   const [dialogs, setDialogs] = useState<DialogSpec[]>([]);
   const [editors, setEditors] = useState<Record<string, EditorState>>({});
   const [scrolls, setScrolls] = useState<Record<string, number>>({});
+  const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
   const history = useRef<Record<string, { items: string[]; index: number }>>({});
   const lastCtrlC = useRef(0);
   const lastBusy = useRef<{ busy: boolean; doneAt: number }>({ busy: false, doneAt: 0 });
@@ -53,6 +63,8 @@ function Screen({ onExit }: { onExit: () => void }) {
   const focused = project?.focused;
   const anyBusy = hub.projects.some((p) => p.agents.some((a) => a.busy));
   const { frame } = useAnimation({ interval: 140, isActive: anyBusy });
+  // A slow tick while idle, so the header clock moves on and "Done!" turns back into "Ready".
+  useAnimation({ interval: 1000, isActive: !anyBusy && Boolean(project) });
   const now = Date.now();
 
   // ---- UI services ---------------------------------------------------------------------------
@@ -67,17 +79,32 @@ function Screen({ onExit }: { onExit: () => void }) {
   const runInTerminal: TerminalRunner = useCallback(
     async (exe, args, opts) => {
       let code: number | null = null;
-      await suspendTerminal(
-        () =>
-          new Promise<void>((resolve) => {
-            const child = spawnProgram(exe, args, { stdio: "inherit", cwd: opts?.cwd ?? process.cwd(), env: opts?.env ?? process.env });
-            child.on("error", () => resolve());
-            child.on("exit", (exitCode) => {
-              code = exitCode;
-              resolve();
-            });
-          }),
-      );
+      // Ctrl+C in the child's terminal reaches lu-minal too (the whole foreground group on POSIX,
+      // every process on the console on Windows): ignore it here, the child handles it.
+      const ignoreSigint = () => undefined;
+      process.on("SIGINT", ignoreSigint);
+      try {
+        await suspendTerminal(
+          () =>
+            new Promise<void>((resolve) => {
+              let child: ReturnType<typeof spawnProgram>;
+              try {
+                child = spawnProgram(exe, args, { stdio: "inherit", cwd: opts?.cwd ?? process.cwd(), env: opts?.env ?? process.env });
+              } catch {
+                // spawnProgram refuses a batch file whose arguments cmd.exe would cut (a line break).
+                resolve();
+                return;
+              }
+              child.on("error", () => resolve());
+              child.on("exit", (exitCode) => {
+                code = exitCode;
+                resolve();
+              });
+            }),
+        );
+      } finally {
+        process.off("SIGINT", ignoreSigint);
+      }
       return code;
     },
     [suspendTerminal],
@@ -99,6 +126,30 @@ function Screen({ onExit }: { onExit: () => void }) {
     if (focused) setEditor(focused, { value: text, cursor: text.length });
   };
 
+  // ---- attachments -----------------------------------------------------------------------------
+
+  const attachOf = (agent: Agent | undefined): Attachment[] => (agent ? (attachments[agent.id] ?? []) : []);
+  const addAttachments = (agent: Agent, list: Attachment[]) => {
+    if (!list.length) return;
+    setAttachments((a) => ({ ...a, [agent.id]: [...(a[agent.id] ?? []), ...list].slice(-10) }));
+  };
+  /** Attaches files by path; says why when one can't be attached. */
+  const attachPaths = (paths: string[]) => {
+    if (!focused) return;
+    const ok: Attachment[] = [];
+    for (const p of paths) {
+      const a = attachmentFromPath(p);
+      if (typeof a === "string") hub.toast(a, "warning");
+      else ok.push(a);
+    }
+    addAttachments(focused, ok);
+  };
+  const pasteImage = async (agent: Agent) => {
+    const image = await clipboardImage(attachmentsDir(hub.stateDir)).catch(() => null);
+    if (image) addAttachments(agent, [image]);
+    else hub.toast(clipboardHint(), "info");
+  };
+
   const ctxRef = useRef<CommandContext | null>(null);
   const launchers = useMemo(() => createLaunchers(hub, ui, () => ctxRef.current!), [hub, ui]);
   const toggleZoom = () => {
@@ -113,6 +164,7 @@ function Screen({ onExit }: { onExit: () => void }) {
     agent: focused,
     setPrompt,
     toggleZoom,
+    attach: attachPaths,
     dialogs: launchers,
   };
   ctxRef.current = ctx;
@@ -121,13 +173,15 @@ function Screen({ onExit }: { onExit: () => void }) {
 
   const submit = (agent: Agent, text: string) => {
     const value = text.trim();
-    if (!value || !project) return;
+    const files = attachOf(agent);
+    if ((!value && !files.length) || !project) return;
     const h = (history.current[project.id] ??= { items: [], index: -1 });
     h.items = [value, ...h.items.filter((x) => x !== value)].slice(0, 100);
     h.index = -1;
     setEditor(agent, emptyEditor());
     setScrolls((s) => ({ ...s, [agent.id]: 0 }));
     if (value.startsWith("/")) {
+      // Commands don't take attachments; they stay for the next message.
       const typed = /^\/(\S*)/.exec(value)?.[1] ?? "";
       const matches = commandSuggestions(typed);
       if (!findCommand(typed) && matches.length === 1) {
@@ -139,11 +193,18 @@ function Screen({ onExit }: { onExit: () => void }) {
     }
     const at = /^@(\S+)\s+([\s\S]+)$/.exec(value);
     if (at) {
-      const got = project.send("you", at[1], at[2]);
-      if (!got.length) hub.toast(`Nobody called "${at[1]}" here.`, "warning");
+      const got = project.send("you", at[1], at[2], files);
+      if (!got.length) {
+        // A mistyped name: the text and the attachments stay, so it can be fixed and sent again.
+        setEditor(agent, { value, cursor: value.length });
+        hub.toast(`Nobody called "${at[1]}" here.`, "warning");
+        return;
+      }
+      setAttachments((a) => ({ ...a, [agent.id]: [] }));
       return;
     }
-    agent.deliver({ from: "you", text: value });
+    setAttachments((a) => ({ ...a, [agent.id]: [] }));
+    agent.deliver({ from: "you", text: value, attachments: files.length ? files : undefined });
   };
 
   // ---- keys ------------------------------------------------------------------------------------
@@ -164,8 +225,10 @@ function Screen({ onExit }: { onExit: () => void }) {
         focused.interrupt();
         return;
       }
-      if (now - lastCtrlC.current < 1500) return quit();
-      lastCtrlC.current = now;
+      // The time of this press, not of the last render, which can be seconds old.
+      const pressed = Date.now();
+      if (pressed - lastCtrlC.current < 1500) return quit();
+      lastCtrlC.current = pressed;
       hub.toast("Press ctrl+c again to quit.", "info");
       return;
     }
@@ -210,6 +273,15 @@ function Screen({ onExit }: { onExit: () => void }) {
       if (agent.busy) agent.interrupt();
       return;
     }
+    if ((key.ctrl || key.meta) && input === "v") {
+      // Ctrl+V (Alt+V where the terminal keeps Ctrl+V for pasting text, as Windows Terminal does).
+      void pasteImage(agent);
+      return;
+    }
+    if (key.backspace && !editor.value && attachOf(agent).length) {
+      setAttachments((a) => ({ ...a, [agent.id]: (a[agent.id] ?? []).slice(0, -1) }));
+      return;
+    }
     if (agent.pendingApproval && !editor.value) {
       if (input === "y" || input === "Y") return agent.answerApproval("allow");
       if (input === "a" || input === "A") return agent.answerApproval("always");
@@ -237,7 +309,11 @@ function Screen({ onExit }: { onExit: () => void }) {
   useInput(handleKey, { isActive: !dialogOpen });
   usePaste(
     (text) => {
-      if (focused) setEditor(focused, insertText(editorOf(focused), text));
+      if (!focused) return;
+      // Files dropped on the terminal arrive as a paste of their paths.
+      const files = droppedFiles(text);
+      if (files) attachPaths(files);
+      else setEditor(focused, insertText(editorOf(focused), text));
     },
     { isActive: !dialogOpen },
   );
@@ -262,6 +338,21 @@ function Screen({ onExit }: { onExit: () => void }) {
   const mood: AxoMood = leadBusy ? "work" : now - lastBusy.current.doneAt < 2500 ? "done" : hub.ready ? "idle" : "sleep";
   const leadAgent = project?.lead;
 
+  const chipRows = (agent: Agent | undefined): Row[] => {
+    const list = attachOf(agent);
+    if (!list.length) return [];
+    return [
+      {
+        key: "attachments",
+        segs: [
+          { text: "  ▣ ", color: c.accent2 },
+          { text: list.map(describeAttachment).join("   "), color: c.text },
+          { text: "   backspace removes", color: c.faint },
+        ],
+      },
+    ];
+  };
+
   const menuRows = (agent: Agent | undefined): Row[] =>
     slashMenu(agent).map((cmd, i) => ({
       key: `menu-${cmd.name}`,
@@ -278,7 +369,7 @@ function Screen({ onExit }: { onExit: () => void }) {
   return (
     <UiContext value={ui}>
       <Box width={columns} height={rows}>
-        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled} />
+        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} enabled={hub.config.sky.enabled} moonAt={project ? null : undefined} />
         <TabBar hub={hub} rect={layout.tabBar} frame={frame} />
         {project ? <Header hub={hub} project={project} rect={layout.header} now={now} /> : null}
         {project ? (
@@ -301,7 +392,7 @@ function Screen({ onExit }: { onExit: () => void }) {
                 editor={isFocused ? editorOf(agent) : null}
                 scroll={scrolls[agent.id] ?? 0}
                 reserveRight={reserve}
-                menu={isFocused ? menuRows(agent) : undefined}
+                menu={isFocused ? [...chipRows(agent), ...menuRows(agent)] : undefined}
               />
             );
           })
@@ -378,12 +469,17 @@ function Welcome({ hub, layout }: { hub: Hub; layout: Layout }) {
   return (
     <Box position="absolute" left={left} top={top} width={w} flexDirection="column" alignItems="center">
       {showAxo ? <Axo mood={hub.ready ? "idle" : "sleep"} bg={c.bg} caption={hub.ready ? "Ready when you are." : "Waking up…"} captionColor={c.muted} animate={hub.config.sky.enabled} /> : null}
-      {showAxo ? <Text> </Text> : null}
-      {lines.map((l, i) => (
-        <Text key={i} color={l.color} bold={l.bold} backgroundColor={c.bg} wrap="truncate">
-          {truncate(l.text, w)}
-        </Text>
-      ))}
+      {showAxo ? <Box height={1} /> : null}
+      {lines.map((l, i) =>
+        l.text ? (
+          <Text key={i} color={l.color} bold={l.bold} backgroundColor={c.bg} wrap="truncate">
+            {truncate(l.text, w)}
+          </Text>
+        ) : (
+          // An empty row that leaves the sky visible.
+          <Box key={i} height={1} />
+        ),
+      )}
     </Box>
   );
 }

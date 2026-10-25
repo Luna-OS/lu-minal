@@ -1,0 +1,179 @@
+# Release: on a version tag (v0.2.0), build the standalone binaries for every platform, the
+# macOS app (zip and disk image), compute SHA256SUMS and publish a GitHub release. Windows
+# binaries are built on Windows so they carry version info; macOS ones on macOS so they are
+# signed there (ad-hoc) and can be combined into the app's universal binary.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Read-only for every job; only publish gets a write token (npm ci's install scripts, the tests and
+# the bundlers run in the others).
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.4.4"
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: version
+        name: The tag must match package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json's version $pkg"
+            exit 1
+          fi
+          echo "version=$pkg" >> "$GITHUB_OUTPUT"
+
+  # CI does not run for tags (it is limited to branches), so the tagged commit is tested here.
+  test:
+    name: Test (${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  linux:
+    name: Linux binaries
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci
+      - run: bun scripts/build-binaries.ts --target=linux --outdir=dist-bin --smoke
+      - name: Smoke test the musl binary on Alpine
+        # Bun's musl runtime links libstdc++, which Alpine installs on demand.
+        run: docker run --rm -v "$PWD/dist-bin:/bin-lu:ro" alpine:3 sh -c "apk add --no-cache libstdc++ >/dev/null && /bin-lu/lu-minal-linux-x64-musl --version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist-bin/lu-minal-*
+          if-no-files-found: error
+
+  windows:
+    name: Windows binaries
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci
+      - run: bun scripts/build-binaries.ts --target=windows --outdir=dist-bin --smoke
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist-bin/lu-minal-*
+          if-no-files-found: error
+
+  macos:
+    name: macOS binaries and app
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: npm ci
+      # build-binaries.ts signs the macOS binaries ad-hoc when it runs on macOS.
+      - run: bun scripts/build-binaries.ts --target=macos --outdir=dist-bin --smoke
+      - name: Check the signatures
+        run: |
+          codesign --verify --verbose=2 dist-bin/lu-minal-macos-arm64 dist-bin/lu-minal-macos-x64
+          codesign --display --verbose=2 dist-bin/lu-minal-macos-arm64
+      - name: Build LuMinal.app (zip and disk image)
+        run: >-
+          bash macos/scripts/bundle-app.sh
+          --binary dist-bin/lu-minal-macos-arm64 --binary dist-bin/lu-minal-macos-x64
+          --version "${{ needs.version.outputs.version }}" --out dist-app --dmg
+      # One flat folder: an artifact made from several folders keeps them as subfolders.
+      - name: Collect the release files
+        run: |
+          mkdir -p release
+          cp dist-bin/lu-minal-macos-arm64 dist-bin/lu-minal-macos-x64 release/
+          cp dist-app/lu-minal-macos-app.zip dist-app/lu-minal-macos-app.dmg release/
+          ls -la release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [version, test, linux, windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: assets
+          merge-multiple: true
+      - name: SHA256SUMS
+        working-directory: assets
+        run: |
+          rm -f SHA256SUMS
+          ls -la
+          for f in lu-minal-linux-x64 lu-minal-linux-arm64 lu-minal-linux-x64-musl lu-minal-linux-arm64-musl \
+                   lu-minal-macos-x64 lu-minal-macos-arm64 lu-minal-windows-x64.exe lu-minal-windows-arm64.exe \
+                   lu-minal-macos-app.zip lu-minal-macos-app.dmg; do
+            [ -f "$f" ] || { echo "::error::missing release file $f"; exit 1; }
+          done
+          sha256sum lu-minal-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          name: lu-minal ${{ needs.version.outputs.version }}
+          files: assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}

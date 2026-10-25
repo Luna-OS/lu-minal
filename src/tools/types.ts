@@ -117,6 +117,8 @@ export interface TeamApi {
 export interface ThemeApi {
   list(): Array<{ name: string; label: string; dark: boolean; builtin: boolean }>;
   current(): Theme;
+  /** A theme by name (built-in or custom), without switching to it. */
+  get?(name: string): Theme | undefined;
   /** Switches the app to a theme by name; false if there is none. */
   set(name: string): boolean;
   /** Saves (and optionally applies) a custom theme. */

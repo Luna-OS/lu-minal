@@ -6,24 +6,36 @@ import os from "node:os";
 import path from "node:path";
 import { render } from "ink";
 import React from "react";
+import { forgetAcpModels } from "./agents/acp/models.js";
+import { acpEnv, findAcpAgent, findAcpProgram } from "./agents/acp/presets.js";
 import { readClaudeAccount } from "./agents/claude-code/account.js";
 import { findClaude } from "./agents/claude-code/cli.js";
 import { claudeLoginArgs } from "./agents/claude-code/login.js";
 import { configFile, loadConfig } from "./core/config.js";
 import { errText, Hub } from "./core/hub.js";
-import { cacheDir, configDir, expandHome, stateDir } from "./platform/paths.js";
-import { openExternal, spawnProgram } from "./platform/process.js";
-import { installWindowsTerminalProfile } from "./platform/windows-terminal.js";
+import { cacheDir, configDir, expandHome, samePath, stateDir } from "./platform/paths.js";
+import { findProgram, openExternal, spawnProgram, withProgramPath } from "./platform/process.js";
+import { launchCommand } from "./platform/install-info.js";
+import { installWindowsTerminalProfile, removeWindowsTerminalProfile } from "./platform/windows-terminal.js";
 import { AuthStore } from "./providers/auth.js";
 import { loadCatalog } from "./providers/catalog.js";
 import { formatModelRef, parseModelRef } from "./providers/models.js";
 import { startOpenRouterLogin } from "./providers/openrouter.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
-import { ThemeManager } from "./themes/manager.js";
+import { bridgeToken } from "./roblox/token.js";
+import { startThemes, ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
+import { VERSION } from "./version.js";
 
-export const VERSION = process.env.LU_MINAL_VERSION ?? "0.1.0";
+// `lu-minal models | head` closes the pipe early: end quietly instead of crashing with EPIPE
+// (Node throws an unhandled 'error' event; the Bun binaries print a stack trace and exit 1).
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EPIPE") process.exit(0);
+    throw err;
+  });
+}
 
 const HELP = `lu-minal ${VERSION} - a team of coding agents under the night sky
 
@@ -32,16 +44,16 @@ Usage
   lu-minal --fresh [folder]      start without the last session's tabs
   lu-minal models [query] [--free]   list models (all providers from models.dev)
   lu-minal providers             list providers and whether you are signed in
-  lu-minal login <provider> [key]    sign in (claude, openrouter, or save an API key)
+  lu-minal login <provider> [key]    sign in (claude, openrouter, opencode-cli, gemini-cli, or save an API key)
   lu-minal logout <provider>     forget a provider's key
   lu-minal roblox install        install the Roblox Studio plugin
   lu-minal roblox path           print the Roblox plugins folder
   lu-minal themes                list themes
-  lu-minal setup windows-terminal    add a lu-minal profile to Windows Terminal
+  lu-minal setup windows-terminal [--remove]   add (or remove) a Windows Terminal profile
 
 Options
   --model <provider/model>       the lead's model (e.g. claude-code/opus, opencode/big-pickle)
-  --theme <name>                 start with this theme (default: moon)
+  --theme <name>                 use this theme for this run (default: the saved theme)
   --no-sky                       no animated sky
   --offline                      don't download the model catalog
   -v, --version                  print the version
@@ -89,9 +101,16 @@ function print(line = ""): void {
   process.stdout.write(`${line}\n`);
 }
 
-async function runInherit(exe: string, args: string[]): Promise<number | null> {
+async function runInherit(exe: string, args: string[], env?: NodeJS.ProcessEnv): Promise<number | null> {
   return new Promise((resolve) => {
-    const child = spawnProgram(exe, args, { stdio: "inherit" });
+    let child: ReturnType<typeof spawnProgram>;
+    try {
+      child = spawnProgram(exe, args, { stdio: "inherit", env });
+    } catch {
+      // spawnProgram refuses a batch file whose arguments cmd.exe would cut (a line break).
+      resolve(null);
+      return;
+    }
     child.on("error", () => resolve(null));
     child.on("exit", (code) => resolve(code));
   });
@@ -136,6 +155,24 @@ async function subcommand(args: Args): Promise<number | null> {
         }
         return runInherit(exe, claudeLoginArgs());
       }
+      const acp = findAcpAgent(id, loadConfig());
+      if (acp) {
+        const exe = findAcpProgram(acp);
+        if (!exe) {
+          print(`${acp.name} is not installed.${acp.install ? ` Install it: ${acp.install}` : ""}`);
+          return 1;
+        }
+        if (!acp.login) {
+          print(acp.signIn);
+          return 0;
+        }
+        const loginExe = acp.login.command === acp.command ? exe : (findProgram(acp.login.command) ?? acp.login.command);
+        // npm-installed agents are node scripts: node goes on the PATH next to them, as in the app.
+        const code = await runInherit(loginExe, acp.login.args, withProgramPath(acpEnv(acp), loginExe));
+        // The sign-in may have added providers: the next start asks for the models again.
+        if (code === 0) forgetAcpModels(acp, cacheDir());
+        return code;
+      }
       const auth = AuthStore.default();
       if (rest[1]) {
         auth.set(id, { type: "api", key: rest[1] });
@@ -173,10 +210,15 @@ async function subcommand(args: Args): Promise<number | null> {
         return 0;
       }
       if (sub === "install") {
-        const file = await installPlugin({ port: loadConfig().roblox.port });
-        print(`Installed the lu-minal plugin: ${file}`);
-        print("Open Roblox Studio, allow HTTP requests to localhost when asked, and click Connect on the lu-minal toolbar.");
-        return 0;
+        try {
+          const file = await installPlugin({ port: loadConfig().roblox.port, token: bridgeToken() });
+          print(`Installed the lu-minal plugin: ${file}`);
+          print("Open Roblox Studio, allow HTTP requests to localhost when asked, and click Connect on the lu-minal toolbar.");
+          return 0;
+        } catch (err) {
+          print(errText(err));
+          return 1;
+        }
       }
       print("Usage: lu-minal roblox install|path");
       return 1;
@@ -188,7 +230,13 @@ async function subcommand(args: Args): Promise<number | null> {
     }
     case "setup": {
       if (rest[0] === "windows-terminal") {
-        const file = await installWindowsTerminalProfile(process.execPath.endsWith("node.exe") || process.execPath.endsWith("node") ? `${process.execPath}" "${process.argv[1]}` : process.execPath);
+        if (args.flags.has("remove")) {
+          await removeWindowsTerminalProfile();
+          print("Removed the lu-minal profile from Windows Terminal.");
+          return 0;
+        }
+        const launch = launchCommand();
+        const file = await installWindowsTerminalProfile(launch.exe, { args: launch.args });
         print(`Added the lu-minal profile to Windows Terminal: ${file}`);
         return 0;
       }
@@ -210,7 +258,11 @@ async function main(): Promise<void> {
     return;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write("lu-minal needs an interactive terminal. Run lu-minal --help for the sub-commands.\n");
+    const mintty =
+      process.platform === "win32" && process.env.MSYSTEM
+        ? " In Git Bash's own window (mintty) Windows programs get no console: run `winpty lu-minal`, or start lu-minal in Windows Terminal."
+        : "";
+    process.stderr.write(`lu-minal needs an interactive terminal.${mintty} Run lu-minal --help for the sub-commands.\n`);
     process.exitCode = 1;
     return;
   }
@@ -225,9 +277,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (args.flags.has("no-sky")) config.sky.enabled = false;
   const themeFlag = args.flags.get("theme");
-  const themes = new ThemeManager({
+  // Before the Hub exists, which saves every theme change: --theme is for this run only.
+  const { themes, unknown: unknownTheme } = startThemes({
     dir: path.join(configDir(), "themes"),
-    initial: typeof themeFlag === "string" ? themeFlag : config.theme,
+    initial: config.theme,
+    flag: typeof themeFlag === "string" ? themeFlag : undefined,
   });
   const hub = new Hub({
     config,
@@ -269,13 +323,14 @@ async function main(): Promise<void> {
   // Read the last session before anything can overwrite it.
   const saved = args.flags.has("fresh") ? null : hub.readSavedSession();
   await hub.init();
+  if (unknownTheme) hub.toast(`There is no theme "${unknownTheme}" - using ${themes.current.label}.`, "warning");
   const modelFlag = args.flags.get("model");
   const lead = typeof modelFlag === "string" ? parseModelRef(modelFlag) ?? undefined : undefined;
   const restored = saved ? await hub.restoreSession(saved) : 0;
-  const existing = hub.projects.findIndex((p) => p.cwd === folder);
+  const existing = hub.projects.findIndex((p) => samePath(p.cwd, folder));
   if (existing >= 0) {
     hub.switchTo(existing);
-  } else if (!restored || args.positional[0] || folder !== os.homedir()) {
+  } else if (!restored || args.positional[0] || !samePath(folder, os.homedir())) {
     // A folder of its own (or nothing restored): open it next to the restored tabs.
     try {
       await hub.openProject({ cwd: folder, lead });

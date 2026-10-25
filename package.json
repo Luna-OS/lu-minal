@@ -17,11 +17,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "prepack": "npm run build",
     "dev": "tsx src/cli.tsx",
     "start": "node dist/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:bin": "bun scripts/build-binaries.ts",
+    "build:app": "bash macos/scripts/bundle-app.sh",
+    "gen:roblox": "node scripts/gen-roblox-plugin.mjs"
   },
   "repository": {
     "type": "git",

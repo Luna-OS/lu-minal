@@ -1,13 +1,17 @@
 // The dialog launchers the commands and keys open: palette, new agent, themes, usage, Roblox,
 // help, agents, tasks and the close-tab confirmation.
+import fs from "node:fs";
+import path from "node:path";
 import React from "react";
 import type { Agent } from "../../core/agent.js";
 import type { Hub } from "../../core/hub.js";
 import type { Project } from "../../core/project.js";
 import { formatModelRef } from "../../providers/models.js";
 import { installPlugin, robloxPluginsDir } from "../../roblox/install.js";
+import { bridgeToken } from "../../roblox/token.js";
 import { openExternal } from "../../platform/process.js";
 import { tildify } from "../../platform/paths.js";
+import { resolvePath } from "../../tools/fs.js";
 import { COMMANDS, type CommandContext, type DialogLaunchers } from "../commands.js";
 import { formatCost, formatTokens, sparkline } from "../format.js";
 import type { UiServices } from "../store.js";
@@ -20,6 +24,35 @@ import { UsageDialog } from "./usage.js";
 import { openCloudDialog } from "./cloud.js";
 
 const ROBLOX_DOCS = "https://github.com/Luna-OS/lu-minal/blob/main/docs/roblox.md";
+
+const MAX_PICKER_FILES = 3000;
+const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", ".next", "target", "__pycache__", ".venv", "dist-bin"]);
+
+/** The project's files for the attach picker (relative paths, ignored folders skipped). */
+export function projectFiles(root: string, max = MAX_PICKER_FILES): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, rel: string) => {
+    if (out.length >= max) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      if (out.length >= max) return;
+      const r = rel ? path.join(rel, e.name) : e.name;
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) walk(path.join(dir, e.name), r);
+      } else if (e.isFile()) {
+        out.push(r);
+      }
+    }
+  };
+  walk(root, "");
+  return out;
+}
 
 export function createLaunchers(
   hub: Hub,
@@ -121,6 +154,38 @@ export function createLaunchers(
       ui.openDialog({ id: "usage", render: (close) => <UsageDialog hub={hub} onClose={close} /> });
     },
     cloud: () => openCloudDialog(hub, ui),
+    attach: () => {
+      const project = hub.activeProject;
+      if (!project) return hub.toast("Open a project first (ctrl+t).", "warning");
+      const files = projectFiles(project.cwd);
+      ui.openDialog({
+        id: "attach",
+        render: (close) => (
+          <ListDialog
+            theme={theme()}
+            title="Attach a file"
+            subtitle={`${files.length}${files.length >= MAX_PICKER_FILES ? "+" : ""} files in ${project.name} · or type a path`}
+            items={files.map((f) => ({ id: f, label: f, keywords: path.basename(f) }))}
+            placeholder="Filter, or type a path like ~/Desktop/shot.png"
+            onCancel={close}
+            onSelect={(item) => {
+              close();
+              getCtx().attach([path.resolve(project.cwd, item.id)]);
+            }}
+            onKey={(_input, key, item, query) => {
+              // Enter on a typed path that isn't in the list attaches it as typed.
+              if (key.return && !item && query.trim()) {
+                close();
+                getCtx().attach([resolvePath(project.cwd, query.trim())]);
+                return true;
+              }
+              return false;
+            }}
+            empty="No file matches - press enter to attach what you typed as a path."
+          />
+        ),
+      });
+    },
     stats: () => {
       ui.openDialog({
         id: "stats",
@@ -140,10 +205,12 @@ export function createLaunchers(
             { id: "restart", label: "Restart the bridge", hint: `127.0.0.1:${s.port}` },
           ];
           const status = s.connected
-            ? `connected · ${s.place?.name ?? "a place"}${s.studioVersion ? ` · Studio ${s.studioVersion}` : ""}`
-            : s.listening
-              ? `waiting for Studio on port ${s.port} - open Studio and click Connect on the lu-minal toolbar`
-              : `not listening${s.error ? `: ${s.error}` : ""}`;
+            ? `connected · ${s.place?.name ?? "a place"}${s.studioVersion ? ` · Studio ${s.studioVersion}` : ""}${s.pluginOutdated ? " · ▲ plugin outdated, install again" : ""}`
+            : s.needsReinstall
+              ? "▲ a Studio plugin without this lu-minal's token tried to connect - install the plugin again"
+              : s.listening
+                ? `waiting for Studio on port ${s.port} - open Studio and click Connect on the lu-minal toolbar`
+                : `not listening${s.error ? `: ${s.error}` : ""}`;
           return (
             <ListDialog
               theme={theme()}
@@ -155,7 +222,8 @@ export function createLaunchers(
               onSelect={async (item) => {
                 if (item.id === "install") {
                   try {
-                    const file = await installPlugin({ port: s.port });
+                    // The token the running bridge accepts (the file may have changed since it started).
+                    const file = await installPlugin({ port: s.port, token: hub.robloxToken ?? bridgeToken() });
                     hub.toast(`Plugin installed: ${tildify(file)} - restart Studio or reload plugins.`, "success");
                   } catch (err) {
                     hub.toast(err instanceof Error ? err.message : String(err), "error");
@@ -214,7 +282,11 @@ export function createLaunchers(
             onSelect={(item) => {
               if (!item.id.startsWith("c:")) return;
               close();
-              getCtx().setPrompt(`/${item.id.slice(2)} `);
+              const ctx = getCtx();
+              if (ctx.agent) return ctx.setPrompt(`/${item.id.slice(2)} `);
+              // No prompt to put it in (the welcome screen): run it.
+              const cmd = COMMANDS.find((c) => c.name === item.id.slice(2));
+              if (cmd) void Promise.resolve(cmd.run(ctx, "")).catch((err) => hub.toast(String(err), "error"));
             }}
           />
         ),
@@ -340,12 +412,28 @@ function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
   const [confirmReset, setConfirmReset] = React.useState(false);
   const c = hub.theme.colors;
   const s = hub.stats.summary();
-  const tok = (u: { input: number; output: number }) => formatTokens(u.input + u.output).padStart(8);
+  // A table: label, total, read, written, cost, turns.
   const cut = (t: string, w: number) => (t.length > w ? `${t.slice(0, w - 1)}…` : t);
-  const row = (label: string, u: { input: number; output: number; costUsd: number; turns: number }, w = 26) =>
-    `${cut(label, w).padEnd(w)}${tok(u)}  ↑ ${formatTokens(u.input).padStart(7)}  ↓ ${formatTokens(u.output).padStart(7)}  ${formatCost(u.costUsd).padStart(9)}  ${String(u.turns).padStart(5)} turns`;
+  const W = 26;
+  const cols = (label: string, a: string, b: string, d: string, e: string, f: string) =>
+    `${cut(label, W).padEnd(W)}${a.padStart(9)}${b.padStart(9)}${d.padStart(9)}${e.padStart(10)}${f.padStart(7)}`;
+  const row = (label: string, u: { input: number; output: number; costUsd: number; turns: number }) =>
+    cols(label, formatTokens(u.input + u.output), formatTokens(u.input), formatTokens(u.output), formatCost(u.costUsd), String(u.turns));
+  const header = { text: cols("", "total", "read", "written", "cost", "turns"), color: c.faint };
+  const section = <T extends { input: number; output: number; costUsd: number; turns: number }>(
+    title: string,
+    list: T[],
+    label: (x: T) => string,
+    limit: number,
+  ): Array<string | { text: string; color?: string }> => [
+    "",
+    { text: title, color: c.accent },
+    ...(list.length ? list.slice(0, limit).map((x) => row(label(x), x)) : [{ text: "–", color: c.faint }]),
+    ...(list.length > limit ? [{ text: `… and ${list.length - limit} more`, color: c.faint }] : []),
+  ];
   const lines: Array<string | { text: string; color?: string }> = [
-    { text: "Tokens (↑ read, ↓ written)", color: c.accent },
+    { text: "Tokens", color: c.accent },
+    header,
     row("Today", s.today),
     row("Last 7 days", s.week),
     row("Last 30 days", s.month),
@@ -354,16 +442,9 @@ function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
     "",
     { text: "Last 14 days", color: c.accent },
     { text: `${sparkline(s.daily.map((d) => d.input + d.output))}   ${s.daily[0]?.day ?? ""} → today`, color: c.accent2 },
-    "",
-    { text: "By model", color: c.accent },
-    ...s.models.slice(0, 8).map((m) => row(m.model, m)),
-    ...(s.models.length > 8 ? [{ text: `… and ${s.models.length - 8} more`, color: c.faint }] : []),
-    "",
-    { text: "By provider", color: c.accent },
-    ...s.providers.map((p) => row(p.provider, p)),
-    "",
-    { text: "By project", color: c.accent },
-    ...s.projects.slice(0, 6).map((p) => row(p.name, p)),
+    ...section("By model", s.models, (m) => m.model, 8),
+    ...section("By provider", s.providers, (p) => p.provider, 8),
+    ...section("By project", s.projects, (p) => p.name, 6),
     "",
     {
       text: `Agents started: ${Object.entries(s.agents).map(([k, v]) => `${k} ${v}`).join(" · ") || "none"}`,
@@ -371,15 +452,16 @@ function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
     },
     { text: `Lines written by agents: +${s.lines.added.toLocaleString("en-US")} -${s.lines.removed.toLocaleString("en-US")}`, color: c.muted },
   ];
-  if (confirmReset) {
-    lines.push("", { text: "Reset all statistics? y = yes, any other key = no", color: c.warning });
-  }
+  // The reset question goes in the hint line, which stays in view however far the list is scrolled.
   return (
     <MessageDialog
       theme={hub.theme}
       title="Statistics"
       lines={lines}
-      hints="x reset · enter / esc close"
+      hints={confirmReset ? "Reset all statistics? y = yes, any other key = no" : "x reset · enter / esc close"}
+      hintsColor={confirmReset ? c.warning : undefined}
+      // While the question shows, every key answers it: the arrows don't scroll then.
+      scrollHint={!confirmReset}
       onKey={(input) => {
         if (confirmReset) {
           setConfirmReset(false);

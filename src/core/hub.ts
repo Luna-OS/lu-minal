@@ -1,10 +1,14 @@
 // The Hub is the app: it owns the open projects (tabs), the provider registry, the theme, the
 // Claude account and plan usage, the MCP server for Claude Code agents and the Roblox bridge, and it
 // decides how each agent runs (ProjectRuntime). The UI reads it and calls its actions.
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { AcpDriver } from "../agents/acp/driver.js";
+import { listAcpModels } from "../agents/acp/models.js";
+import { acpEnv } from "../agents/acp/presets.js";
 import { readClaudeAccount } from "../agents/claude-code/account.js";
-import { findClaude } from "../agents/claude-code/cli.js";
+import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
 import { claudeInstallCommand, claudeLoginArgs, claudeLogoutArgs } from "../agents/claude-code/login.js";
 import { applyRateLimit, fetchPlanUsage } from "../agents/claude-code/usage.js";
@@ -19,24 +23,28 @@ import {
   type CloudSession,
 } from "../cloud/claude-cloud.js";
 import { McpServer } from "../mcp/server.js";
-import { stateDir as defaultStateDir } from "../platform/paths.js";
-import { findProgram } from "../platform/process.js";
-import { AuthStore } from "../providers/auth.js";
-import { loadCatalog, type Catalog } from "../providers/catalog.js";
+import { writeFileAtomicSync } from "../platform/files.js";
+import { samePath, stateDir as defaultStateDir } from "../platform/paths.js";
+import { findProgram, withProgramPath } from "../platform/process.js";
+import { AuthStore, keyFor } from "../providers/auth.js";
+import { fallbackCatalog, loadCatalog, type Catalog } from "../providers/catalog.js";
 import type { ModelRef } from "../providers/models.js";
 import { listOllamaModels } from "../providers/ollama.js";
 import { fetchOpenRouterBalance, startOpenRouterLogin, type OAuthLogin } from "../providers/openrouter.js";
 import { ProviderRegistry } from "../providers/registry.js";
-import type { FetchLike } from "../providers/types.js";
+import type { ChatMessage, FetchLike } from "../providers/types.js";
 import { createChatClient } from "../providers/wire/index.js";
 import { RobloxBridge } from "../roblox/bridge.js";
+import { bridgeToken, bridgeTokenFile } from "../roblox/token.js";
 import type { ThemeManager } from "../themes/manager.js";
 import type { Theme } from "../themes/types.js";
 import { detectShell } from "../tools/exec.js";
 import { toolsForAgent } from "../tools/index.js";
 import type { CloudApi, ToolServices } from "../tools/types.js";
+import { VERSION } from "../version.js";
 import { Agent, type SavedAgentState } from "./agent.js";
-import { rememberRecent, saveConfig, type Config } from "./config.js";
+import { attachmentsDir, pruneAttachments } from "./attachments.js";
+import { distrusted, rememberRecent, rememberTrust, saveConfig, type Config } from "./config.js";
 import { newId, Notifier } from "./emitter.js";
 import { Project, type ProjectRuntime } from "./project.js";
 import { StatsStore } from "./stats.js";
@@ -88,6 +96,8 @@ export interface SavedSession {
     name: string;
     origin: string;
     permissionMode: PermissionMode;
+    /** Whether the folder's own agent settings may load (missing: trusted unless it was cloned). */
+    trusted?: boolean;
     createdAt: number;
     focused: string | null;
     tasks: TaskItem[];
@@ -114,6 +124,8 @@ export class Hub implements ProjectRuntime {
   readonly themes: ThemeManager;
   readonly registry: ProviderRegistry;
   readonly roblox: RobloxBridge;
+  /** The token the bridge accepts, for the plugin the /roblox dialog installs (null in tests). */
+  readonly robloxToken: string | null;
   readonly mcp: McpServer;
   readonly stateDir: string;
   readonly stats: StatsStore;
@@ -145,16 +157,33 @@ export class Hub implements ProjectRuntime {
     // Every change may be worth saving; the save itself is debounced.
     this.notifier.subscribe(() => this.scheduleSave());
     this.registry = new ProviderRegistry({
-      catalog: { providers: [], models: [], fetchedAt: null, source: "fallback" },
+      // The built-in list until models.dev's catalog arrives, so pickers are never empty.
+      catalog: fallbackCatalog(),
       auth: this.auth,
       config: this.config,
       claudeAccount: () => this.claudeAccount,
     });
-    this.roblox = new RobloxBridge({ port: this.config.roblox.port });
+    // Only the plugin installed by this lu-minal (it carries the token) may connect; tests keep no
+    // config on disk and run without one.
+    let token: string | null = null;
+    if (opts.configPath) {
+      try {
+        token = bridgeToken(bridgeTokenFile(path.dirname(opts.configPath)));
+      } catch (err) {
+        // Can't be saved: a token for this run only (never none, which would let anyone in).
+        token = randomBytes(32).toString("hex");
+        // Only worth saying to someone who uses the Studio bridge; the advice comes first.
+        if (this.config.roblox.enabled) {
+          this.toast(`Roblox: install the plugin again after every start (the plugin token can't be saved: ${errText(err)}).`, "warning");
+        }
+      }
+    }
+    this.robloxToken = token;
+    this.roblox = new RobloxBridge({ port: this.config.roblox.port, token });
     this.roblox.subscribe(() => this.notifier.changed());
     this.mcp = new McpServer({
       stateDir: this.stateDir,
-      version: process.env.LU_MINAL_VERSION ?? "dev",
+      version: VERSION,
       resolve: (agentId) => {
         for (const project of this.projects) {
           const agent = project.agents.find((a) => a.id === agentId);
@@ -162,7 +191,7 @@ export class Hub implements ProjectRuntime {
             return {
               agent,
               project,
-              tools: toolsForAgent(agent.role, "claude-code"),
+              tools: toolsForAgent(agent.role, "claude-code", { fetchImpl: this.opts.fetchImpl }),
               services: this.servicesFor(project),
             };
           }
@@ -202,6 +231,8 @@ export class Hub implements ProjectRuntime {
     }
     await Promise.all(tasks.map((t) => t.catch(() => undefined)));
     void this.refreshLocalModels();
+    // Clipboard pictures older than a month go.
+    pruneAttachments(attachmentsDir(this.stateDir));
     this.ready = true;
     this.notifier.changed();
     if (!this.opts.offline) this.startPollers();
@@ -251,6 +282,11 @@ export class Hub implements ProjectRuntime {
     lead?: ModelRef;
     task?: string;
     permissionMode?: PermissionMode;
+    /**
+     * Load the folder's own agent settings (defaults to the user's earlier answer for the folder,
+     * else true for local folders and false for clones).
+     */
+    trusted?: boolean;
   }): Promise<Project> {
     const cwd = path.resolve(opts.cwd);
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
@@ -262,6 +298,8 @@ export class Hub implements ProjectRuntime {
         name: opts.name,
         origin: opts.origin,
         permissionMode: opts.permissionMode ?? this.config.permissionMode,
+        // A folder the user didn't trust stays untrusted, however it is opened again.
+        trusted: opts.trusted ?? (distrusted(this.config, cwd) ? false : undefined),
       },
       this.notifier,
       this,
@@ -269,6 +307,7 @@ export class Hub implements ProjectRuntime {
     this.projects.push(project);
     this.activeIndex = this.projects.length - 1;
     rememberRecent(this.config, cwd);
+    rememberTrust(this.config, cwd, project.trusted);
     this.persistConfig();
     this.notifier.changed();
     await project.addAgent({
@@ -320,11 +359,34 @@ export class Hub implements ProjectRuntime {
         project,
         exe,
         mcp: this.mcp,
+        env: this.claudeEnv(),
         systemPrompt: () => this.promptFor(project, agent, "claude-code"),
         onRateLimit: (ev) => {
           this.planUsage = applyRateLimit(this.planUsage, ev);
           this.notifier.changed();
         },
+      });
+    } else if (this.registry.provider(agent.model.provider)?.kind === "acp") {
+      const preset = this.registry.acpPreset(agent.model.provider);
+      const exe = preset ? this.registry.acpProgram(preset.id) : null;
+      if (!preset || !exe) {
+        agent.setStatus("error");
+        throw new Error(this.registry.connectionHint(agent.model.provider));
+      }
+      if (!project.trusted) {
+        agent.info(
+          `${preset.name} loads this folder's own settings (its project config and MCP servers) even though you haven't trusted it; lu-minal can't switch that off.`,
+        );
+      }
+      agent.driver = new AcpDriver({
+        agent,
+        project,
+        preset,
+        exe,
+        mcp: this.mcp,
+        // The team-only prompt, as for Claude Code; the driver renames mcp__luminal__* to the agent's names.
+        systemPrompt: () => this.promptFor(project, agent, "claude-code"),
+        version: VERSION,
       });
     } else {
       agent.driver = new NativeDriver({
@@ -337,7 +399,7 @@ export class Hub implements ProjectRuntime {
           }
           return createChatClient(resolved.wire, resolved.endpoint, this.opts.fetchImpl);
         },
-        tools: toolsForAgent(agent.role, "native"),
+        tools: toolsForAgent(agent.role, "native", { fetchImpl: this.opts.fetchImpl }),
         services: this.servicesFor(project),
         systemPrompt: () => this.promptFor(project, agent, "native"),
       });
@@ -358,6 +420,7 @@ export class Hub implements ProjectRuntime {
         input: u.input,
         output: u.output,
         costUsd: u.costUsd,
+        turns: u.turn ? 1 : 0,
       });
     agent.onLines = (added, removed) => this.stats.addLines(added, removed);
   }
@@ -379,7 +442,7 @@ export class Hub implements ProjectRuntime {
    * keeps API keys for its own "anthropic" provider).
    */
   claudeEnv(): NodeJS.ProcessEnv {
-    const env = { ...process.env };
+    const env = claudeProcessEnv(process.env, findClaude(this.config.claudePath));
     if (!this.config.claudeUseApiKey) {
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
@@ -391,7 +454,7 @@ export class Hub implements ProjectRuntime {
     return {
       list: () =>
         this.cloudSessions
-          .filter((s) => s.cwd === project.cwd)
+          .filter((s) => samePath(s.cwd, project.cwd))
           .map((s) => ({ id: s.id, url: s.url, task: s.task, startedAt: s.startedAt })),
       send: async (sessionId, text) => {
         const session = this.cloudSessions.find((s) => s.id === sessionId) ?? null;
@@ -439,7 +502,9 @@ export class Hub implements ProjectRuntime {
   async sendCloud(session: Pick<CloudSession, "id" | "cwd">, text: string) {
     const exe = findClaude(this.config.claudePath);
     if (!exe) return { ok: false, sessionId: null, url: null, error: "Claude Code is not installed." };
-    const result = await sendToCloud(exe, session.id, text, { cwd: session.cwd, env: this.claudeEnv() });
+    // `claude -p` runs in the folder: one that isn't an open, trusted tab gets the user's own settings only.
+    const trusted = this.projects.some((p) => p.trusted && samePath(p.cwd, session.cwd));
+    const result = await sendToCloud(exe, session.id, text, { cwd: session.cwd, env: this.claudeEnv(), trusted });
     const known = this.cloudSessions.find((s) => s.id === session.id);
     if (known) {
       known.lastMessageAt = Date.now();
@@ -481,16 +546,46 @@ export class Hub implements ProjectRuntime {
     });
   }
 
-  /** Moves an agent to another model (the driver restarts; Claude Code resumes its session). */
+  /**
+   * Trusts (or stops trusting) a project's own agent settings: its .claude settings (hooks,
+   * permission rules), CLAUDE.md and .mcp.json servers, remembered for the folder. Claude Code reads
+   * them when its process starts, so each Claude Code driver replaces a process that started with
+   * the other trust: an idle one now, a busy one when its turn ends (both resume their session).
+   */
+  async setTrust(project: Project, trusted: boolean): Promise<void> {
+    if (project.trusted === trusted) return;
+    project.setTrusted(trusted);
+    rememberTrust(this.config, project.cwd, trusted);
+    this.persistConfig();
+    for (const agent of project.agents) {
+      if (!(agent.driver instanceof ClaudeCodeDriver)) continue;
+      agent.driver.settingsChanged();
+      agent.info(
+        `${trusted ? "Trusted" : "No longer trusted"}: Claude Code restarts ${trusted ? "with" : "without"} this folder's own settings ${agent.busy ? "when this turn ends" : "at the next message"}.`,
+      );
+    }
+    this.scheduleSave();
+    this.notifier.changed();
+  }
+
+  /** Moves an agent to another model (the driver restarts; Claude Code and ACP agents resume their session). */
   async changeModel(project: Project, agent: Agent, model: ModelRef): Promise<void> {
-    const wasClaude = agent.model.provider === "claude-code";
+    // Within the same CLI the session carries on and the new driver picks the new model in it.
+    const keepSession =
+      agent.model.provider === model.provider &&
+      (model.provider === "claude-code" || this.registry.provider(model.provider)?.kind === "acp");
+    // A native conversation moves to the new model; Claude Code keeps its own session.
+    const conversation = agent.driver?.snapshot?.() ?? null;
     await agent.driver?.dispose().catch(() => undefined);
     agent.driver = null;
     agent.model = model;
-    if (!wasClaude || model.provider !== "claude-code") agent.sessionId = null;
+    if (!keepSession) agent.sessionId = null;
     agent.info(`Now on ${agent.modelLabel}.`);
     try {
       await this.launch(project, agent);
+      // launch() set a new driver (TypeScript still sees the null from above).
+      const driver = agent.driver as Agent["driver"];
+      if (conversation && driver?.restore) driver.restore(withoutWireData(conversation));
     } catch (err) {
       agent.error(errText(err));
     }
@@ -529,7 +624,7 @@ export class Hub implements ProjectRuntime {
   }
 
   async refreshBalances(): Promise<void> {
-    const key = this.auth.secretFor("openrouter") ?? process.env.OPENROUTER_API_KEY ?? null;
+    const key = keyFor("openrouter", ["OPENROUTER_API_KEY"], this.auth)?.key ?? null;
     if (!key) {
       this.balances.delete("openrouter");
       return;
@@ -539,9 +634,23 @@ export class Hub implements ProjectRuntime {
     this.notifier.changed();
   }
 
-  async refreshLocalModels(): Promise<void> {
-    const models = await listOllamaModels(undefined, this.opts.fetchImpl).catch(() => []);
+  /** `refreshAcp`: the ACP agent whose model list is asked for again, cache or not (after a sign-in). */
+  async refreshLocalModels(opts: { refreshAcp?: string } = {}): Promise<void> {
+    const models = await listOllamaModels(this.config.providers.ollama?.baseURL, this.opts.fetchImpl).catch(() => []);
     this.registry.setLocalModels("ollama", models);
+    if (!this.opts.offline) {
+      this.registry.refreshAcp();
+      // OpenCode's own model list (`opencode models`, cached for a day); the others list static models.
+      await Promise.all(
+        this.registry.acpPresets().map(async (preset) => {
+          if (preset.models !== "opencode") return;
+          const exe = this.registry.acpProgram(preset.id);
+          if (!exe) return;
+          const list = await listAcpModels(preset, { exe, cacheDir: this.opts.cacheDir, refresh: opts.refreshAcp === preset.id }).catch(() => []);
+          if (list.length) this.registry.setLocalModels(preset.id, list);
+        }),
+      );
+    }
     this.notifier.changed();
   }
 
@@ -558,7 +667,7 @@ export class Hub implements ProjectRuntime {
         return false;
       }
     }
-    await run(exe, claudeLoginArgs());
+    await run(exe, claudeLoginArgs(), { env: this.claudeEnv() });
     await this.refreshClaude();
     const ok = Boolean(this.claudeAccount?.loggedIn);
     this.toast(ok ? `Signed in to Claude${this.claudeAccount?.email ? ` as ${this.claudeAccount.email}` : ""}.` : "Claude sign-in did not finish.", ok ? "success" : "warning");
@@ -569,13 +678,34 @@ export class Hub implements ProjectRuntime {
   async logoutClaude(run: TerminalRunner): Promise<void> {
     const exe = findClaude(this.config.claudePath);
     if (!exe) return;
-    await run(exe, claudeLogoutArgs());
+    await run(exe, claudeLogoutArgs(), { env: this.claudeEnv() });
     await this.refreshClaude();
     this.planUsage = null;
     this.toast("Signed out of Claude.", "info");
   }
 
   // ---- other providers -------------------------------------------------------------------------
+
+  /** Signs in to an ACP agent's own CLI (`opencode auth login`) in the real terminal. */
+  async loginAcp(providerId: string, run: TerminalRunner): Promise<boolean> {
+    const preset = this.registry.acpPreset(providerId);
+    if (!preset) return false;
+    this.registry.refreshAcp();
+    const exe = this.registry.acpProgram(providerId);
+    if (!exe) {
+      this.toast(this.registry.connectionHint(providerId), "warning");
+      return false;
+    }
+    if (preset.login) {
+      const loginExe = preset.login.command === preset.command ? exe : (findProgram(preset.login.command) ?? preset.login.command);
+      await run(loginExe, preset.login.args, { env: withProgramPath(acpEnv(preset), loginExe) });
+    } else {
+      this.toast(preset.signIn, "info");
+    }
+    // The sign-in may have added providers (`opencode auth login`): ask for the models again.
+    void this.refreshLocalModels({ refreshAcp: preset.id });
+    return true;
+  }
 
   /** Starts OpenRouter's browser sign-in; the key is stored when it finishes. */
   async loginOpenRouter(): Promise<OAuthLogin> {
@@ -666,6 +796,7 @@ export class Hub implements ProjectRuntime {
         name: p.name,
         origin: p.origin,
         permissionMode: p.permissionMode,
+        trusted: p.trusted,
         createdAt: p.createdAt,
         focused: p.focused?.name ?? null,
         tasks: p.tasks,
@@ -697,11 +828,10 @@ export class Hub implements ProjectRuntime {
   saveSession(): void {
     if (!this.opts.configPath || !this.ready) return;
     try {
-      fs.mkdirSync(this.stateDir, { recursive: true });
-      const file = this.sessionFile();
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(this.snapshotSession()));
-      fs.renameSync(tmp, file);
+      // Private: it holds conversation logs and the allow lists.
+      fs.mkdirSync(this.stateDir, { recursive: true, mode: 0o700 });
+      // Retried on Windows while a virus scanner / backup tool holds session.json, then written in place.
+      writeFileAtomicSync(this.sessionFile(), JSON.stringify(this.snapshotSession()), { mode: 0o600 });
     } catch {
       // Not worth bothering the user about; the next change tries again.
     }
@@ -728,12 +858,14 @@ export class Hub implements ProjectRuntime {
     }
     let restored = 0;
     for (const p of saved.projects) {
-      if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => x.cwd === path.resolve(p.cwd))) continue;
+      if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => samePath(x.cwd, p.cwd))) continue;
+      const trusted = p.trusted ?? (distrusted(this.config, p.cwd) ? false : undefined);
       const project = new Project(
-        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode },
+        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode, trusted },
         this.notifier,
         this,
       );
+      rememberTrust(this.config, project.cwd, project.trusted);
       if (p.createdAt) project.createdAt = p.createdAt;
       project.tasks = Array.isArray(p.tasks) ? p.tasks : [];
       project.messages = Array.isArray(p.messages) ? p.messages : [];
@@ -770,10 +902,28 @@ export class Hub implements ProjectRuntime {
     }
     if (restored) {
       this.activeIndex = Math.min(Math.max(0, saved.active ?? 0), this.projects.length - 1);
+      this.persistConfig();
       this.notifier.changed();
     }
     return restored;
   }
+}
+
+/**
+ * A saved native conversation without the provider-specific raw data (reasoning signatures,
+ * reasoning_content, ...): another provider on the same wire would choke on it.
+ */
+export function withoutWireData(conversation: unknown): unknown {
+  const c = conversation as { messages?: ChatMessage[] } | null;
+  if (!c || !Array.isArray(c.messages)) return conversation;
+  return {
+    ...c,
+    messages: c.messages.map((m) => {
+      if (m.role !== "assistant" || !m.raw) return m;
+      const { raw: _raw, ...rest } = m;
+      return rest;
+    }),
+  };
 }
 
 export function errText(err: unknown): string {

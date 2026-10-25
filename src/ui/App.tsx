@@ -378,12 +378,17 @@ function Welcome({ hub, layout }: { hub: Hub; layout: Layout }) {
   return (
     <Box position="absolute" left={left} top={top} width={w} flexDirection="column" alignItems="center">
       {showAxo ? <Axo mood={hub.ready ? "idle" : "sleep"} bg={c.bg} caption={hub.ready ? "Ready when you are." : "Waking up…"} captionColor={c.muted} animate={hub.config.sky.enabled} /> : null}
-      {showAxo ? <Text> </Text> : null}
-      {lines.map((l, i) => (
-        <Text key={i} color={l.color} bold={l.bold} backgroundColor={c.bg} wrap="truncate">
-          {truncate(l.text, w)}
-        </Text>
-      ))}
+      {showAxo ? <Box height={1} /> : null}
+      {lines.map((l, i) =>
+        l.text ? (
+          <Text key={i} color={l.color} bold={l.bold} backgroundColor={c.bg} wrap="truncate">
+            {truncate(l.text, w)}
+          </Text>
+        ) : (
+          // An empty row that leaves the sky visible.
+          <Box key={i} height={1} />
+        ),
+      )}
     </Box>
   );
 }

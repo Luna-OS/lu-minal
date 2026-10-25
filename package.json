@@ -1,0 +1,62 @@
+{
+  "name": "lu-minal",
+  "version": "0.1.0",
+  "description": "A multi-agent coding terminal in the Moon night-sky look: tabs per project, teams of agents from any provider (Claude via your subscription, OpenCode Zen free models, OpenRouter, MiniMax, ...) that talk to each other, live plan limits and a Roblox Studio bridge.",
+  "type": "module",
+  "bin": {
+    "lu-minal": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "roblox",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "dev": "tsx src/cli.tsx",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Luna-OS/lu-minal.git"
+  },
+  "keywords": [
+    "terminal",
+    "tui",
+    "ink",
+    "agents",
+    "multi-agent",
+    "claude-code",
+    "opencode",
+    "openrouter",
+    "roblox-studio"
+  ],
+  "author": "Luna-OS",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Luna-OS/lu-minal/issues"
+  },
+  "homepage": "https://github.com/Luna-OS/lu-minal#readme",
+  "dependencies": {
+    "chalk": "^6.0.1",
+    "diff": "^9.0.0",
+    "ink": "^8.0.0",
+    "react": "^19.3.1",
+    "string-width": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

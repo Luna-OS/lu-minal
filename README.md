@@ -48,8 +48,10 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
   plus every other model in use (OpenRouter credits, tokens and cost).
 - **Statistics.** `/stats`: tokens in and out, cost, lines changed and sessions – in total, per
   day, per model and per project.
-- **Pictures and files.** Drop files on the terminal, paste a screenshot with ctrl+v (alt+v), or
-  pick files with `/attach`. Models that can see get the picture; text files go into the message.
+- **Pictures and files.** Paste a screenshot or files copied in Explorer / Finder with the
+  terminal's own paste key (ctrl+v in Windows Terminal, cmd+v in the macOS app), drop files on the
+  terminal, or pick them with `/attach`. Models that can see get the picture; text files go into
+  the message.
 - **Claude cloud sessions.** `/cloud` starts a task on claude.ai/code, sends it follow-ups,
   and brings a session back into this terminal (`claude --teleport`).
 - **Close and come back.** lu-minal saves the session as you work: quit, start it again, and every
@@ -123,9 +125,11 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
 4. Approve what needs approving with **y** (allow), **a** (always) or **n** (deny). Claude Code's
    multiple-choice questions are asked in the chat instead: lu-minal tells Claude to ask in plain
    text, and you answer with a message.
-5. Add pictures and files to a message: drop them on the terminal, paste a screenshot with
-   **ctrl+v** (or **alt+v**), or use `/attach`. They show as chips above the prompt; backspace on
-   an empty prompt removes the last one.
+5. Add pictures and files to a message: paste a screenshot (Win+Shift+S, Cmd+Shift+Ctrl+4) or
+   files you copied in Explorer / Finder with the terminal's paste key – **ctrl+v** in Windows
+   Terminal (1.24 or newer) and most Linux terminals, **cmd+v** in the macOS app, **ctrl+v** in Terminal.app and
+   iTerm2, **alt+v** anywhere, or `/paste` – drop files on the terminal, or use `/attach`. They show
+   as chips above the prompt; backspace on an empty prompt removes the last one.
 
 **Permission modes** (shift+tab): *edits on* (the default – edits run, commands ask), *ask first*,
 *do everything*, *plan only* (read-only). Reading credential stores, writing into `.git` or agent
@@ -155,7 +159,7 @@ and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-
 | ctrl+f | zoom |
 | pgup, pgdn | scroll |
 | esc | interrupt the focused agent |
-| ctrl+v, alt+v | paste a screenshot from the clipboard |
+| ctrl+v, alt+v (`/paste`) | paste a screenshot or copied files from the clipboard |
 | ctrl+c twice, ctrl+q | quit |
 
 For a Claude Code agent, esc asks the CLI to stop the turn. If it hasn't stopped after 3 s (or you

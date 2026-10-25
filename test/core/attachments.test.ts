@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   attachmentFromPath,
   attachmentsDir,
+  clipboardFiles,
   clipboardImage,
   clipboardImageCommands,
   describeAttachment,
@@ -12,7 +14,9 @@ import {
   MAX_IMAGE_BYTES,
   MAX_INLINE_TEXT,
   messageParts,
+  parseUriList,
   pruneAttachments,
+  readClipboard,
   splitDroppedText,
   type Attachment,
 } from "../../src/core/attachments.js";
@@ -163,6 +167,59 @@ process.stdout.write("ok");`,
       expect(fs.statSync(folder).mode & 0o777).toBe(0o700);
       expect(fs.statSync(shot!.path).mode & 0o777).toBe(0o600);
     }
+  });
+});
+
+describe("files copied in a file manager", () => {
+  it("reads the paths of a text/uri-list", () => {
+    expect(parseUriList("copy\nfile:///home/ada/My%20Shot.png\r\n# a comment\nhttps://example.com/x.png\nfile:///tmp/b.jpg\n")).toEqual(
+      process.platform === "win32" ? [] : ["/home/ada/My Shot.png", "/tmp/b.jpg"],
+    );
+  });
+
+  // Fake clipboard tools on the PATH, as the real ones answer when two files were copied.
+  describe.skipIf(process.platform === "win32")("from the clipboard tools", () => {
+    let bin = "";
+    let shots: string[] = [];
+    beforeEach(() => {
+      bin = path.join(dir, "bin");
+      fs.mkdirSync(bin);
+      shots = ["a shot.png", "b.png"].map((n) => path.join(dir, n));
+      for (const f of shots) fs.writeFileSync(f, PNG);
+      const uris = shots.map((f) => pathToFileURL(f).href).join("\n");
+      // xclip / wl-paste: the offered types, or the uri-list.
+      const tool = `#!/bin/sh
+case "$*" in
+  *TARGETS*|*--list-types*) printf 'TARGETS\\ntext/uri-list\\nx-special/gnome-copied-files\\nimage/png\\n' ;;
+  *text/uri-list*) printf '%s' '${uris}' ;;
+  *image/png*) cat '${shots[1]}' ;;
+  *) exit 1 ;;
+esac
+`;
+      for (const name of ["xclip", "wl-paste"]) fs.writeFileSync(path.join(bin, name), tool, { mode: 0o755 });
+      // osascript: the JavaScript asks for the pasteboard's file URLs (one path a line).
+      fs.writeFileSync(path.join(bin, "osascript"), `#!/bin/sh\n[ "$2" = JavaScript ] && printf '%s\\n' ${shots.map((f) => `'${f}'`).join(" ")}\n`, { mode: 0o755 });
+      vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH ?? ""}`);
+    });
+
+    it("lists them on X11, Wayland and macOS", async () => {
+      expect(await clipboardFiles("linux", { PATH: process.env.PATH })).toEqual(shots);
+      expect(await clipboardFiles("linux", { PATH: process.env.PATH, WAYLAND_DISPLAY: "wayland-0" })).toEqual(shots);
+      expect(await clipboardFiles("darwin", { PATH: process.env.PATH })).toEqual(shots);
+    });
+
+    it("finds none when the clipboard offers no uri-list", async () => {
+      fs.writeFileSync(path.join(bin, "xclip"), "#!/bin/sh\nprintf 'TARGETS\\nimage/png\\n'\n", { mode: 0o755 });
+      expect(await clipboardFiles("linux", { PATH: process.env.PATH })).toEqual([]);
+    });
+
+    it.skipIf(process.platform !== "linux")("prefers copied files over a picture (Finder adds the file's icon)", async () => {
+      // xclip has both: the picture is read and saved too, then dropped.
+      expect(await clipboardImage(attachmentsDir(path.join(dir, "probe")))).toMatchObject({ kind: "image" });
+      const got = await readClipboard(attachmentsDir(path.join(dir, "state")));
+      expect(got).toEqual({ files: shots, image: null });
+      expect(fs.readdirSync(attachmentsDir(path.join(dir, "state")))).toEqual([]);
+    });
   });
 });
 

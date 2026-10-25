@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { render } from "ink-testing-library";
 import React from "react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Agent, type AgentDriver, type AgentInput } from "../../src/core/agent.js";
 import { defaultConfig } from "../../src/core/config.js";
 import { Hub } from "../../src/core/hub.js";
@@ -104,6 +104,33 @@ describe("submitting a message with attachments", () => {
       expect(got.luna).toEqual([]);
     } finally {
       ui.unmount();
+    }
+  });
+});
+
+describe("pasting from the clipboard", () => {
+  // A fake xclip on the PATH with a screenshot on "the clipboard"; the real ones aren't touched.
+  it.skipIf(process.platform !== "linux")("attaches the picture on an empty paste, as Windows Terminal sends for Ctrl+V", async () => {
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    const picture = path.join(dir, "screenshot.png");
+    fs.writeFileSync(picture, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
+    fs.writeFileSync(
+      path.join(bin, "xclip"),
+      `#!/bin/sh\ncase "$*" in\n  *TARGETS*) printf 'TARGETS\\nimage/png\\n' ;;\n  *image/png*) cat '${picture}' ;;\n  *) exit 1 ;;\nesac\n`,
+      { mode: 0o755 },
+    );
+    vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH ?? ""}`);
+    vi.stubEnv("WAYLAND_DISPLAY", "");
+    team();
+    const ui = render(<App hub={hub} onExit={() => undefined} />);
+    try {
+      await sleep(50);
+      ui.stdin.write("\u001b[200~\u001b[201~");
+      await until(() => expect(ui.lastFrame() ?? "").toContain("clipboard.png · 11 B"));
+    } finally {
+      ui.unmount();
+      vi.unstubAllEnvs();
     }
   });
 });

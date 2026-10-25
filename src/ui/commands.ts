@@ -19,6 +19,8 @@ export interface CommandContext {
   toggleZoom: () => void;
   /** Attaches files (by path) to the focused agent's next message. */
   attach: (paths: string[]) => void;
+  /** Attaches the picture or the copied files on the clipboard to the focused agent's next message. */
+  paste: () => void;
   /** Opens one of the dialogs (implemented in dialogs/index.tsx). */
   dialogs: DialogLaunchers;
 }
@@ -89,8 +91,7 @@ export const COMMANDS: Command[] = [
     name: "attach",
     aliases: ["file", "image"],
     args: "[path]",
-    description: "Attach a picture or file to the next message (also ctrl+v / alt+v for a screenshot, or drop files on the terminal)",
-    keys: "ctrl+v",
+    description: "Attach a picture or file to the next message (or paste a screenshot or copied files, or drop files on the terminal)",
     run: (ctx, args) => {
       const p = args.trim();
       if (!p) return ctx.dialogs.attach();
@@ -221,6 +222,13 @@ export const COMMANDS: Command[] = [
       const n = await ctx.hub.restoreSession();
       ctx.hub.toast(n ? `Reopened ${n} tab${n === 1 ? "" : "s"}.` : "Nothing to reopen.", n ? "success" : "info");
     },
+  },
+  {
+    name: "paste",
+    aliases: ["clipboard"],
+    description: "Attach the picture or the files copied on the clipboard to the next message",
+    keys: "ctrl+v (alt+v)",
+    run: (ctx) => ctx.paste(),
   },
   { name: "palette", aliases: ["commands"], description: "All commands", keys: "ctrl+k", run: (ctx) => ctx.dialogs.palette() },
   { name: "update", aliases: ["upgrade"], description: "Install the newest lu-minal", run: (ctx) => void ctx.hub.installUpdate() },

@@ -16,7 +16,7 @@ afterEach(() => {
 function setup() {
   const t = testHub();
   const ui = fakeUi();
-  const launchers = createLaunchers(t.hub, ui, () => ({ hub: t.hub, ui, project: undefined, agent: undefined, setPrompt: () => undefined, toggleZoom: () => undefined, attach: () => undefined, dialogs: launchers }) as CommandContext);
+  const launchers = createLaunchers(t.hub, ui, () => ({ hub: t.hub, ui, project: undefined, agent: undefined, setPrompt: () => undefined, toggleZoom: () => undefined, attach: () => undefined, paste: () => undefined, dialogs: launchers }) as CommandContext);
   cleanups.push(t.cleanup);
   return { ...t, ui, launchers };
 }

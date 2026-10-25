@@ -289,7 +289,8 @@ withGit("cloneRepo with the real git", () => {
       onProgress: (p) => seen.push(p),
     });
     expect(result).toEqual({ dir: path.join(destRoot, "moon-app"), existed: false });
-    expect(fs.readFileSync(path.join(result.dir, "README.md"), "utf8")).toBe("# moon-app\n");
+    // Git for Windows checks text out with CRLF (core.autocrlf).
+    expect(fs.readFileSync(path.join(result.dir, "README.md"), "utf8").replace(/\r\n/g, "\n")).toBe("# moon-app\n");
     expect(fs.existsSync(path.join(result.dir, "second.txt"))).toBe(true);
     expect(git(gitPath, ["remote", "get-url", "origin"], result.dir).trim()).toBe(origin.url);
     expect(fs.readFileSync(path.join(result.dir, ".git", "config"), "utf8")).not.toContain("c2VjcmV0LXRva2Vu");

@@ -111,9 +111,15 @@ describe("read_file", () => {
     expect(folder.isError).toBe(true);
     expect(folder.content).toMatch(/list_files/);
     const missing = await run(readFileTool, { path: "src/app.tsx" });
-    expect(missing.isError).toBe(true);
-    expect(missing.content).toContain("File not found");
-    expect(missing.content).toContain(path.join("src", "App.tsx"));
+    // macOS and Windows file systems ignore case, so there the file is simply found.
+    const caseInsensitive = fs.existsSync(path.join(dir, "SRC", "APP.TSX"));
+    if (caseInsensitive) {
+      expect(missing.isError).toBeFalsy();
+    } else {
+      expect(missing.isError).toBe(true);
+      expect(missing.content).toContain("File not found");
+      expect(missing.content).toContain(path.join("src", "App.tsx"));
+    }
   });
 
   it("handles empty files and offsets past the end", async () => {

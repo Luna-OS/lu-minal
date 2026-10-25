@@ -23,12 +23,10 @@ export function registerSecret(value: string | null | undefined): void {
   if (v.length >= MIN_LENGTH) secrets.add(v);
 }
 
-/** Forgets one (a removed sign-in); for tests, `clearSecrets` forgets all. */
-export function forgetSecret(value: string | null | undefined): void {
-  const v = typeof value === "string" ? value.trim() : "";
-  if (v) secrets.delete(v);
-}
-
+/**
+ * Forgets every secret (tests). A removed sign-in's key stays redacted until lu-minal quits: it
+ * may still be valid.
+ */
 export function clearSecrets(): void {
   secrets.clear();
   envScanned = false;

@@ -3,11 +3,11 @@
 // calls the MCP tool "approve" instead; this file decides what that call risks and how the request
 // reads in the panel, so it takes the same path as every other approval (Agent.requestApproval).
 import fs from "node:fs";
-import path from "node:path";
 import { clip, describeClaudeTool, displayPath, firstLine, LUMINAL_TOOL_PREFIX } from "../agents/claude-code/display.js";
 import type { Agent } from "../core/agent.js";
 import type { ApprovalDecision, ApprovalRequest, PermissionMode, RiskKind } from "../core/types.js";
 import { isReadOnlyShellCommand, shellAllowKey } from "../tools/command-risk.js";
+import { pathReadings } from "../tools/fs.js";
 import { assessRead, assessWrite, writeNote, type SensitiveOptions } from "../tools/sensitive.js";
 import { isPrivateUrl } from "../tools/net-guard.js";
 
@@ -87,28 +87,33 @@ function sensitiveFor(platform: NodeJS.Platform): SensitiveOptions {
   return platform === process.platform ? {} : { platform };
 }
 
-const pathFor = (platform: NodeJS.Platform) => (platform === "win32" ? path.win32 : path.posix);
-
 /**
  * What an edit of `file` risks: "edit" for an ordinary file in the project; "other" (always asks)
  * outside it (symlinks followed, so a link to ~/.bashrc is outside), in a secret store, in a home
  * dotfile, or in what git and agents run on their own (.git, .claude, .mcp.json, ...) – matched the
- * way Windows and macOS resolve names (".GIT", "GIT~1", ".git." are .git there).
+ * way Windows and macOS resolve names (".GIT", "GIT~1", ".git." are .git there). Every reading of
+ * the path counts (Claude Code opens "~/.bashrc" in the home folder), the strictest one wins.
  */
 function editRisk(file: string, cwd: string, platform: NodeJS.Platform = process.platform) {
   if (!file) return { risk: "edit" as RiskKind, outside: false, reason: null as string | null, abs: "" };
-  const abs = pathFor(platform).resolve(cwd, file);
-  return { ...assessWrite(cwd, abs, sensitiveFor(platform)), abs };
+  const all = pathReadings(cwd, file, platform).map((abs) => ({ ...assessWrite(cwd, abs, sensitiveFor(platform)), abs }));
+  return all.find((a) => a.risk !== "edit") ?? all[0];
 }
 
-/** Where a read tool looks: its file or folder, resolved against the project. */
-function readTarget(toolName: string, input: Record<string, unknown>, cwd: string, platform: NodeJS.Platform): { abs: string; recursive: boolean } | null {
-  const p = pathFor(platform);
-  if (toolName === "Read") return str(input.file_path) ? { abs: p.resolve(cwd, str(input.file_path)), recursive: false } : null;
-  if (toolName === "NotebookRead") return str(input.notebook_path) ? { abs: p.resolve(cwd, str(input.notebook_path)), recursive: false } : null;
+/**
+ * Where a read tool looks (its file or folder, resolved against the project) and what that risks:
+ * like editRisk, the reading that asks if any does, else Claude Code's own.
+ */
+function readTarget(toolName: string, input: Record<string, unknown>, cwd: string, platform: NodeJS.Platform): { abs: string; risk: RiskKind } | null {
+  let file = "";
+  if (toolName === "Read") file = str(input.file_path);
+  else if (toolName === "NotebookRead") file = str(input.notebook_path);
   // Grep reads file contents below its folder (the project by default).
-  if (toolName === "Grep") return { abs: p.resolve(cwd, str(input.path) || "."), recursive: true };
-  return null;
+  else if (toolName === "Grep") file = str(input.path) || ".";
+  if (!file) return null;
+  const recursive = toolName === "Grep";
+  const all = pathReadings(cwd, file, platform).map((abs) => ({ abs, risk: assessRead(abs, { ...sensitiveFor(platform), recursive, cwd }) }));
+  return all.find((r) => r.risk !== "read") ?? all[0];
 }
 
 /**
@@ -123,10 +128,7 @@ export function claudeToolRisk(
   platform: NodeJS.Platform = process.platform,
 ): RiskKind {
   if (toolName.startsWith(LUMINAL_TOOL_PREFIX)) return "read";
-  if (READ_TOOLS.has(toolName)) {
-    const target = readTarget(toolName, input, cwd, platform);
-    return target ? assessRead(target.abs, { ...sensitiveFor(platform), recursive: target.recursive, cwd }) : "read";
-  }
+  if (READ_TOOLS.has(toolName)) return readTarget(toolName, input, cwd, platform)?.risk ?? "read";
   if (EDIT_TOOLS.has(toolName)) return editRisk(str(input.file_path) || str(input.notebook_path), cwd, platform).risk;
   if (toolName === "Bash") return isReadOnlyCommand(str(input.command), cwd, platform) ? "read" : "exec";
   if (EXEC_TOOLS.has(toolName)) return "exec";
@@ -172,7 +174,7 @@ export function assessClaudeTool(toolName: string, input: Record<string, unknown
     if (toolName === "Write") {
       let exists = false;
       try {
-        exists = Boolean(file) && fs.existsSync(path.resolve(cwd, file));
+        exists = Boolean(file) && fs.existsSync(pathReadings(cwd, file)[0]);
       } catch {
         exists = false;
       }

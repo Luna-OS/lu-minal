@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import http from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RobloxBridge, isLoopbackHost, type RobloxBridgeOptions } from "../../src/roblox/bridge.js";
 import { PLUGIN_VERSION } from "../../src/roblox/plugin-source.js";
 import { FakePlugin, request, waitFor } from "./helpers.js";
@@ -51,6 +52,33 @@ describe("RobloxBridge lifecycle", () => {
     expect(status.port).toBe(port);
     expect(status.error).toMatch(/already in use/);
     await expect(second.call("ping", {})).rejects.toThrow(/not running.*already in use/s);
+  });
+
+  it("says when the port isn't allowed, on Windows with its reserved port ranges", async () => {
+    // EACCES: a privileged port elsewhere, a range Hyper-V, WSL or Docker reserved on Windows.
+    const listen = vi.spyOn(http.Server.prototype, "listen").mockImplementation(function (this: http.Server) {
+      process.nextTick(() => this.emit("error", Object.assign(new Error("listen EACCES: permission denied"), { code: "EACCES" })));
+      return this;
+    });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    try {
+      const errorOn = async (value: NodeJS.Platform) => {
+        Object.defineProperty(process, "platform", { ...platform, value });
+        try {
+          const bridge = new RobloxBridge({ port: 50_123 });
+          bridges.push(bridge);
+          await bridge.start();
+          expect(bridge.status().listening).toBe(false);
+          return bridge.status().error ?? "";
+        } finally {
+          Object.defineProperty(process, "platform", platform);
+        }
+      };
+      expect(await errorOn("linux")).toMatch(/^Not allowed to listen on port 50123\. Choose another roblox\.port/);
+      expect(await errorOn("win32")).toMatch(/^Not allowed to listen on port 50123 \(Windows keeps .*excludedportrange.*\)\. Choose another/);
+    } finally {
+      listen.mockRestore();
+    }
   });
 
   it("refuses to bind to anything but loopback", async () => {

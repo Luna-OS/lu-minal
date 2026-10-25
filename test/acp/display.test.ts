@@ -1,6 +1,7 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  assessAcpCall,
   contentText,
   describeAcpTool,
   diffDisplay,
@@ -140,6 +141,8 @@ describe("tool content", () => {
 });
 
 describe("permissions", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   // OpenCode's options, as `opencode acp` sends them.
   const opencode = permissionOptions([
     { optionId: "once", kind: "allow_once", name: "Allow once" },
@@ -164,6 +167,16 @@ describe("permissions", () => {
     expect(pickPermissionOption(onlyOnce, "always")).toBe("o");
     expect(pickPermissionOption(onlyOnce, "deny")).toBeNull();
     expect(permissionOptions([{ kind: "allow_once" }, "x"])).toEqual([]);
+  });
+
+  it("checks a path as written and as \"~\" expanded, keeping the stricter answer", () => {
+    const home = path.resolve("/home/ada");
+    vi.stubEnv("LU_MINAL_HOME_DIR", home);
+    const read = (p: string) => assessAcpCall(view({ kind: "read", locations: [{ path: p }] }), cwd);
+    expect(read("~/.ssh/id_ed25519")).toMatchObject({ risk: "other", target: path.join(home, ".ssh", "id_ed25519") });
+    expect(read("src/a.ts").risk).toBe("read");
+    expect(assessAcpCall(view({ kind: "edit", rawInput: { path: "~/.bashrc" } }), cwd).risk).toBe("other");
+    expect(assessAcpCall(view({ kind: "edit", rawInput: { path: "src/a.ts" } }), cwd).risk).toBe("edit");
   });
 });
 

@@ -172,6 +172,27 @@ describe("runProgram", () => {
     expect(Date.now() - started).toBeLessThan(8000);
   });
 
+  it.runIf(!isWindows)("kills a program that ignores SIGTERM once the grace period is over", async () => {
+    const script = "process.on('SIGTERM', () => {}); process.stdout.write(String(process.pid)); setInterval(() => {}, 1000)";
+    const r = await runProgram(node, ["-e", script], { timeoutMs: 1000 });
+    expect(r.timedOut).toBe(true);
+    const pid = Number(r.stdout);
+    expect(pid).toBeGreaterThan(0);
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      await vi.waitFor(() => expect(alive()).toBe(false), { timeout: 3000 });
+    } finally {
+      if (alive()) process.kill(pid, "SIGKILL");
+    }
+  }, 15_000);
+
   it("stops a program when the signal aborts", async () => {
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 200);

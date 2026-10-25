@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -67,10 +67,17 @@ function setup(
     sessionId?: string | null;
     dir?: string;
     stateFile?: string;
+    exe?: string;
+    /** Another copy of the driver module (to catch its exit hook). */
+    Driver?: typeof AcpDriver;
+    /** POSIX: a shell in front of the agent starts a sleeper in its process group, like the agent's own shells. */
+    grandchild?: boolean;
   } = {},
 ) {
   const dir = opts.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), "lm-acp-"));
   const logFile = path.join(dir, `acp-${Math.random().toString(36).slice(2)}.jsonl`);
+  const grandchildPid = path.join(dir, "grandchild.pid");
+  const spawnEnvs: NodeJS.ProcessEnv[] = [];
   const notifier = new Notifier();
   const runtime: ProjectRuntime = {
     launch: async () => undefined,
@@ -100,15 +107,18 @@ function setup(
       : opts.mcp;
   const children: ChildProcess[] = [];
   const preset: AcpPreset = { ...opencode(), ...opts.preset };
-  const driver = new AcpDriver({
+  const driver = new (opts.Driver ?? AcpDriver)({
     agent,
     project,
     preset,
-    exe: "opencode",
+    exe: opts.exe ?? "opencode",
     mcp,
     systemPrompt: () => "You are vega, a worker.\nReport with mcp__luminal__send_message(to, text).",
     spawnImpl: (_exe, args, options) => {
-      const child = spawn(process.execPath, [FAKE, ...args], options);
+      spawnEnvs.push(options.env ?? {});
+      const child = opts.grandchild
+        ? spawn("/bin/sh", ["-c", 'sleep 30 </dev/null >/dev/null 2>&1 & echo $! > "$0"; exec "$@"', grandchildPid, process.execPath, FAKE, ...args], options)
+        : spawn(process.execPath, [FAKE, ...args], options);
       children.push(child);
       return child;
     },
@@ -144,7 +154,7 @@ function setup(
     agent.deliver({ from, text });
     await settled(`"${text}" to finish`);
   };
-  return { dir, agent, project, driver, children, logged, calls, kinds, texts, infos, errors, tools, settled, say, endTurns, unregistered, displays };
+  return { dir, agent, project, driver, children, logged, calls, kinds, texts, infos, errors, tools, settled, say, endTurns, unregistered, displays, grandchildPid, spawnEnvs };
 }
 
 describe("AcpDriver", () => {
@@ -659,7 +669,60 @@ describe("AcpDriver", () => {
     t.agent.interrupt();
     await t.settled();
   });
+
+  it("puts the agent program's folder on its PATH (an npm install's node lives there)", async () => {
+    const bin = path.resolve(os.tmpdir(), "lm-acp-bin");
+    const t = setup({ exe: path.join(bin, "opencode") });
+    await t.driver.start();
+    await t.say("hello");
+    const env = t.spawnEnvs[0];
+    const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH" && env[k] !== undefined)!;
+    expect(env[key]!.split(path.delimiter)).toContain(bin);
+  });
+
+  it.runIf(process.platform !== "win32")("ends the agent's whole process tree when lu-minal exits", async () => {
+    // A fresh copy of the module, so the exit hook it sets up with its first agent is caught here.
+    vi.resetModules();
+    const hooks: Array<() => void> = [];
+    const once = process.once.bind(process);
+    const spy = vi.spyOn(process, "once").mockImplementation(((event: string | symbol, listener: (...args: any[]) => void) => {
+      if (event !== "exit") return once(event, listener);
+      hooks.push(listener);
+      return process;
+    }) as typeof process.once);
+    let pid = 0;
+    try {
+      const { AcpDriver: Driver } = await import("../../src/agents/acp/driver.js");
+      const t = setup({ Driver, grandchild: true });
+      await t.driver.start();
+      await t.say("hello");
+      await waitFor(() => fs.existsSync(t.grandchildPid) && fs.readFileSync(t.grandchildPid, "utf8").trim() !== "", "the sleeper");
+      pid = Number(fs.readFileSync(t.grandchildPid, "utf8"));
+      expect(alive(pid)).toBe(true);
+      expect(hooks).toHaveLength(1);
+      hooks[0]();
+      await waitFor(() => !alive(pid), "the sleeper to end", 3000);
+    } finally {
+      spy.mockRestore();
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+    }
+  });
 });
+
+/** Whether a process still runs (a killed one nobody reaped yet is a zombie, not alive). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    if (process.platform === "linux") return !/^\d+ \([^)]*\) Z/.test(fs.readFileSync(`/proc/${pid}/stat`, "utf8"));
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
+}
 
 describe("prompt helpers", () => {
   it("renames lu-minal's MCP tools the way the agent names them", () => {

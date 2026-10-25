@@ -34,6 +34,19 @@ export function resolvePath(cwd: string, p: string, platform: NodeJS.Platform = 
   return (platform === "win32" ? path.win32 : path.posix).resolve(cwd, full);
 }
 
+/**
+ * Every file a path may name for an agent that resolves it itself (Claude Code, ACP agents), so a
+ * check can keep the strictest answer: Claude Code's reading first (its expandPath trims, expands
+ * "~" and "~/", reads "/c/..." as C:\... on Windows and normalizes to NFC), then resolvePath's
+ * (quotes dropped too) and the path as written.
+ */
+export function pathReadings(cwd: string, p: string, platform: NodeJS.Platform = process.platform): string[] {
+  const text = String(p ?? "");
+  const api = platform === "win32" ? path.win32 : path.posix;
+  const claude = api.resolve(cwd, expandHome(fromMsysPath(text.trim(), platform))).normalize("NFC");
+  return [...new Set([claude, resolvePath(cwd, text, platform), api.resolve(cwd, text)])];
+}
+
 /** Whether `abs` is `cwd` or inside it. */
 export function isInside(cwd: string, abs: string): boolean {
   const rel = path.relative(cwd, abs);
@@ -741,7 +754,8 @@ async function grepWithJs(
     files = [{ abs: opts.root, rel: path.basename(opts.root), size: st.size }];
   } else {
     const { ignore, ignoreRoot } = await ignoreFor(ctx, opts.root);
-    files = (await walkFiles(opts.root, { ignore, ignoreRoot, signal: ctx.signal })).files;
+    // Like ripgrep, links found on the way are not followed (the risk check can't see where they go).
+    files = (await walkFiles(opts.root, { ignore, ignoreRoot, signal: ctx.signal, links: false })).files;
     if (opts.glob) {
       const match = patternMatcher(opts.glob, { nocase: caseInsensitiveFs });
       files = files.filter((f) => match(f.rel));

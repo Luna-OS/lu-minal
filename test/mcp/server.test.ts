@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -280,6 +281,33 @@ describe("McpServer: HTTP", () => {
     expect(get.headers.get("allow")).toBe("POST, DELETE");
     const put = await fetch(r.url, { method: "PUT", headers: { Authorization: `Bearer ${r.token}` }, body: "{}" });
     expect(put.status).toBe(405);
+  });
+
+  it("limits headers and how long a request may take to arrive, not how long an approval waits", async () => {
+    const r = await register(lead);
+    // More than 64 headers: Node refuses the request or drops the rest (here the token, sent last).
+    const withPads = (n: number) =>
+      new Promise<number>((resolve, reject) => {
+        const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
+        const headers: Record<string, string> = { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) };
+        for (let i = 0; i < n; i++) headers[`x-pad-${i}`] = "1";
+        headers.authorization = `Bearer ${r.token}`;
+        const req = http.request(r.url, { method: "POST", headers }, (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode ?? 0));
+        });
+        req.on("error", reject);
+        req.end(body);
+      });
+    expect(await withPads(10)).toBe(200);
+    expect([400, 401]).toContain(await withPads(70));
+    // The 15 s and 120 s limits are too slow to wait for here.
+    const listener = (server as unknown as { server: http.Server }).server;
+    expect({ headers: listener.headersTimeout, request: listener.requestTimeout, socket: listener.timeout }).toEqual({
+      headers: 15_000,
+      request: 120_000,
+      socket: 0,
+    });
   });
 
   it("refuses bodies over 4 MB", async () => {

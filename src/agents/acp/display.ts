@@ -5,6 +5,7 @@
 import path from "node:path";
 import type { DiffLine, PermissionMode, RiskKind } from "../../core/types.js";
 import { describeChange, makeDiff } from "../../tools/diff.js";
+import { pathReadings } from "../../tools/fs.js";
 import { isPrivateUrl } from "../../tools/net-guard.js";
 import { assessRead, assessWrite, writeNote } from "../../tools/sensitive.js";
 import { clip, displayPath, firstLine } from "../claude-code/display.js";
@@ -120,11 +121,11 @@ export function callPaths(call: Pick<ToolCallView, "locations" | "rawInput">): s
  * project (symlinks followed), into .git, agents' settings, a secret store or a home dotfile; a
  * read or search in a secret store; a fetch of this machine or the local network – all "other",
  * which always asks. `target` is what made it so (for a narrow "always" key), `note` the summary's
- * explanation.
+ * explanation. Each path counts as written and with "~" expanded (pathReadings).
  */
 export function assessAcpCall(view: ToolCallView, cwd: string): { risk: RiskKind; target: string | null; note: string } {
   const base = riskFor(view.kind);
-  const paths = callPaths(view).map((p) => path.resolve(cwd, p));
+  const paths = callPaths(view).flatMap((p) => pathReadings(cwd, p));
   if (view.kind === "edit" || view.kind === "delete" || view.kind === "move") {
     for (const abs of paths) {
       const a = assessWrite(cwd, abs);

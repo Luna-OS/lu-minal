@@ -10,7 +10,9 @@
 // abbreviations, tree -o, file -C, git's write-ish options and sub-commands), program names must be
 // bare (./cat is not cat), globs may not feed options to programs where an option can run or write
 // something, and no word may point into a secret store (~/.ssh, lu-minal's auth.json, /proc/self,
-// a network share; see sensitive.ts).
+// a network share; see sensitive.ts), also not through a link that a glob or a link-following
+// search (grep -R, rg -L) reaches.
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fromMsysPath } from "../platform/paths.js";
@@ -371,10 +373,16 @@ function argsOk(name: string, args: string[], shell: ShellKind): boolean {
     case "find":
       return !args.some((a) => FIND_WRITES.has(a));
     case "rg":
+      // -L / --follow: links found while searching may lead into ~/.ssh, where the path check can't see.
       return !args.some((a) => {
         const opt = optName(a);
-        return opt === "--pre" || opt === "--hostname-bin";
+        return opt === "--pre" || opt === "--hostname-bin" || opt === "--follow" || /^-[^-]*L/.test(a);
       });
+    case "grep":
+    case "egrep":
+    case "fgrep":
+      // -R (--dereference-recursive and its abbreviations) and BSD grep's -S follow every link.
+      return !args.some((a) => /^-[^-]*[RS]/.test(a) || /^--der/.test(a));
     case "sort":
       // -o FILE (also inside "-uo"), --output and its GNU abbreviations (--o, --out, ...),
       // --compress-program (runs a program; --co, --comp, ...), Windows sort.exe's /O.
@@ -390,7 +398,8 @@ function argsOk(name: string, args: string[], shell: ShellKind): boolean {
       if (shell === "cmd") return args.some((a) => a.toLowerCase() === "/t");
       return !args.some((a) => /^-[^-]*s/.test(a) || /^--s/.test(a));
     case "cd":
-      return args.length <= 1 && args[0] !== "-";
+      // One folder; "cd -", "cd -P" (home), PowerShell's "-Path:x" and cmd's "/d" go where we can't follow.
+      return args.length <= 1 && !(args[0] ?? "").startsWith("-") && !(shell === "cmd" && (args[0] ?? "").startsWith("/"));
     default:
       return true;
   }
@@ -398,15 +407,19 @@ function argsOk(name: string, args: string[], shell: ShellKind): boolean {
 
 // ---- paths in arguments --------------------------------------------------------------------------
 
-/** The texts of a word that may name a file: the word, and the value of "--opt=value". */
-function pathTexts(word: ShellWord): string[] {
+/**
+ * The texts of a word that may name a file: the word, and the value of "--opt=value". PowerShell
+ * also binds "-Path:value" and reads "a,b" as an array of both.
+ */
+function pathTexts(word: ShellWord, shell: ShellKind): string[] {
   const t = word.text;
   if (!t) return [];
+  const list = (v: string) => (shell === "powershell" && v.includes(",") ? [v, ...v.split(",").filter(Boolean)] : [v]);
   if (t.startsWith("-")) {
-    const eq = t.indexOf("=");
-    return eq > 0 ? [t.slice(eq + 1)] : [];
+    const sep = shell === "powershell" ? t.search(/[=:]/) : t.indexOf("=");
+    return sep > 0 ? list(t.slice(sep + 1)) : [];
   }
-  return [t];
+  return list(t);
 }
 
 function expandTilde(t: string, home: string): string | null {
@@ -423,32 +436,94 @@ interface Where {
   sensitive: SensitiveOptions | false;
 }
 
+/** The folder "~" stands for. */
+function homeFor(opts: SensitiveOptions): string {
+  return opts.home ?? (opts.env?.LU_MINAL_HOME_DIR || process.env.LU_MINAL_HOME_DIR || os.homedir());
+}
+
+/** A word as the shell reads a path: Git Bash on Windows takes "/c/x" as C:\x. */
+function shellPath(raw: string, shell: ShellKind, platform: NodeJS.Platform): string {
+  return platform === "win32" && shell === "bash" ? fromMsysPath(raw, platform) : raw;
+}
+
+/**
+ * Git Bash's /proc (other processes' environment, like /proc on Linux), which resolves to \proc on
+ * a drive here; a search from a drive's root (Git Bash's "/") reaches it too.
+ */
+function gitBashProc(abs: string, recursive: boolean): boolean {
+  return /^(?:[a-z]:)?\\proc(?:\\|$)/i.test(abs) || (recursive && /^(?:[a-z]:)?\\$|^[a-z]:$/i.test(abs));
+}
+
+/** Folder entries a glob check looks at before it gives up (and asks). */
+const GLOB_WALK_LIMIT = 20_000;
+
+/**
+ * Whether a relative glob may reach a secret store through a symlink: the shell follows links when
+ * it expands one ("cat *" next to "notes.txt -> ~/.ssh/id_ed25519"). Every link in the folders the
+ * pattern can descend into counts, in all of them for "**" (zsh, globstar).
+ */
+function globReachesSecret(base: string, pattern: string, opts: SensitiveOptions): boolean {
+  // Another platform's rules (tests): there are no files to look at.
+  if ((opts.platform ?? process.platform) !== process.platform) return false;
+  const parts = pattern.split(/[\\/]+/).filter((p) => p && p !== ".");
+  const first = parts.findIndex((p) => /[*?[]/.test(p));
+  if (first < 0) return false;
+  const deep = parts.some((p) => p.includes("**"));
+  const stack: Array<[string, number]> = [[path.join(base, ...parts.slice(0, first)), first + 1]];
+  let seen = 0;
+  while (stack.length) {
+    const [dir, level] = stack.pop()!;
+    let list: fs.Dirent[];
+    try {
+      list = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of list) {
+      if (++seen > GLOB_WALK_LIMIT) return true;
+      const abs = path.join(dir, entry.name);
+      if (entry.isSymbolicLink() && assessRead(abs, { ...opts, recursive: true, cwd: base }) !== "read") return true;
+      if (entry.isDirectory() && (deep || level < parts.length)) stack.push([abs, level + 1]);
+    }
+  }
+  return false;
+}
+
 /** Whether the words of a read-only program stay clear of secret stores and network shares. */
 function pathsOk(name: string, args: ShellWord[], where: Where): boolean {
   if (where.sensitive === false) return true;
   const opts = where.sensitive;
   const platform = opts.platform ?? process.platform;
-  const home = opts.home ?? (opts.env?.LU_MINAL_HOME_DIR || process.env.LU_MINAL_HOME_DIR || os.homedir());
+  const home = homeFor(opts);
   const recursive = RECURSIVE_READERS.has(name);
   const api = platform === "win32" ? path.win32 : path.posix;
+  const gitBash = platform === "win32" && where.shell === "bash";
   for (const word of args) {
-    for (const raw of pathTexts(word)) {
-      const t = platform === "win32" && where.shell === "bash" ? fromMsysPath(raw, platform) : raw;
+    for (const raw of pathTexts(word, where.shell)) {
+      // PowerShell's provider paths (env:, variable:, HKCU:, FileSystem::...) are not plain files:
+      // only a drive letter may come before a ":".
+      const colon = raw.indexOf(":");
+      if (where.shell === "powershell" && colon >= 0 && (colon !== 1 || raw.includes(":", 2))) return false;
+      // PowerShell and cmd.exe expand wildcards themselves, quoted or not.
+      const glob = word.glob || (where.shell !== "bash" && /[*?[]/.test(raw));
+      const t = shellPath(raw, where.shell, platform);
       const expanded = expandTilde(t, home);
       if (expanded === null) return false;
       // A glob outside the project could expand to anything there.
-      if (word.glob && (api.isAbsolute(expanded) || t.startsWith("~") || t.split(/[\\/]/).includes(".."))) return false;
+      if (glob && (api.isAbsolute(expanded) || t.startsWith("~") || t.split(/[\\/]/).includes(".."))) return false;
+      if (glob && where.cwds.some((base) => globReachesSecret(base, expanded, opts))) return false;
       if (isUncPath(expanded, platform) && !where.cwds.length) return false;
       const bases = api.isAbsolute(expanded) ? [null] : where.cwds;
       for (const base of bases) {
         const abs = base === null ? api.resolve(expanded) : api.resolve(base, expanded);
+        if (gitBash && gitBashProc(abs, recursive)) return false;
         // A network share counts as reaching out unless it is the project's own folder.
         if (assessRead(abs, { ...opts, recursive, cwd: base ?? where.cwds[0] }) !== "read") return false;
       }
     }
   }
   // A search without a folder argument starts where the command runs.
-  if (recursive && where.cwds.some((c) => containsSecrets(c, opts))) return false;
+  if (recursive && where.cwds.some((c) => containsSecrets(c, opts) || (gitBash && gitBashProc(c, true)))) return false;
   return true;
 }
 
@@ -489,8 +564,8 @@ export function isReadOnlyShellCommand(command: string, opts: ReadOnlyOptions = 
     if (GLOB_SENSITIVE.has(name) && rest.some((w) => w.glob)) return false;
     if (!pathsOk(name, rest, where)) return false;
     if (name === "cd" && where.cwds.length) {
-      const home = where.sensitive ? where.sensitive.home : undefined;
-      const target = rest[0] ? expandTilde(rest[0].text, home ?? os.homedir()) : (home ?? os.homedir());
+      // Followed with the path check's spelling rules ("cd /c/Users/ada" in Git Bash is C:\Users\ada).
+      const target = expandTilde(rest[0] ? shellPath(rest[0].text, shell, platform) : "~", homeFor(where.sensitive || {}));
       if (target === null) return false;
       // Keep the old folder too: "cd x | cat y" runs cat where it was.
       where.cwds = [...new Set([...where.cwds, ...where.cwds.map((c) => api.resolve(c, target))])];

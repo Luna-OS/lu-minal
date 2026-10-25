@@ -25,9 +25,11 @@ refuses them:
 - **Secret stores.** Reads of lu-minal's own config and state folders (`auth.json`, the MCP bearer
   tokens, `session.json`), the usual credential files (`~/.ssh`, `~/.aws`, `~/.netrc`,
   `~/.git-credentials`, `~/.npmrc`, `~/.config/gh`, `~/.claude.json`, browser profiles, shell
-  histories, ...) and `/proc/<pid>/` on Linux. A search (`grep`, `rg`, the grep tool, Claude Code's
-  Grep) from a folder that contains one, such as `~`, counts too. A secret read followed by a web
-  fetch is the usual way an injection exfiltrates keys.
+  histories, ...) and `/proc/<pid>/` on Linux and in Git Bash. A search (`grep`, `rg`, the grep
+  tool, Claude Code's Grep) from a folder that contains one, such as `~`, counts too. Paths are
+  checked the way the agent reads them: Claude Code opens `~/.ssh/x` in the home folder and Git
+  Bash's `/c/Users/...` as `C:\Users\...`, so every such reading is checked and the strictest
+  wins. A secret read followed by a web fetch is the usual way an injection exfiltrates keys.
 - **Writes that run on their own.** Edits outside the project (symlinks are followed, a dangling
   one too), in `.git` at any depth (hooks, config), in agents' project settings (`.claude/`,
   `.mcp.json`, `.gemini/`, `.opencode/`, `opencode.json`), in secret stores and in the home
@@ -62,7 +64,10 @@ the native `bash` tool and Claude Code's permission prompts):
 - An unquoted glob never feeds a program where an option can run something: a file named
   `--pre=sh` must not turn `rg foo *` into code execution.
 - No word may point into a secret store, a network share, or (with a glob) outside the project.
-  `cd` is followed.
+  `cd` is followed (with an option such as `cd -P` it asks). A glob, `grep -R` and `rg -L` follow
+  symlinks, so a link into a secret store where they reach makes them ask; the grep tool skips
+  links it finds, as ripgrep does. PowerShell's `-Path:value`, `a,b` arrays and wildcards are
+  checked too, and its provider paths (`env:`, `HKCU:`, `FileSystem::...`) ask.
 
 "Always allow" remembers `bash:<first two words>` only for one simple command. A list, pipeline,
 substitution or redirection is remembered as the exact text (`bash=<command>`), so an "always" for

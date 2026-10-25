@@ -42,10 +42,24 @@ describe.skipIf(!real)("the real clipboard", () => {
           // may leave later items to be asked for, from this script, which has ended by then).
           `ObjC.import('AppKit'); var pb = $.NSPasteboard.generalPasteboard; pb.clearContents; var items = $.NSMutableArray.array; ${files
             .map((f) => `var it = $.NSPasteboardItem.alloc.init; it.setStringForType($.NSURL.fileURLWithPath(${js(f)}).absoluteString, 'public.file-url'); items.addObject(it);`)
-            .join(" ")} pb.writeObjects(items); pb.pasteboardItems.count;`,
+            .join(" ")} pb.writeObjects(items); $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.5)); pb.pasteboardItems.count;`,
     );
     if (written === null) return ctx.skip();
     expect(written).toBe(String(files.length));
+    if (process.platform === "darwin") {
+      // What another process sees: the items and how many of them carry a file URL.
+      const seen = await runProgram(
+        "osascript",
+        [
+          "-l",
+          "JavaScript",
+          "-e",
+          "ObjC.import('AppKit'); var items = $.NSPasteboard.generalPasteboard.pasteboardItems; var n = items.count, f = 0; for (var i = 0; i < n; i++) { var s = items.objectAtIndex(i).stringForType('public.file-url'); if (s && !s.isNil()) f++; } n + ':' + f;",
+        ],
+        { timeoutMs: 30_000 },
+      );
+      expect(seen.stdout.trim(), seen.stderr).toBe(`${files.length}:${files.length}`);
+    }
     // Finder and Explorer may name the folder differently (/private/var vs /var, 8.3 names).
     const real = (p: string) => fs.realpathSync.native(p);
     expect((await clipboardFiles()).map(real)).toEqual(files.map(real));

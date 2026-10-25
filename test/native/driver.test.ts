@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { NativeDriver, type NativeDriverDeps } from "../../src/agents/native/driver.js";
 import { REMOVED_OUTPUT } from "../../src/agents/native/context.js";
 import { Agent } from "../../src/core/agent.js";
+import { attachmentFromPath, type Attachment } from "../../src/core/attachments.js";
 import { Notifier } from "../../src/core/emitter.js";
 import { Project, type ProjectRuntime } from "../../src/core/project.js";
 import type { LogEntry } from "../../src/core/types.js";
@@ -478,6 +479,50 @@ describe("NativeDriver", () => {
     expect(results.slice(0, 2)).toEqual([REMOVED_OUTPUT, REMOVED_OUTPUT]);
     expect(results.slice(2)).toEqual(calls.slice(2).map((c) => `echo: ${c.arguments.text}`));
     expect(entries(agent, "info").some((e) => e.text.includes("removed the output of 2 old tool calls"))).toBe(true);
+  });
+
+  it("keeps the pictures a request carries within the providers' limits", async () => {
+    // A long screenshot session on a model that can see: every request carries the conversation's
+    // pictures again, so without a limit it soon grows past what any provider takes.
+    const seeing: ResolvedModel = { ...MODEL, model: { ...MODEL.model, vision: true } };
+    const sent: Array<{ images: number; chars: number; newest: number }> = [];
+    const client: ChatClient = {
+      wire: "openai-chat",
+      async *stream(req) {
+        const users = req.messages.filter((m) => m.role === "user");
+        const images = users.flatMap((m) => m.images ?? []);
+        sent.push({ images: images.length, chars: images.reduce((n, img) => n + img.data.length, 0), newest: users.at(-1)?.images?.length ?? 0 });
+        yield { type: "done", stopReason: "stop", message: { role: "assistant", content: "ok" } };
+      },
+    };
+    const { agent, dir, driver } = await setup({ deps: { resolveModel: () => seeing, createClient: () => client } });
+    // A Retina screenshot just under the 5 MB per-picture limit.
+    const file = path.join(dir, "shot.png");
+    fs.writeFileSync(file, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(4_800_000)]));
+    const shot = attachmentFromPath(file) as Attachment;
+    for (let i = 0; i < 7; i++) {
+      agent.deliver({ from: "you", text: `does this look right? (${i})`, attachments: [shot] });
+      await driver.idle();
+    }
+    agent.deliver({ from: "you", text: "thanks, carry on" });
+    await driver.idle();
+
+    expect(agent.status).toBe("idle");
+    expect(sent).toHaveLength(8);
+    // Gemini takes 20 MB of pictures per request and Anthropic 32 MB; with more than 20 pictures
+    // Anthropic also refuses any larger than 2000 px.
+    for (const s of sent) {
+      expect(s.chars).toBeLessThan(20 * 1024 * 1024);
+      expect(s.images).toBeLessThanOrEqual(20);
+    }
+    // The picture just sent always goes along; the oldest make room (two of this size fit).
+    expect(sent.slice(0, 7).map((s) => s.newest)).toEqual([1, 1, 1, 1, 1, 1, 1]);
+    expect(sent.map((s) => s.images)).toEqual([1, 2, 2, 2, 2, 2, 2, 2]);
+    const first = driver.conversation[0];
+    expect(first).not.toHaveProperty("images");
+    expect(first.content).toContain("does this look right? (0)");
+    expect(first.content).toContain("[1 picture(s) left out to keep the request small]");
+    expect(entries(agent, "info").map((e) => e.text)).toContain("Left 1 picture(s) out of the conversation to keep requests small; the newest still go along.");
   });
 
   it("asks the system prompt again for every request", async () => {

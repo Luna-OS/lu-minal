@@ -468,12 +468,20 @@ export class AcpDriver implements AgentDriver {
       } catch {
         continue;
       }
+      // Checked again now: the file may be gone, or have grown, since it was attached.
+      let size: number;
       try {
-        if (a.kind === "image" && conn.caps.image && a.size <= MAX_IMAGE_BYTES) {
+        size = fs.statSync(a.path).size;
+      } catch {
+        out.push({ type: "text", text: `<file name="${a.name}" path="${a.path}" missing="true">It was attached, but is no longer there.</file>` });
+        continue;
+      }
+      try {
+        if (a.kind === "image" && conn.caps.image && size <= MAX_IMAGE_BYTES) {
           out.push({ type: "image", mimeType: a.mediaType, data: fs.readFileSync(a.path).toString("base64"), uri });
           continue;
         }
-        if (a.kind === "text" && a.size <= MAX_INLINE_TEXT) {
+        if (a.kind === "text" && size <= MAX_INLINE_TEXT) {
           const text = fs.readFileSync(a.path, "utf8");
           out.push(
             conn.caps.embeddedContext
@@ -485,7 +493,7 @@ export class AcpDriver implements AgentDriver {
       } catch {
         // unreadable now: name it instead
       }
-      out.push({ type: "resource_link", uri, name: a.name, mimeType: a.mediaType, size: a.size });
+      out.push({ type: "resource_link", uri, name: a.name, mimeType: a.mediaType, size });
     }
     return out;
   }

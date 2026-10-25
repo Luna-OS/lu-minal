@@ -197,7 +197,7 @@ function runToFile(exe: string, args: string[], file: string, timeoutMs = 8000):
   return new Promise((resolve) => {
     let fd: number;
     try {
-      fd = fs.openSync(file, "w");
+      fd = fs.openSync(file, "w", 0o600);
     } catch {
       resolve(null);
       return;
@@ -275,9 +275,27 @@ export function clipboardImageCommands(
  * null when the clipboard holds no picture (or no clipboard tool is there).
  */
 export async function clipboardImage(dir: string): Promise<Attachment | null> {
-  fs.mkdirSync(dir, { recursive: true });
+  // Only the user may open the screenshots (they can show anything that was on the screen), also
+  // when the folder existed before with looser modes. Windows has no modes; the profile protects it.
+  const posix = process.platform !== "win32";
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (posix) {
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {
+      // not ours to change; the file itself is 0600
+    }
+  }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const file = path.join(dir, `clipboard-${stamp}-${process.pid}.png`);
+  if (posix) {
+    try {
+      // Made first, so whichever tool writes the picture (osascript, xclip) writes it into a private file.
+      fs.closeSync(fs.openSync(file, "w", 0o600));
+    } catch {
+      // the tools below can't write it either
+    }
+  }
   for (const cmd of clipboardImageCommands(file)) {
     const exe = findProgram(cmd.exe);
     if (!exe) continue;
@@ -322,7 +340,15 @@ export function messageParts(text: string, attachments: Attachment[], opts: { im
   const lines: string[] = [];
   const images: AttachmentPart[] = [];
   for (const a of attachments) {
-    if (a.kind === "image" && opts.images && a.size <= MAX_IMAGE_BYTES) {
+    // Checked again now: the file may be gone, or have grown, since it was attached.
+    let size: number;
+    try {
+      size = fs.statSync(a.path).size;
+    } catch {
+      lines.push(`- ${a.path} (${a.kind === "image" ? "picture" : a.kind}, no longer there)`);
+      continue;
+    }
+    if (a.kind === "image" && opts.images && size <= MAX_IMAGE_BYTES) {
       try {
         images.push({ type: "image", mediaType: a.mediaType, data: fs.readFileSync(a.path).toString("base64"), name: a.name });
         lines.push(`- ${a.path} (picture, shown below)`);
@@ -331,7 +357,7 @@ export function messageParts(text: string, attachments: Attachment[], opts: { im
         // fall through to the path
       }
     }
-    if (a.kind === "text" && a.size <= MAX_INLINE_TEXT) {
+    if (a.kind === "text" && size <= MAX_INLINE_TEXT) {
       try {
         const body = fs.readFileSync(a.path, "utf8");
         lines.push(`- ${a.path}:\n\`\`\`\n${body.replace(/```/g, "`\u200b``")}\n\`\`\``);
@@ -340,8 +366,15 @@ export function messageParts(text: string, attachments: Attachment[], opts: { im
         // fall through to the path
       }
     }
-    const why = a.kind === "image" ? (opts.images ? "picture, too large to show" : "picture; this model can't see pictures") : a.kind;
-    lines.push(`- ${a.path} (${why}, ${describeAttachment(a).split(" · ")[1]})`);
+    const why =
+      a.kind !== "image"
+        ? a.kind
+        : !opts.images
+          ? "picture; this model can't see pictures"
+          : size > MAX_IMAGE_BYTES
+            ? "picture, too large to show"
+            : "picture, could not be read";
+    lines.push(`- ${a.path} (${why}, ${describeAttachment({ ...a, size }).split(" · ")[1]})`);
   }
   const body = `${text.trim() ? `${text.trim()}\n\n` : ""}Attached files:\n${lines.join("\n")}`;
   return [{ type: "text", text: body }, ...images];

@@ -256,3 +256,13 @@ export class ThemeManager {
     this.issues = problems;
   }
 }
+
+/**
+ * The themes the app starts with: `initial` (the saved theme), or the `flag` (--theme) one for this
+ * run. `unknown` is a flag that names no theme, so the app can say so; the saved theme stays then.
+ */
+export function startThemes(opts: ThemeManagerOptions & { flag?: string }): { themes: ThemeManager; unknown: string | null } {
+  const themes = new ThemeManager(opts);
+  const unknown = opts.flag !== undefined && !themes.set(opts.flag) ? opts.flag : null;
+  return { themes, unknown };
+}

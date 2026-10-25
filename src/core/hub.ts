@@ -400,6 +400,7 @@ export class Hub implements ProjectRuntime {
         input: u.input,
         output: u.output,
         costUsd: u.costUsd,
+        turns: u.turn ? 1 : 0,
       });
     agent.onLines = (added, removed) => this.stats.addLines(added, removed);
   }

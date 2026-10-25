@@ -90,6 +90,7 @@ export function MessageDialog(props: {
   title: string;
   lines: Array<string | { text: string; color?: string }>;
   hints?: string;
+  hintsColor?: string;
   onClose: () => void;
   onKey?: (input: string) => boolean;
 }) {
@@ -100,14 +101,25 @@ export function MessageDialog(props: {
     const item = typeof l === "string" ? { text: l } : l;
     return wrap(item.text, width - 4).map((t) => ({ text: t, color: item.color }));
   });
+  const height = Math.min(rows.length + 4, Math.max(6, size.rows - 2));
+  // Only the rows that fit (more would be squashed over each other); the arrows scroll the rest in.
+  const room = Math.max(1, height - 4);
+  const maxTop = Math.max(0, rows.length - room);
+  const [top, setTop] = useState(0);
+  const first = Math.min(top, maxTop);
   useInput((input, key) => {
     if (props.onKey?.(input)) return;
+    if (key.upArrow) return setTop(Math.max(0, first - 1));
+    if (key.downArrow) return setTop(Math.min(maxTop, first + 1));
+    if (key.pageUp) return setTop(Math.max(0, first - room));
+    if (key.pageDown) return setTop(Math.min(maxTop, first + room));
     if (key.escape || key.return) props.onClose();
   });
+  const hints = props.hints ?? "enter / esc close";
   return (
-    <DialogBox theme={props.theme} width={width} height={Math.min(rows.length + 4, size.rows - 2)} title={props.title} hints={props.hints ?? "enter / esc close"}>
-      {rows.map((r, i) => (
-        <Text key={i} color={r.color ?? c.muted} wrap="truncate">
+    <DialogBox theme={props.theme} width={width} height={height} title={props.title} hints={maxTop ? `↑↓ scroll · ${hints}` : hints} hintsColor={props.hintsColor}>
+      {rows.slice(first, first + room).map((r, i) => (
+        <Text key={first + i} color={r.color ?? c.muted} wrap="truncate">
           {r.text || " "}
         </Text>
       ))}

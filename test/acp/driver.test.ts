@@ -148,6 +148,16 @@ function setup(
 }
 
 describe("AcpDriver", () => {
+  it("tells the statistics one turn per prompt, with the cost reported on its own", async () => {
+    const t = setup();
+    const turns: boolean[] = [];
+    t.agent.onUsage = (u) => void turns.push(u.turn);
+    await t.driver.start();
+    await t.say("hello");
+    expect(turns.length).toBeGreaterThan(1);
+    expect(turns.filter(Boolean)).toHaveLength(1);
+  });
+
   it("runs a turn: handshake, session with lu-minal's MCP server, streamed text, usage", async () => {
     const t = setup();
     await t.driver.start();

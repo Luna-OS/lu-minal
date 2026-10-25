@@ -63,6 +63,8 @@ function Screen({ onExit }: { onExit: () => void }) {
   const focused = project?.focused;
   const anyBusy = hub.projects.some((p) => p.agents.some((a) => a.busy));
   const { frame } = useAnimation({ interval: 140, isActive: anyBusy });
+  // A slow tick while idle, so the header clock moves on and "Done!" turns back into "Ready".
+  useAnimation({ interval: 1000, isActive: !anyBusy && Boolean(project) });
   const now = Date.now();
 
   // ---- UI services ---------------------------------------------------------------------------
@@ -217,8 +219,10 @@ function Screen({ onExit }: { onExit: () => void }) {
         focused.interrupt();
         return;
       }
-      if (now - lastCtrlC.current < 1500) return quit();
-      lastCtrlC.current = now;
+      // The time of this press, not of the last render, which can be seconds old.
+      const pressed = Date.now();
+      if (pressed - lastCtrlC.current < 1500) return quit();
+      lastCtrlC.current = pressed;
       hub.toast("Press ctrl+c again to quit.", "info");
       return;
     }

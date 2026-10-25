@@ -36,7 +36,8 @@ function providerItem(hub: Hub, p: ProviderInfo, group: string): ListItem {
     }
   } else if (p.kind === "acp") {
     const preset = hub.registry.acpPreset(p.id);
-    hint = connected ? (preset?.signIn ?? "signs in with its own CLI") : `not installed - ${preset?.install ?? hub.registry.connectionHint(p.id)}`;
+    // The badge says whether it is installed; the hint is what to do about it.
+    hint = connected ? (preset?.signIn ?? "signs in with its own CLI") : (preset?.install ?? hub.registry.connectionHint(p.id));
     badge = connected ? { text: "✓ installed", color: c.success } : { text: "not installed", color: c.faint };
   } else if (p.auth === "optional") {
     const src = keySource(hub, p);

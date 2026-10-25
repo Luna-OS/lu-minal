@@ -666,8 +666,9 @@ export class ClaudeCodeDriver implements AgentDriver {
         this.toolResult(ev.toolUseId, ev.text, ev.isError, ev.meta);
         return;
       case "context":
+        // A message_start: one model request (its output and the turn's cost follow on their own).
         this.streamedUsage = true;
-        agent.addUsage({ input: ev.tokens, context: ev.tokens });
+        agent.addUsage({ input: ev.tokens, context: ev.tokens, turn: true });
         return;
       case "output":
         this.streamedUsage = true;
@@ -799,7 +800,8 @@ export class ClaudeCodeDriver implements AgentDriver {
       !this.streamedUsage && ev.usage
         ? { input: ev.usage.input + ev.usage.cacheRead + ev.usage.cacheWrite, output: ev.usage.output }
         : {};
-    agent.addUsage({ ...usage, costUsd: cost });
+    // Without partial messages, the result's usage is the only report of the turn.
+    agent.addUsage({ ...usage, costUsd: cost, turn: !this.streamedUsage && Boolean(ev.usage) });
     this.streamedUsage = false;
     if (ev.sessionId) agent.sessionId = ev.sessionId;
 

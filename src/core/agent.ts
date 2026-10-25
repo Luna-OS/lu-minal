@@ -113,7 +113,7 @@ export class Agent {
   driver: AgentDriver | null = null;
 
   /** Told about every usage report and every diff (the Hub keeps statistics with them). */
-  onUsage: ((u: { input: number; output: number; costUsd: number }) => void) | null = null;
+  onUsage: ((u: { input: number; output: number; costUsd: number; turn: boolean }) => void) | null = null;
   onLines: ((added: number, removed: number) => void) | null = null;
 
   constructor(
@@ -246,13 +246,14 @@ export class Agent {
     this.changed();
   }
 
-  addUsage(u: { input?: number; output?: number; context?: number; costUsd?: number }): void {
+  /** `turn`: this report is the one for a model request (drivers report a request in pieces). */
+  addUsage(u: { input?: number; output?: number; context?: number; costUsd?: number; turn?: boolean }): void {
     if (u.input) this.tokensIn += u.input;
     if (u.output) this.tokensOut += u.output;
     if (u.context !== undefined) this.contextTokens = u.context;
     if (u.costUsd) this.costUsd += u.costUsd;
-    if (u.input || u.output || u.costUsd) {
-      this.onUsage?.({ input: u.input ?? 0, output: u.output ?? 0, costUsd: u.costUsd ?? 0 });
+    if (u.input || u.output || u.costUsd || u.turn) {
+      this.onUsage?.({ input: u.input ?? 0, output: u.output ?? 0, costUsd: u.costUsd ?? 0, turn: u.turn ?? false });
     }
     this.changed();
   }

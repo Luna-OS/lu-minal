@@ -25,7 +25,9 @@ import {
 import { McpServer } from "../mcp/server.js";
 import { writeFileAtomicSync } from "../platform/files.js";
 import { samePath, stateDir as defaultStateDir } from "../platform/paths.js";
+import { detectInstall } from "../platform/install-info.js";
 import { findProgram, withProgramPath } from "../platform/process.js";
+import { applyUpdate, checkForUpdate, updatePlan, type UpdateCheck } from "../platform/update.js";
 import { AuthStore, keyFor } from "../providers/auth.js";
 import { fallbackCatalog, loadCatalog, type Catalog } from "../providers/catalog.js";
 import type { ModelRef } from "../providers/models.js";
@@ -82,6 +84,8 @@ export interface HubOptions {
   offline?: boolean;
   /** Start the Roblox bridge and the MCP server (off in tests). */
   servers?: boolean;
+  /** Ask GitHub once a day whether a newer lu-minal is out (off in tests). */
+  checkUpdates?: boolean;
 }
 
 /** What survives closing lu-minal: every tab, its agents with their logs and conversations. */
@@ -138,6 +142,12 @@ export class Hub implements ProjectRuntime {
   balances = new Map<string, ProviderBalance>();
   toasts: Toast[] = [];
   cloudSessions: CloudSession[] = [];
+  /** A newer lu-minal than this one, from the daily check; null when there is none (or not known). */
+  updateAvailable: { version: string; url: string } | null = null;
+  /** What /update is doing right now ("Downloading ...: 40%"), or null. */
+  updateStatus: string | null = null;
+  /** The version /update installed (it runs after a restart). */
+  updateInstalled: string | null = null;
   catalogSource: Catalog["source"] | null = null;
   ready = false;
 
@@ -250,6 +260,10 @@ export class Hub implements ProjectRuntime {
     if (usageSeconds > 0) every(Math.max(30, usageSeconds) * 1000, () => void this.refreshUsage());
     every(5 * 60_000, () => void this.refreshBalances());
     every(10 * 60_000, () => void this.refreshClaude());
+    if (this.opts.checkUpdates) {
+      void this.checkForUpdates();
+      every(6 * 60 * 60_000, () => void this.checkForUpdates());
+    }
     // The clock in the header and the agents' elapsed times.
     every(1000, () => {
       if (this.projects.some((p) => p.agents.some((a) => a.busy))) this.notifier.changed();
@@ -746,6 +760,68 @@ export class Hub implements ProjectRuntime {
     const ok = this.themes.set(name);
     if (!ok) this.toast(`There is no theme "${name}".`, "warning");
     return ok;
+  }
+
+  // ---- updates ---------------------------------------------------------------------------------
+
+  /** Whether a newer lu-minal is out (GitHub is asked at most once a day, unless `force`). */
+  async checkForUpdates(force = false): Promise<UpdateCheck | null> {
+    let check: UpdateCheck | null;
+    try {
+      check = await checkForUpdate({
+        current: VERSION,
+        cacheFile: path.join(this.opts.cacheDir, "update-check.json"),
+        fetchImpl: this.opts.fetchImpl,
+        force,
+      });
+    } catch (err) {
+      if (force) throw err;
+      return null;
+    }
+    const before = this.updateAvailable?.version;
+    const fresh = check?.newer && check.version !== this.updateInstalled ? { version: check.version, url: check.url } : null;
+    this.updateAvailable = fresh;
+    if (fresh && fresh.version !== before && !force) this.toast(`lu-minal ${fresh.version} is out - /update installs it.`, "info");
+    this.notifier.changed();
+    return check;
+  }
+
+  /** /update: installs the newest lu-minal the way this copy was installed. */
+  async installUpdate(): Promise<void> {
+    if (this.updateStatus) {
+      this.toast("lu-minal is already updating.", "info");
+      return;
+    }
+    const status = (line: string) => {
+      this.updateStatus = line;
+      this.notifier.changed();
+    };
+    status("Looking for a newer lu-minal...");
+    try {
+      const check = await this.checkForUpdates(true);
+      if (!check?.newer) {
+        this.toast(`lu-minal ${VERSION} is the newest version.`, "success");
+        return;
+      }
+      if (check.version === this.updateInstalled) {
+        this.toast(`lu-minal ${check.version} is installed - quit and start lu-minal again to use it.`, "info");
+        return;
+      }
+      const plan = updatePlan(detectInstall());
+      if (plan.kind === "manual") {
+        this.toast(`lu-minal ${check.version} is out. This copy runs from a checkout: ${plan.commands.join(" && ")}`, "info");
+        return;
+      }
+      const message = await applyUpdate(plan, check.version, { fetchImpl: this.opts.fetchImpl, onStatus: status });
+      this.updateInstalled = check.version;
+      this.updateAvailable = null;
+      this.toast(message, "success");
+    } catch (err) {
+      this.toast(`Update failed: ${errText(err)}`, "error");
+    } finally {
+      this.updateStatus = null;
+      this.notifier.changed();
+    }
   }
 
   // ---- toasts and saving -----------------------------------------------------------------------

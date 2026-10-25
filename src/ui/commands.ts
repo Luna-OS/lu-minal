@@ -223,6 +223,7 @@ export const COMMANDS: Command[] = [
     },
   },
   { name: "palette", aliases: ["commands"], description: "All commands", keys: "ctrl+k", run: (ctx) => ctx.dialogs.palette() },
+  { name: "update", aliases: ["upgrade"], description: "Install the newest lu-minal", run: (ctx) => void ctx.hub.installUpdate() },
   { name: "quit", aliases: ["exit", "q"], description: "Quit lu-minal", keys: "ctrl+q", run: (ctx) => ctx.ui.quit() },
 ];
 

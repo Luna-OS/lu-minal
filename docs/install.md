@@ -239,6 +239,28 @@ colours look washed out in a terminal that does support true colour, `export COL
 Every keyboard shortcut also has a slash command (`/help`), for terminals that keep some keys
 for themselves.
 
+## Updates
+
+From 0.1.1 on, lu-minal asks GitHub once a day whether a newer release is out (one request to
+`github.com/Luna-OS/lu-minal/releases/latest`, nothing about you is sent) and shows
+`↑ 0.1.2 /update` in the tab bar. `/update` in lu-minal, or `lu-minal update` in a shell, installs
+it the way this copy was installed:
+
+| Installed with | `/update` |
+| --- | --- |
+| install.sh, install.ps1, a standalone binary | downloads the new binary next to the old one, checks it against `SHA256SUMS` and swaps it in (on Windows the running exe is moved aside and removed on a later start) |
+| the Windows setup | downloads the new `lu-minal-windows-*-setup.exe`, checks it and runs it silently: same folder, same tasks, and Settings > Apps shows the new version |
+| the macOS app | downloads `lu-minal-macos-app.zip`, checks it and puts the new **LuMinal.app** in place of the old one |
+| a checkout (from source) | only shows the commands: `git pull`, `npm ci`, `npm run build` |
+
+The running lu-minal keeps going; quit it and start it again to use the new version (your tabs
+come back). If the folder can't be written (a binary in `/usr/local/bin` owned by root, an app
+in a folder you can't change), it says so: run the install script again (with sudo) or download
+the release by hand. `lu-minal update --check` only says whether there is a newer version.
+
+To turn the daily check off, set `"updates": { "check": false }` in `config.json` (see below), or
+`LU_MINAL_NO_UPDATE_CHECK=1`; `/update` still works.
+
 ## Where lu-minal keeps its files
 
 | | Windows | macOS | Linux |

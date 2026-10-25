@@ -77,6 +77,11 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
 Then run `lu-minal` in a project folder. Details for every platform (Windows Terminal profile,
 the Linux desktop entry, terminals with true colour) are in [docs/install.md](docs/install.md).
 
+**Updates** (from 0.1.1 on): lu-minal asks GitHub once a day whether a newer version is out and
+shows `↑ 0.1.2 /update` in the tab bar. `/update` (or `lu-minal update` in a shell) installs it the
+way lu-minal was installed, checked against the release's `SHA256SUMS`; start lu-minal again to use
+it, and your tabs come back. See [docs/install.md](docs/install.md#updates).
+
 ### From source
 
 lu-minal is not published to npm yet. With Node.js 22 or newer and git, on any system:

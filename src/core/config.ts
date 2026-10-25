@@ -78,6 +78,8 @@ export interface Config {
   recent: string[];
   /** Folders whose own agent settings the user didn't trust (a clone answered "not now", /trust off). */
   untrusted: string[];
+  /** Ask GitHub once a day whether a newer lu-minal is out (/update installs it). */
+  updates: { check: boolean };
   [key: string]: unknown;
 }
 
@@ -100,6 +102,7 @@ export function defaultConfig(): Config {
     acpAgents: {},
     recent: [],
     untrusted: [],
+    updates: { check: true },
   };
 }
 
@@ -116,7 +119,7 @@ export function mergeConfig(stored: unknown): Config {
   const base = defaultConfig();
   if (!isObject(stored)) return base;
   const out: Config = { ...base, ...stored } as Config;
-  for (const key of ["sky", "github", "roblox"] as const) {
+  for (const key of ["sky", "github", "roblox", "updates"] as const) {
     out[key] = { ...base[key], ...(isObject(stored[key]) ? stored[key] : {}) } as never;
   }
   if (!Array.isArray(out.forgejo)) out.forgejo = base.forgejo;

@@ -189,13 +189,19 @@ function Screen({ onExit }: { onExit: () => void }) {
       }
       return;
     }
-    setAttachments((a) => ({ ...a, [agent.id]: [] }));
     const at = /^@(\S+)\s+([\s\S]+)$/.exec(value);
     if (at) {
       const got = project.send("you", at[1], at[2], files);
-      if (!got.length) hub.toast(`Nobody called "${at[1]}" here.`, "warning");
+      if (!got.length) {
+        // A mistyped name: the text and the attachments stay, so it can be fixed and sent again.
+        setEditor(agent, { value, cursor: value.length });
+        hub.toast(`Nobody called "${at[1]}" here.`, "warning");
+        return;
+      }
+      setAttachments((a) => ({ ...a, [agent.id]: [] }));
       return;
     }
+    setAttachments((a) => ({ ...a, [agent.id]: [] }));
     agent.deliver({ from: "you", text: value, attachments: files.length ? files : undefined });
   };
 

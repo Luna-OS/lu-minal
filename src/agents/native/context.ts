@@ -4,7 +4,7 @@
 import type { AgentInput } from "../../core/agent.js";
 import { messageParts } from "../../core/attachments.js";
 import type { ModelInfo } from "../../providers/models.js";
-import type { ChatMessage, TokenUsage, ToolResultMessage, UserMessage } from "../../providers/types.js";
+import type { ChatMessage, ImagePart, TokenUsage, ToolResultMessage, UserMessage } from "../../providers/types.js";
 
 /** What an old tool result is replaced with once the context gets full. */
 export const REMOVED_OUTPUT = "[output removed to save context]";
@@ -14,6 +14,15 @@ export const KEEP_TOOL_RESULTS = 6;
 
 /** The context budget when the catalog doesn't know the model's window. */
 export const UNKNOWN_CONTEXT_LIMIT = 120_000;
+
+/**
+ * The pictures one request carries at most: base64 characters (two at the 5 MB per-picture limit)
+ * and how many. Every request sends the whole conversation again, and providers refuse large ones
+ * (Gemini above 20 MB of pictures, Anthropic above 32 MB; with more than 20 pictures Anthropic also
+ * refuses any larger than 2000 px), so the oldest pictures make room for newer ones.
+ */
+export const MAX_IMAGE_CHARS = 15 * 1024 * 1024;
+export const MAX_IMAGES = 20;
 
 /** How a message reads in the conversation: the user's as is, a teammate's with "[message from x]". */
 export function formatInput(input: AgentInput): string {
@@ -68,6 +77,39 @@ export function trimToolResults(messages: ChatMessage[], keep = KEEP_TOOL_RESULT
     trimmed++;
   }
   return trimmed;
+}
+
+/**
+ * Keeps the newest pictures, up to `maxChars` of base64 and `maxImages`, and takes the older ones
+ * out of their user messages (in place), with a note in the text. Returns how many were taken out.
+ */
+export function trimImages(messages: ChatMessage[], maxChars = MAX_IMAGE_CHARS, maxImages = MAX_IMAGES): number {
+  let chars = 0;
+  let count = 0;
+  let full = false;
+  let dropped = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user" || !m.images?.length) continue;
+    const keep: ImagePart[] = [];
+    for (const img of m.images) {
+      // Once one doesn't fit, every older one goes too (the newest are what the model needs).
+      full ||= count >= maxImages || chars + img.data.length > maxChars;
+      if (full) break;
+      keep.push(img);
+      chars += img.data.length;
+      count++;
+    }
+    const left = m.images.length - keep.length;
+    if (!left) continue;
+    const note = keep.length
+      ? `[the last ${left} of these ${m.images.length} pictures left out to keep the request small]`
+      : `[${left} picture(s) left out to keep the request small]`;
+    const { images: _images, ...rest } = m;
+    messages[i] = { ...rest, content: `${m.content}\n${note}`, ...(keep.length ? { images: keep } : {}) };
+    dropped += left;
+  }
+  return dropped;
 }
 
 /** What `NativeDriver.snapshot()` returns. */

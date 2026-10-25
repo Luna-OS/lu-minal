@@ -579,6 +579,26 @@ describe("AcpDriver", () => {
     expect(u.calls("session/prompt")[0].params.prompt[3].text).toContain("# notes");
   });
 
+  it("checks the files again when the prompt goes out", async () => {
+    const t = setup();
+    const png = path.join(t.dir, "shot.png");
+    fs.writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]));
+    const notes = path.join(t.dir, "notes.md");
+    const attachments = [
+      { id: "a1", name: "shot.png", path: png, kind: "image" as const, mediaType: "image/png", size: 8 },
+      { id: "a2", name: "notes.md", path: notes, kind: "text" as const, mediaType: "text/markdown", size: 8 },
+    ];
+    // Since they were attached, the picture grew past the per-picture limit and the notes were deleted.
+    fs.writeFileSync(png, Buffer.alloc(5 * 1024 * 1024 + 1));
+    await t.driver.start();
+    t.agent.deliver({ from: "you", text: "attach", attachments });
+    await t.settled();
+    expect(t.texts()).toEqual(["text text link:shot.png text"]);
+    const blocks = t.calls("session/prompt")[0].params.prompt;
+    expect(blocks[2]).toMatchObject({ type: "resource_link", name: "shot.png", size: 5 * 1024 * 1024 + 1 });
+    expect(blocks[3]).toEqual({ type: "text", text: `<file name="notes.md" path="${notes}" missing="true">It was attached, but is no longer there.</file>` });
+  });
+
   it("refuses file system and terminal requests (they are not advertised)", async () => {
     const t = setup();
     await t.driver.start();

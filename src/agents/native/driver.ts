@@ -26,6 +26,7 @@ import {
   userMessageFor,
   loadConversation,
   saveConversation,
+  trimImages,
   trimToolResults,
   type SavedConversation,
 } from "./context.js";
@@ -324,8 +325,13 @@ export class NativeDriver implements AgentDriver {
     }
   }
 
-  /** Drops old tool output when the last request filled most of the context window. */
+  /**
+   * Keeps the pictures within what one request may carry, and drops old tool output when the last
+   * request filled most of the context window.
+   */
   private manageContext(resolved: ResolvedModel): void {
+    const images = trimImages(this.messages);
+    if (images) this.deps.agent.info(`Left ${images} picture(s) out of the conversation to keep requests small; the newest still go along.`);
     if (this.lastInputTokens <= contextLimit(resolved.model)) return;
     const trimmed = trimToolResults(this.messages);
     if (trimmed) this.deps.agent.info(`Context is getting full: removed the output of ${trimmed} old tool calls.`);

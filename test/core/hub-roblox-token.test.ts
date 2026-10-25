@@ -27,9 +27,9 @@ function tempDir(): string {
   return d;
 }
 
-function makeHub(dir: string, configPath: string): Hub {
+function makeHub(dir: string, configPath: string, config = defaultConfig()): Hub {
   return new Hub({
-    config: defaultConfig(),
+    config,
     configPath,
     auth: new AuthStore(path.join(dir, "auth.json")),
     themes: new ThemeManager({ dir: path.join(dir, "themes") }),
@@ -52,6 +52,12 @@ describe("the Hub and the Roblox bridge token", () => {
     // Never null: a bridge without a token would accept any program on this machine.
     expect(hub.robloxToken).toMatch(/^[0-9a-f]{64}$/);
     expect(hub.toasts.some((t) => t.level === "warning" && t.text.includes("Roblox"))).toBe(true);
+    // Someone who turned the Studio bridge off isn't told about it.
+    const config = defaultConfig();
+    config.roblox.enabled = false;
+    const quiet = makeHub(dir, path.join(blocked, "config.json"), config);
+    expect(quiet.robloxToken).toMatch(/^[0-9a-f]{64}$/);
+    expect(quiet.toasts.some((t) => t.text.includes("Roblox"))).toBe(false);
   });
 
   it("installs the plugin from /roblox with the running bridge's token, even after the file was deleted", async () => {

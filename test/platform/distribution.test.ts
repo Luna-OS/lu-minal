@@ -290,9 +290,9 @@ describe("the install instructions", () => {
   });
 
   it("offer a build from source instead", () => {
-    expect(read("README.md")).toContain(
-      "| **From source** (any OS, Node 22+) | `git clone https://github.com/Luna-OS/lu-minal && cd lu-minal && npm ci && npm run build && npm link` |",
-    );
+    // One command per line in the section: Windows PowerShell 5.1 has no `&&`.
+    expect(read("README.md")).toContain("| **From source** (any OS, Node 22+) | `git clone`, `npm ci`, `npm run build`, `npm link` – see [From source](#from-source) |");
+    expect(read("README.md")).not.toMatch(/npm ci && npm run build/);
     expect(read("docs", "install.md")).toContain("npm link");
     for (const file of ["install.sh", "install.ps1", "linux/install-desktop.sh", "macos/Sources/LuMinal/Launcher.swift", "macos/README.md"]) {
       expect(read(file), file).toMatch(/https:\/\/github\.com\/(Luna-OS\/lu-minal|\$REPO)#from-source/);

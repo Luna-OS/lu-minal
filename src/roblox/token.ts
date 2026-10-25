@@ -1,7 +1,8 @@
 // The secret lu-minal shares with its Roblox Studio plugin: 32 random bytes (hex) in the config
 // dir, created once with mode 0600 and baked into the plugin by the installer. The bridge refuses
 // requests without it (src/roblox/bridge.ts), so no other program on this machine can pose as
-// Studio. It is not a sign-in: reinstalling the plugin after deleting the file makes a new one.
+// Studio. It is not a sign-in: for a new one, delete the file, restart lu-minal and reinstall the
+// plugin.
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";

@@ -172,7 +172,10 @@ export class Hub implements ProjectRuntime {
       } catch (err) {
         // Can't be saved: a token for this run only (never none, which would let anyone in).
         token = randomBytes(32).toString("hex");
-        this.toast(`Roblox: could not save the plugin token (${errText(err)}); install the plugin again after every start.`, "warning");
+        // Only worth saying to someone who uses the Studio bridge; the advice comes first.
+        if (this.config.roblox.enabled) {
+          this.toast(`Roblox: install the plugin again after every start (the plugin token can't be saved: ${errText(err)}).`, "warning");
+        }
       }
     }
     this.robloxToken = token;

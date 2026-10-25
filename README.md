@@ -71,7 +71,7 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
 | **Windows** (PowerShell) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` |
 | **macOS app** | `lu-minal-macos-app.dmg` (or `.zip`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest): **LuMinal.app**, a native Swift window running lu-minal |
 | **Standalone binary** | `lu-minal-linux-x64`, `lu-minal-macos-arm64`, `lu-minal-windows-x64.exe`, … from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), with `SHA256SUMS` (all files: [docs/install.md](docs/install.md)) |
-| **From source** (any OS, Node 22+) | `git clone https://github.com/Luna-OS/lu-minal && cd lu-minal && npm ci && npm run build && npm link` |
+| **From source** (any OS, Node 22+) | `git clone`, `npm ci`, `npm run build`, `npm link` – see [From source](#from-source) |
 
 Then run `lu-minal` in a project folder. Details for every platform (Windows Terminal profile,
 the Linux desktop entry, terminals with true colour) are in [docs/install.md](docs/install.md).

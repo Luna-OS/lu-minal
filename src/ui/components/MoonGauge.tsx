@@ -81,8 +81,10 @@ export interface GaugeOptions {
  * header can use them in its own rows). Parts are dropped from the end when room runs out: the
  * reset time, then the label.
  */
-export function gaugeSegs({ label, window, theme, width, compact = false, now = Date.now() }: GaugeOptions): GaugeSeg[] {
+export function gaugeSegs({ label, window: known, theme, width, compact = false, now = Date.now() }: GaugeOptions): GaugeSeg[] {
   const c = theme.colors;
+  // A window whose reset time has passed starts again from nothing (until the next report).
+  const window = known && known.resetsAt != null && known.resetsAt <= now ? { utilization: 0, resetsAt: null } : known;
   const room = Math.max(0, Math.floor(width));
   if (!room) return [];
 

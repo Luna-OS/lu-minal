@@ -1,7 +1,9 @@
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { eventsFrom, type ClaudeRateLimitEvent } from "../../src/agents/claude-code/events.js";
-import { applyRateLimit, fetchPlanUsage, parseUsage, toMs, USAGE_ARGS } from "../../src/agents/claude-code/usage.js";
+import { applyRateLimit, fetchPlanUsage, mergeUsage, parseUsage, readSavedUsage, toMs, USAGE_ARGS, writeSavedUsage } from "../../src/agents/claude-code/usage.js";
 import type { PlanUsage } from "../../src/core/types.js";
 
 const NOW = Date.UTC(2026, 9, 4, 8, 0);
@@ -259,5 +261,40 @@ describe("applyRateLimit", () => {
     const next = applyRateLimit(after, documented, NOW + 1);
     expect(next.session).toEqual(after.session);
     expect(next.week).toEqual({ utilization: 0.8, resetsAt: 1793318400000 });
+  });
+});
+
+describe("keeping the limits between reports", () => {
+  const known: PlanUsage = {
+    available: true,
+    plan: "max",
+    session: { utilization: 0.42, resetsAt: NOW + 3_600_000 },
+    week: { utilization: 0.1, resetsAt: NOW + 86_400_000 },
+    models: [{ name: "Opus", utilization: 0.3, resetsAt: null }],
+    extra: null,
+    at: NOW,
+  };
+
+  it("keeps a window the next report leaves out, and takes every window it has", () => {
+    const later = { available: true, plan: null, session: null, week: { utilization: 0.12, resetsAt: NOW + 86_000_000 }, models: [], extra: null, at: NOW + 60_000 };
+    expect(mergeUsage(known, later)).toEqual({ ...known, week: later.week, at: NOW + 60_000 });
+    // An API-key login has no plan windows: nothing to keep.
+    const none = { ...later, available: false, week: null };
+    expect(mergeUsage(known, none)).toEqual(none);
+    expect(mergeUsage(null, later)).toEqual(later);
+  });
+
+  it("saves the numbers so the next start shows them at once", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-usage-"));
+    try {
+      const file = path.join(dir, "cache", "plan-usage.json");
+      expect(readSavedUsage(file)).toBeNull();
+      writeSavedUsage(file, { email: "ada@example.com", usage: known });
+      expect(readSavedUsage(file)).toEqual({ email: "ada@example.com", usage: known });
+      fs.writeFileSync(file, "{ broken");
+      expect(readSavedUsage(file)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

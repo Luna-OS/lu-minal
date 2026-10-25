@@ -11,7 +11,7 @@ import { readClaudeAccount } from "../agents/claude-code/account.js";
 import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
 import { claudeInstallCommand, claudeLoginArgs, claudeLogoutArgs } from "../agents/claude-code/login.js";
-import { applyRateLimit, fetchPlanUsage } from "../agents/claude-code/usage.js";
+import { applyRateLimit, fetchPlanUsage, mergeUsage, readSavedUsage, writeSavedUsage } from "../agents/claude-code/usage.js";
 import { NativeDriver } from "../agents/native/driver.js";
 import { systemPrompt } from "../agents/prompts.js";
 import {
@@ -154,6 +154,11 @@ export class Hub implements ProjectRuntime {
   private readonly opts: HubOptions;
   private timers: NodeJS.Timeout[] = [];
   private usageInFlight = false;
+  /** The next report after agents used the plan (see scheduleUsageRefresh). */
+  private usageRefreshTimer: NodeJS.Timeout | null = null;
+  private lastUsageRefresh = 0;
+  /** The account the numbers on disk belong to. */
+  private savedUsageEmail: string | null = null;
   private saveTimer: NodeJS.Timeout | null = null;
   private disposed = false;
 
@@ -163,6 +168,12 @@ export class Hub implements ProjectRuntime {
     this.auth = opts.auth;
     this.themes = opts.themes;
     this.stateDir = opts.stateDir ?? defaultStateDir();
+    // The last known plan limits, until the first report of this run comes in.
+    const saved = readSavedUsage(this.usageFile());
+    if (saved) {
+      this.planUsage = saved.usage;
+      this.savedUsageEmail = saved.email;
+    }
     this.stats = new StatsStore(opts.configPath ? path.join(this.stateDir, "stats.json") : null);
     // Every change may be worth saving; the save itself is debounced.
     this.notifier.subscribe(() => this.scheduleSave());
@@ -264,6 +275,10 @@ export class Hub implements ProjectRuntime {
       void this.checkForUpdates();
       every(6 * 60 * 60_000, () => void this.checkForUpdates());
     }
+    // The limits' countdowns (and a window that resets) move on while nobody works too.
+    every(30_000, () => {
+      if (this.planUsage) this.notifier.changed();
+    });
     // The clock in the header and the agents' elapsed times.
     every(1000, () => {
       if (this.projects.some((p) => p.agents.some((a) => a.busy))) this.notifier.changed();
@@ -274,6 +289,8 @@ export class Hub implements ProjectRuntime {
     if (this.disposed) return;
     this.disposed = true;
     for (const t of this.timers) clearInterval(t);
+    if (this.usageRefreshTimer) clearTimeout(this.usageRefreshTimer);
+    this.saveUsage();
     if (this.saveTimer) clearTimeout(this.saveTimer);
     // Save before the drivers stop, while their conversations are still there.
     this.saveSession();
@@ -378,6 +395,7 @@ export class Hub implements ProjectRuntime {
         onRateLimit: (ev) => {
           this.planUsage = applyRateLimit(this.planUsage, ev);
           this.notifier.changed();
+          this.scheduleUsageRefresh();
         },
       });
     } else if (this.registry.provider(agent.model.provider)?.kind === "acp") {
@@ -615,6 +633,12 @@ export class Hub implements ProjectRuntime {
     } catch {
       this.claudeAccount = null;
     }
+    // Numbers saved for another Claude account are not this one's.
+    const email = this.claudeAccount?.email ?? null;
+    if (this.claudeAccount?.loggedIn && email && this.savedUsageEmail && email !== this.savedUsageEmail) {
+      this.planUsage = null;
+      this.savedUsageEmail = null;
+    }
     this.notifier.changed();
   }
 
@@ -622,12 +646,14 @@ export class Hub implements ProjectRuntime {
     const account = this.claudeAccount;
     if (this.usageInFlight || !account?.exe || !account.loggedIn) return;
     this.usageInFlight = true;
+    this.lastUsageRefresh = Date.now();
     try {
       const usage = await fetchPlanUsage(account.exe);
       if (usage) {
-        // Keep live windows from running agents when the report has none.
-        this.planUsage = usage.available ? usage : { ...usage, session: this.planUsage?.session ?? null, week: this.planUsage?.week ?? null };
+        // A window the report leaves out keeps its last numbers (from a report or a running agent).
+        this.planUsage = mergeUsage(this.planUsage, usage);
         this.usageError = null;
+        this.saveUsage();
       }
     } catch (err) {
       this.usageError = errText(err);
@@ -635,6 +661,31 @@ export class Hub implements ProjectRuntime {
       this.usageInFlight = false;
       this.notifier.changed();
     }
+  }
+
+  /**
+   * A report soon after an agent used the plan, so the limits follow the work live: 5 s after the
+   * first rate-limit event, at most one every 30 s (claude.ai answers the reports, not the model).
+   */
+  private scheduleUsageRefresh(): void {
+    if (this.usageRefreshTimer || this.opts.offline || this.disposed) return;
+    const wait = Math.max(5_000, this.lastUsageRefresh + 30_000 - Date.now());
+    this.usageRefreshTimer = setTimeout(() => {
+      this.usageRefreshTimer = null;
+      void this.refreshUsage();
+    }, wait);
+    this.usageRefreshTimer.unref();
+  }
+
+  private usageFile(): string {
+    return path.join(this.opts.cacheDir, "plan-usage.json");
+  }
+
+  private saveUsage(): void {
+    if (!this.planUsage?.available) return;
+    const email = this.claudeAccount?.email ?? this.savedUsageEmail;
+    this.savedUsageEmail = email;
+    writeSavedUsage(this.usageFile(), { email, usage: this.planUsage });
   }
 
   async refreshBalances(): Promise<void> {
@@ -695,6 +746,8 @@ export class Hub implements ProjectRuntime {
     await run(exe, claudeLogoutArgs(), { env: this.claudeEnv() });
     await this.refreshClaude();
     this.planUsage = null;
+    this.savedUsageEmail = null;
+    fs.rmSync(this.usageFile(), { force: true });
     this.toast("Signed out of Claude.", "info");
   }
 

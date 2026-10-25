@@ -13,7 +13,9 @@
 //
 // Between two reports, the `rate_limit_event` lines of running agents move the session and week
 // windows (applyRateLimit).
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { PlanUsage, UsageWindow } from "../../core/types.js";
 import { runProgram, type RunResult } from "../../platform/process.js";
 import { claudeEnv } from "./cli.js";
@@ -183,4 +185,51 @@ export function applyRateLimit(prev: PlanUsage | null, ev: ClaudeRateLimitEvent,
     models,
     at: moved ? now : base.at,
   };
+}
+
+/**
+ * A new report over the last known numbers: what the report has wins, what it lacks (a window the
+ * claude.ai answer left out this time, the extra usage) stays as it was, so the gauges don't blank
+ * out between two reports. An API-key login (available: false) has no windows to keep.
+ */
+export function mergeUsage(prev: PlanUsage | null, next: PlanUsage): PlanUsage {
+  if (!prev || !next.available) return next;
+  const models = next.models.map((m) => ({ ...m }));
+  for (const m of prev.models) if (!models.some((x) => x.name === m.name)) models.push({ ...m });
+  return {
+    available: true,
+    plan: next.plan ?? prev.plan,
+    session: next.session ?? prev.session,
+    week: next.week ?? prev.week,
+    models,
+    extra: next.extra ?? prev.extra,
+    at: next.at,
+  };
+}
+
+/** The last known numbers on disk, so a new start shows them at once instead of "–". */
+export interface SavedUsage {
+  /** The Claude account they belong to (another login doesn't get them). */
+  email: string | null;
+  usage: PlanUsage;
+}
+
+export function readSavedUsage(file: string): SavedUsage | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<SavedUsage>;
+    const u = raw.usage;
+    if (!u || typeof u !== "object" || typeof u.at !== "number" || !Array.isArray(u.models)) return null;
+    return { email: typeof raw.email === "string" ? raw.email : null, usage: u };
+  } catch {
+    return null;
+  }
+}
+
+export function writeSavedUsage(file: string, saved: SavedUsage): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(saved)}\n`);
+  } catch {
+    // shown again after the next report
+  }
 }

@@ -186,7 +186,7 @@ export function AgentPanel(props: AgentPanelProps) {
   const borderColor =
     agent.status === "waiting" ? c.warning : focused ? c.borderFocus : agent.status === "error" ? c.error : c.border;
 
-  const placeholder = `Message ${agent.name}… (@name for a teammate, / for commands)`;
+  const placeholder = `Message ${agent.name}… (@name for a teammate, / for commands, ctrl+v for a picture)`;
   return (
     <Frame rect={rect} title={title} right={right} borderColor={borderColor} bg={bg}>
       <Box flexDirection="column" width={innerW} height={logRoom}>

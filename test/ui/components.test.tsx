@@ -109,6 +109,11 @@ describe("gaugeSegs", () => {
     expect(text).toBe("◑ session ━━━━━━━────────── 42% · 2h 13m");
   });
 
+  it("starts a window again from 0 % once its reset time has passed", () => {
+    const text = gaugeSegs({ label: "session", window: { utilization: 0.83, resetsAt: NOW - MIN }, theme: moon, width: 40, now: NOW }).map((s) => s.text).join("");
+    expect(text).toBe("○ session ─────────────────────────── 0%");
+  });
+
   it("colours the bar success, warning at 75 % and error at 90 %", () => {
     const bar = (u: number) => gaugeSegs({ label: "week", window: win(u), theme: moon, width: 40, now: NOW }).find((s) => s.text.includes(GAUGE_BAR.filled))!;
     expect(bar(0.3).color).toBe(moon.colors.success);

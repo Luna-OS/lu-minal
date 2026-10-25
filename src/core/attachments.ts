@@ -1,6 +1,7 @@
-// Pictures and files for a message: a screenshot from the clipboard (Ctrl+V / Alt+V), files
-// dragged into the terminal (the terminal pastes their paths) or added with /attach. Clipboard
-// images are saved in the state dir; dropped files are used where they are.
+// Pictures and files for a message: a screenshot or files copied in Explorer / Finder from the
+// clipboard (the terminal's paste key, Ctrl+V or Alt+V), files dragged into the terminal (the
+// terminal pastes their paths) or added with /attach. Clipboard images are saved in the state dir;
+// copied and dropped files are used where they are.
 //
 // How they reach the models: pictures go in as image blocks to models that can see; text files
 // up to MAX_INLINE_TEXT are inlined; anything else is named by its path, so an agent can read it
@@ -8,6 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { findProgram, runProgram, spawnProgram } from "../platform/process.js";
 import { newId } from "./emitter.js";
 
@@ -313,6 +315,116 @@ export async function clipboardImage(dir: string): Promise<Attachment | null> {
   }
   fs.rmSync(file, { force: true });
   return null;
+}
+
+/**
+ * The paths in a text/uri-list (what Linux file managers put on the clipboard for copied files):
+ * file: URLs only, comments and GNOME's leading "copy" / "cut" line skipped.
+ */
+export function parseUriList(text: string): string[] {
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t.startsWith("file:")) continue;
+    try {
+      out.push(fileURLToPath(t));
+    } catch {
+      // not a local file
+    }
+  }
+  return out;
+}
+
+/** Copied files as Windows PowerShell lists them (UTF-8, one path a line). */
+const WINDOWS_FILES = [
+  "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;",
+  "Add-Type -AssemblyName System.Windows.Forms;",
+  "foreach ($f in [System.Windows.Forms.Clipboard]::GetFileDropList()) { $f }",
+].join(" ");
+
+/**
+ * Copied files as macOS lists them, as JSON: each pasteboard item's file URL (Finder puts one item
+ * per file), else Finder's older list of paths.
+ */
+const MACOS_FILES = [
+  "ObjC.import('AppKit');",
+  "var pb = $.NSPasteboard.generalPasteboard;",
+  "var out = [];",
+  "var items = pb.pasteboardItems;",
+  "var n = items && !items.isNil() ? items.count : 0;",
+  "for (var i = 0; i < n; i++) {",
+  "  var s = items.objectAtIndex(i).stringForType('public.file-url');",
+  "  if (!s || s.isNil()) continue;",
+  "  var u = $.NSURL.URLWithString(s);",
+  "  if (u && !u.isNil() && u.isFileURL) out.push(u.path.js);",
+  "}",
+  "if (!out.length) {",
+  "  var names = pb.propertyListForType('NSFilenamesPboardType');",
+  "  var m = names && !names.isNil() ? names.count : 0;",
+  "  for (var j = 0; j < m; j++) out.push(ObjC.unwrap(names.objectAtIndex(j)));",
+  "}",
+  "JSON.stringify(out);",
+].join(" ");
+
+/**
+ * The files copied in a file manager (Explorer, Finder, Files, Dolphin ...) that are on the
+ * clipboard, or [] when there are none (or no clipboard tool is there).
+ */
+export async function clipboardFiles(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const lines = (out: string) => out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const run = async (exe: string, args: string[]) => {
+    const found = findProgram(exe, { env });
+    if (!found) return null;
+    const res = await runProgram(found, args, { timeoutMs: 10_000, env }).catch(() => null);
+    return res && res.code === 0 ? res.stdout : null;
+  };
+  if (platform === "win32") {
+    for (const exe of ["powershell.exe", "pwsh.exe"]) {
+      const out = await run(exe, ["-NoProfile", "-NonInteractive", "-STA", "-Command", WINDOWS_FILES]);
+      if (out !== null) return lines(out).filter((p) => path.win32.isAbsolute(p));
+    }
+    return [];
+  }
+  if (platform === "darwin") {
+    const out = await run("osascript", ["-l", "JavaScript", "-e", MACOS_FILES]);
+    if (out === null) return [];
+    let list: unknown;
+    try {
+      list = JSON.parse(out.trim() || "[]");
+    } catch {
+      list = lines(out);
+    }
+    return Array.isArray(list) ? list.filter((p): p is string => typeof p === "string" && p.startsWith("/")) : [];
+  }
+  // Linux: only when the clipboard offers a uri-list (asking for a missing type can hang xclip).
+  const tools = env.WAYLAND_DISPLAY
+    ? { types: ["wl-paste", ["--list-types"]], uris: ["wl-paste", ["--no-newline", "--type", "text/uri-list"]] }
+    : { types: ["xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"]], uris: ["xclip", ["-selection", "clipboard", "-t", "text/uri-list", "-o"]] };
+  const types = await run(tools.types[0] as string, tools.types[1] as string[]);
+  if (types === null || !lines(types).includes("text/uri-list")) return [];
+  const uris = await run(tools.uris[0] as string, tools.uris[1] as string[]);
+  return uris === null ? [] : parseUriList(uris);
+}
+
+/**
+ * What a paste brings from the clipboard: the files copied in a file manager (they win: Finder
+ * also puts the file's icon there as a picture), else the picture (a screenshot, an image copied
+ * in a browser) saved as a PNG in `dir`.
+ */
+export async function readClipboard(dir: string): Promise<{ files: string[]; image: Attachment | null }> {
+  const [files, image] = await Promise.all([clipboardFiles().catch(() => [] as string[]), clipboardImage(dir).catch(() => null)]);
+  const existing = files.filter((f) => {
+    try {
+      return fs.statSync(f).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (existing.length) {
+    if (image) fs.rmSync(image.path, { force: true });
+    return { files: existing, image: null };
+  }
+  return { files: [], image };
 }
 
 /** Why there is no picture: a hint per platform when the clipboard tools are missing. */

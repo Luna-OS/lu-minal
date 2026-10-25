@@ -22,6 +22,21 @@ final class MoonTerminalView: LocalProcessTerminalView {
         onKeyAfterExit?()
     }
 
+    /// Cmd+V. Files copied in Finder go to lu-minal as their file URLs, the way a drop on the
+    /// terminal pastes them, so lu-minal attaches them (the pasteboard's text is only their names).
+    /// Anything else is SwiftTerm's paste: with a picture and no text on the pasteboard that is an
+    /// empty paste, on which lu-minal reads the picture from the clipboard itself.
+    override func paste(_ sender: Any) {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        if !processEnded,
+           let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
+           !urls.isEmpty {
+            send(txt: "\u{1b}[200~" + urls.map { $0.absoluteString }.joined(separator: " ") + "\u{1b}[201~")
+            return
+        }
+        super.paste(sender)
+    }
+
     /// Hides SwiftTerm's scroll bar: lu-minal draws a full-screen UI in the alternate screen, where
     /// there is nothing to scroll (the mouse wheel still scrolls the normal screen).
     func hideScroller() {

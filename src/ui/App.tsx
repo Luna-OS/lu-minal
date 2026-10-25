@@ -8,7 +8,7 @@ import {
   attachmentFromPath,
   attachmentsDir,
   clipboardHint,
-  clipboardImage,
+  readClipboard,
   describeAttachment,
   droppedFiles,
   type Attachment,
@@ -134,19 +134,23 @@ function Screen({ onExit }: { onExit: () => void }) {
     setAttachments((a) => ({ ...a, [agent.id]: [...(a[agent.id] ?? []), ...list].slice(-10) }));
   };
   /** Attaches files by path; says why when one can't be attached. */
-  const attachPaths = (paths: string[]) => {
-    if (!focused) return;
+  const attachPathsTo = (agent: Agent, paths: string[]) => {
     const ok: Attachment[] = [];
     for (const p of paths) {
       const a = attachmentFromPath(p);
       if (typeof a === "string") hub.toast(a, "warning");
       else ok.push(a);
     }
-    addAttachments(focused, ok);
+    addAttachments(agent, ok);
   };
-  const pasteImage = async (agent: Agent) => {
-    const image = await clipboardImage(attachmentsDir(hub.stateDir)).catch(() => null);
-    if (image) addAttachments(agent, [image]);
+  const attachPaths = (paths: string[]) => {
+    if (focused) attachPathsTo(focused, paths);
+  };
+  /** The picture or the copied files on the clipboard, for the agent's next message. */
+  const pasteClipboard = async (agent: Agent) => {
+    const got = await readClipboard(attachmentsDir(hub.stateDir)).catch(() => ({ files: [] as string[], image: null }));
+    if (got.files.length) attachPathsTo(agent, got.files);
+    else if (got.image) addAttachments(agent, [got.image]);
     else hub.toast(clipboardHint(), "info");
   };
 
@@ -165,6 +169,9 @@ function Screen({ onExit }: { onExit: () => void }) {
     setPrompt,
     toggleZoom,
     attach: attachPaths,
+    paste: () => {
+      if (focused) void pasteClipboard(focused);
+    },
     dialogs: launchers,
   };
   ctxRef.current = ctx;
@@ -274,8 +281,8 @@ function Screen({ onExit }: { onExit: () => void }) {
       return;
     }
     if ((key.ctrl || key.meta) && input === "v") {
-      // Ctrl+V (Alt+V where the terminal keeps Ctrl+V for pasting text, as Windows Terminal does).
-      void pasteImage(agent);
+      // Ctrl+V where the terminal passes it on (macOS terminals, Linux), Alt+V anywhere.
+      void pasteClipboard(agent);
       return;
     }
     if (key.backspace && !editor.value && attachOf(agent).length) {
@@ -310,6 +317,10 @@ function Screen({ onExit }: { onExit: () => void }) {
   usePaste(
     (text) => {
       if (!focused) return;
+      // An empty paste: the terminal's paste key with no text on the clipboard, only a picture or
+      // copied files. Windows Terminal (Ctrl+V, from 1.24 on), the macOS app (Cmd+V), GNOME Terminal
+      // and others send one so that the program can read the clipboard itself.
+      if (!text) return void pasteClipboard(focused);
       // Files dropped on the terminal arrive as a paste of their paths.
       const files = droppedFiles(text);
       if (files) attachPaths(files);

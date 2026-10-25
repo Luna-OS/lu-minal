@@ -39,7 +39,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c();
-  fs.rmSync(dir, { recursive: true, force: true });
+  // fs.rmSync ignores maxRetries for EBUSY in some Node versions; the promise version retries.
+  await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function folder(name: string): string {
@@ -98,7 +99,22 @@ async function claudeClone(opts: { trusted?: boolean } = {}) {
   });
   cleanups.push(async () => {
     await agent.driver?.dispose();
-    for (const c of children) if (c.exitCode === null) c.kill("SIGKILL");
+    // Windows keeps a process's working folder locked until it has exited, so wait for that
+    // before the folder is removed.
+    await Promise.all(
+      children.map(
+        (c) =>
+          new Promise<void>((resolve) => {
+            if (c.exitCode !== null || c.signalCode !== null) return resolve();
+            const timer = setTimeout(resolve, 5000);
+            c.once("exit", () => {
+              clearTimeout(timer);
+              resolve();
+            });
+            c.kill("SIGKILL");
+          }),
+      ),
+    );
   });
   await hub.launch(project, agent);
   launch.mockClear();

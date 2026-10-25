@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -170,7 +171,9 @@ describe("permissions", () => {
   });
 
   it("checks a path as written and as \"~\" expanded, keeping the stricter answer", () => {
-    const home = path.resolve("/home/ada");
+    // Not /home: on macOS that is an automounter folder, and looking a path up there can take
+    // longer than the test may run.
+    const home = path.join(os.tmpdir(), "lm-acp-home-ada");
     vi.stubEnv("LU_MINAL_HOME_DIR", home);
     const read = (p: string) => assessAcpCall(view({ kind: "read", locations: [{ path: p }] }), cwd);
     expect(read("~/.ssh/id_ed25519")).toMatchObject({ risk: "other", target: path.join(home, ".ssh", "id_ed25519") });

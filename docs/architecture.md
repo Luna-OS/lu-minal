@@ -82,7 +82,8 @@ MiniMax models use the Anthropic wire) wins over the provider's.
 lu-minal adds two providers models.dev doesn't have:
 
 - `claude-code` – Claude through the Claude Code CLI and the user's subscription. Models are the
-  CLI's aliases (`default`, `opus`, `sonnet`, `haiku`, `fable`) plus every Anthropic model id.
+  CLI's aliases (`default`, `opus`, `sonnet`, `haiku`) plus every Anthropic model id (e.g.
+  `claude-fable-5-1`); any id the CLI accepts can be typed.
 - `ollama` – a local Ollama server (`http://127.0.0.1:11434/v1`), models read from `/api/tags`.
 
 Free models: models with input and output cost 0. OpenCode Zen's free models work **without a key**
@@ -101,9 +102,11 @@ runs the official `claude` program:
 | --- | --- |
 | Find it | `claude` on the PATH, `~/.local/bin`, `~/.claude/local`, `%APPDATA%\npm` (or `claudePath` in the config) |
 | Sign in | `claude auth login` in the real terminal (the UI suspends itself meanwhile) |
-| Who is signed in | `claude auth status --json` + `~/.claude.json` |
+| Who is signed in | `claude auth status` (JSON by default; exit code 0 when signed in) + `~/.claude.json` |
 | An agent | `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --model <m> --mcp-config <file> --permission-prompt-tool mcp__luminal__approve --append-system-prompt <team prompt>` in the project folder |
-| Plan limits | `claude -p /usage --output-format stream-json --verbose --no-session-persistence --strict-mcp-config` every `usagePollSeconds`, plus every `rate_limit_event` from running agents |
+| Plan limits | every `rate_limit_event` from running agents, plus `claude -p /usage …` every `usagePollSeconds` where the CLI answers it (undocumented, so it is best effort) |
+| Cloud | `claude --cloud "<task>"` starts a session on claude.ai/code (interactive), `claude -p "<text>" --cloud <id> --output-format json` messages it, `claude --teleport <id>` brings it into the terminal |
+| Subscription billing | Claude Code processes start without `ANTHROPIC_API_KEY` (with `-p` it would win over the claude.ai login) unless `claudeUseApiKey` is set |
 
 ## Cross-platform rules
 

@@ -67,6 +67,9 @@ export async function runToolCall(opts: {
   const { agent, tool, name, toolCallId, ctx } = opts;
   const args = normalizeArgs(opts.args);
   if (!tool) {
+    if (!opts.quiet) {
+      agent.append({ kind: "tool", toolCallId, name, verb: name, status: "error", detail: "unknown tool" });
+    }
     return { content: `Unknown tool "${name}".`, isError: true };
   }
   if (tool.leadOnly && ctx.role !== "lead") {

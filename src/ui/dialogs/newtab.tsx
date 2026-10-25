@@ -200,7 +200,7 @@ function RepoList({ hub, ui, host, close, closeParent }: { hub: Hub; ui: UiServi
 async function cloneAndOpen(hub: Hub, ui: UiServices, host: RepoHost, repo: RepoInfo): Promise<void> {
   const controller = new AbortController();
   let progress = "Starting…";
-  let closeFn: (() => void) | null = null;
+  let closeFn = null as (() => void) | null;
   ui.openDialog({
     id: "clone",
     render: (close) => {

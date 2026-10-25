@@ -59,6 +59,7 @@ export type ClaudeResultEvent = {
 
 export type ClaudeEvent =
   | ClaudeInitEvent
+  /** The CLI's status: "requesting", "compacting", "compacted" (a compaction ended), "" (none). */
   | { kind: "status"; status: string }
   | { kind: "text-delta"; messageId: string | null; text: string }
   /** The whole text of an answer block (closes the streamed one). */
@@ -83,6 +84,11 @@ export type ClaudeEvent =
   | ClaudeResultEvent
   /** The answer to one of our control requests (interrupt, set_permission_mode). */
   | { kind: "control-response"; requestId: string | null; ok: boolean; error: string | null }
+  /**
+   * A request from the CLI to its host, e.g. { subtype: "can_use_tool", tool_name, input } when it
+   * asks for a permission without a permission-prompt tool. It waits for a control response.
+   */
+  | { kind: "control-request"; requestId: string; subtype: string; request: Record<string, unknown> }
   /** A line that is not JSON (a warning, a crash), or a line of stderr. */
   | { kind: "stderr"; text: string };
 
@@ -229,9 +235,11 @@ function rawEvents(msg: unknown): Array<ClaudeEvent | StreamStart> {
           },
         ];
       }
-      if (msg.subtype === "status" && typeof msg.status === "string" && msg.status) {
-        return [{ kind: "status", status: msg.status }];
+      // "requesting", "compacting", ...; null when the CLI is back to normal.
+      if (msg.subtype === "status" && (typeof msg.status === "string" || msg.status === null)) {
+        return [{ kind: "status", status: msg.status ?? "" }];
       }
+      if (msg.subtype === "compact_boundary") return [{ kind: "status", status: "compacted" }];
       return [];
     }
 
@@ -290,6 +298,13 @@ function rawEvents(msg: unknown): Array<ClaudeEvent | StreamStart> {
 
     case "result":
       return [resultEvent(msg)];
+
+    case "control_request": {
+      const request = isObj(msg.request) ? msg.request : {};
+      const requestId = str(msg.request_id);
+      if (!requestId) return [];
+      return [{ kind: "control-request", requestId, subtype: str(request.subtype) ?? "", request }];
+    }
 
     case "control_response": {
       const r = isObj(msg.response) ? msg.response : {};

@@ -2,10 +2,10 @@
 // models without anything, API keys for every other provider, and GitHub / Forgejo for repositories.
 import React from "react";
 import type { Hub } from "../../core/hub.js";
-import { findProgram, openExternal } from "../../platform/process.js";
+import { openExternal } from "../../platform/process.js";
 import type { ProviderInfo } from "../../providers/models.js";
 import { normalizeInstanceUrl, forgejoTokenUrl } from "../../git/forgejo.js";
-import { ghLoginArgs, githubTokenUrl } from "../../git/github.js";
+import { findGh, ghLoginArgs, githubTokenUrl } from "../../git/github.js";
 import type { UiServices } from "../store.js";
 import { InputDialog, MessageDialog } from "./InputDialog.js";
 import { ListDialog, type ListItem } from "./ListDialog.js";
@@ -65,7 +65,7 @@ function LoginDialog({ hub, ui, close, preselect }: { hub: Hub; ui: UiServices; 
     ...(all
       ? rest.map((p) => providerItem(hub, p, `All providers (${rest.length})`))
       : [{ id: "more", label: `All providers… (${rest.length} more)`, hint: "models.dev catalog", group: "AI providers" }]),
-    { id: "git:github", label: "GitHub", hint: "open repositories in new tabs", group: "Repositories", badge: hub.auth.secretFor("github") || process.env.GITHUB_TOKEN ? { text: "✓ token", color: c.success } : undefined },
+    { id: "git:github", label: "GitHub", hint: "open repositories in new tabs", group: "Repositories", badge: hub.auth.secretFor("github") || process.env.GITHUB_TOKEN || process.env.GH_TOKEN ? { text: "✓ token", color: c.success } : findGh() ? { text: "gh", color: c.faint } : undefined },
     ...hub.config.forgejo.map((f) => ({
       id: `git:forgejo:${f.url}`,
       label: f.name,
@@ -209,7 +209,7 @@ async function browserLogin(hub: Hub, ui: UiServices): Promise<void> {
   const opened = await openExternal(login.url);
   const c = hub.theme.colors;
   const id = "openrouter-wait";
-  let closeFn: (() => void) | null = null;
+  let closeFn = null as (() => void) | null;
   login.result.then(
     () => closeFn?.(),
     () => closeFn?.(),
@@ -240,7 +240,7 @@ async function browserLogin(hub: Hub, ui: UiServices): Promise<void> {
 }
 
 function githubChoice(hub: Hub, ui: UiServices): void {
-  const gh = findProgram("gh");
+  const gh = findGh();
   ui.openDialog({
     id: "github",
     render: (close) => (

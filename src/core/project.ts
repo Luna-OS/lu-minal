@@ -185,7 +185,8 @@ export class Project {
       recipients = this.lead && this.lead.name !== from ? [this.lead] : [];
     } else {
       const agent = this.findAgent(target);
-      recipients = agent && agent.status !== "stopped" ? [agent] : [];
+      // Nobody messages themselves (an agent addressing its own name).
+      recipients = agent && agent.status !== "stopped" && agent.name !== from ? [agent] : [];
     }
     if (!recipients.length) return [];
     const message: TeamMessage = {

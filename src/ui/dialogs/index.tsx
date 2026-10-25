@@ -140,7 +140,7 @@ export function createLaunchers(
             { id: "restart", label: "Restart the bridge", hint: `127.0.0.1:${s.port}` },
           ];
           const status = s.connected
-            ? `connected · ${s.place?.name ?? "a place"}${s.studioVersion ? ` · Studio ${s.studioVersion}` : ""}`
+            ? `connected · ${s.place?.name ?? "a place"}${s.studioVersion ? ` · Studio ${s.studioVersion}` : ""}${s.pluginOutdated ? " · ▲ plugin outdated, install again" : ""}`
             : s.listening
               ? `waiting for Studio on port ${s.port} - open Studio and click Connect on the lu-minal toolbar`
               : `not listening${s.error ? `: ${s.error}` : ""}`;

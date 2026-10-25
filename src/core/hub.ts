@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { readClaudeAccount } from "../agents/claude-code/account.js";
-import { findClaude } from "../agents/claude-code/cli.js";
+import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
 import { claudeInstallCommand, claudeLoginArgs, claudeLogoutArgs } from "../agents/claude-code/login.js";
 import { applyRateLimit, fetchPlanUsage } from "../agents/claude-code/usage.js";
@@ -21,13 +21,13 @@ import {
 import { McpServer } from "../mcp/server.js";
 import { stateDir as defaultStateDir } from "../platform/paths.js";
 import { findProgram } from "../platform/process.js";
-import { AuthStore } from "../providers/auth.js";
-import { loadCatalog, type Catalog } from "../providers/catalog.js";
+import { AuthStore, keyFor } from "../providers/auth.js";
+import { fallbackCatalog, loadCatalog, type Catalog } from "../providers/catalog.js";
 import type { ModelRef } from "../providers/models.js";
 import { listOllamaModels } from "../providers/ollama.js";
 import { fetchOpenRouterBalance, startOpenRouterLogin, type OAuthLogin } from "../providers/openrouter.js";
 import { ProviderRegistry } from "../providers/registry.js";
-import type { FetchLike } from "../providers/types.js";
+import type { ChatMessage, FetchLike } from "../providers/types.js";
 import { createChatClient } from "../providers/wire/index.js";
 import { RobloxBridge } from "../roblox/bridge.js";
 import type { ThemeManager } from "../themes/manager.js";
@@ -145,7 +145,8 @@ export class Hub implements ProjectRuntime {
     // Every change may be worth saving; the save itself is debounced.
     this.notifier.subscribe(() => this.scheduleSave());
     this.registry = new ProviderRegistry({
-      catalog: { providers: [], models: [], fetchedAt: null, source: "fallback" },
+      // The built-in list until models.dev's catalog arrives, so pickers are never empty.
+      catalog: fallbackCatalog(),
       auth: this.auth,
       config: this.config,
       claudeAccount: () => this.claudeAccount,
@@ -162,7 +163,7 @@ export class Hub implements ProjectRuntime {
             return {
               agent,
               project,
-              tools: toolsForAgent(agent.role, "claude-code"),
+              tools: toolsForAgent(agent.role, "claude-code", { fetchImpl: this.opts.fetchImpl }),
               services: this.servicesFor(project),
             };
           }
@@ -320,6 +321,7 @@ export class Hub implements ProjectRuntime {
         project,
         exe,
         mcp: this.mcp,
+        env: this.claudeEnv(),
         systemPrompt: () => this.promptFor(project, agent, "claude-code"),
         onRateLimit: (ev) => {
           this.planUsage = applyRateLimit(this.planUsage, ev);
@@ -337,7 +339,7 @@ export class Hub implements ProjectRuntime {
           }
           return createChatClient(resolved.wire, resolved.endpoint, this.opts.fetchImpl);
         },
-        tools: toolsForAgent(agent.role, "native"),
+        tools: toolsForAgent(agent.role, "native", { fetchImpl: this.opts.fetchImpl }),
         services: this.servicesFor(project),
         systemPrompt: () => this.promptFor(project, agent, "native"),
       });
@@ -379,7 +381,7 @@ export class Hub implements ProjectRuntime {
    * keeps API keys for its own "anthropic" provider).
    */
   claudeEnv(): NodeJS.ProcessEnv {
-    const env = { ...process.env };
+    const env = claudeProcessEnv(process.env, findClaude(this.config.claudePath));
     if (!this.config.claudeUseApiKey) {
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
@@ -484,6 +486,8 @@ export class Hub implements ProjectRuntime {
   /** Moves an agent to another model (the driver restarts; Claude Code resumes its session). */
   async changeModel(project: Project, agent: Agent, model: ModelRef): Promise<void> {
     const wasClaude = agent.model.provider === "claude-code";
+    // A native conversation moves to the new model; Claude Code keeps its own session.
+    const conversation = agent.driver?.snapshot?.() ?? null;
     await agent.driver?.dispose().catch(() => undefined);
     agent.driver = null;
     agent.model = model;
@@ -491,6 +495,9 @@ export class Hub implements ProjectRuntime {
     agent.info(`Now on ${agent.modelLabel}.`);
     try {
       await this.launch(project, agent);
+      // launch() set a new driver (TypeScript still sees the null from above).
+      const driver = agent.driver as Agent["driver"];
+      if (conversation && driver?.restore) driver.restore(withoutWireData(conversation));
     } catch (err) {
       agent.error(errText(err));
     }
@@ -529,7 +536,7 @@ export class Hub implements ProjectRuntime {
   }
 
   async refreshBalances(): Promise<void> {
-    const key = this.auth.secretFor("openrouter") ?? process.env.OPENROUTER_API_KEY ?? null;
+    const key = keyFor("openrouter", ["OPENROUTER_API_KEY"], this.auth)?.key ?? null;
     if (!key) {
       this.balances.delete("openrouter");
       return;
@@ -540,7 +547,7 @@ export class Hub implements ProjectRuntime {
   }
 
   async refreshLocalModels(): Promise<void> {
-    const models = await listOllamaModels(undefined, this.opts.fetchImpl).catch(() => []);
+    const models = await listOllamaModels(this.config.providers.ollama?.baseURL, this.opts.fetchImpl).catch(() => []);
     this.registry.setLocalModels("ollama", models);
     this.notifier.changed();
   }
@@ -774,6 +781,23 @@ export class Hub implements ProjectRuntime {
     }
     return restored;
   }
+}
+
+/**
+ * A saved native conversation without the provider-specific raw data (reasoning signatures,
+ * reasoning_content, ...): another provider on the same wire would choke on it.
+ */
+export function withoutWireData(conversation: unknown): unknown {
+  const c = conversation as { messages?: ChatMessage[] } | null;
+  if (!c || !Array.isArray(c.messages)) return conversation;
+  return {
+    ...c,
+    messages: c.messages.map((m) => {
+      if (m.role !== "assistant" || !m.raw) return m;
+      const { raw: _raw, ...rest } = m;
+      return rest;
+    }),
+  };
 }
 
 export function errText(err: unknown): string {

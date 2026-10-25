@@ -50,10 +50,13 @@ export function findProgram(
   return null;
 }
 
-/** Quotes one argument for cmd.exe. */
+/**
+ * Quotes one argument for cmd.exe. (A lone "%" stays literal on a command line; "%%" would not be
+ * collapsed back outside a batch file, so it is left alone.)
+ */
 export function cmdQuote(arg: string): string {
   if (/^[\w\-.,:/\\=@+]+$/.test(arg)) return arg;
-  return `"${arg.replace(/"/g, '""').replace(/%/g, "%%")}"`;
+  return `"${arg.replace(/"/g, '""')}"`;
 }
 
 /** Starts `exe args`; on Windows a .cmd/.bat shim goes through cmd.exe, everything else directly. */
@@ -96,6 +99,8 @@ export function runProgram(
         cwd: opts.cwd ?? os.homedir(),
         env: opts.env ?? process.env,
         stdio: ["pipe", "pipe", "pipe"],
+        // Its own process group on POSIX, so killTree reaches grandchildren too.
+        detached: !isWindows,
       });
     } catch (err) {
       reject(err);
@@ -105,13 +110,34 @@ export function runProgram(
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let settled = false;
+    // After a kill, a grandchild that escaped the group could still hold the pipes open: give up
+    // on them after a grace period instead of waiting for it.
+    const giveUp = () =>
+      setTimeout(() => {
+        if (settled) return;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(child.exitCode);
+      }, 2000).unref();
     const timer = opts.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
           killTree(child);
+          giveUp();
         }, opts.timeoutMs)
       : null;
-    const onAbort = () => killTree(child);
+    const onAbort = () => {
+      killTree(child);
+      giveUp();
+    };
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+      resolve({ code, stdout, stderr, timedOut });
+    };
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
@@ -122,15 +148,13 @@ export function runProgram(
       if (stderr.length < max) stderr += d;
     });
     child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
       if (timer) clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
       reject(err);
     });
-    child.on("close", (code) => {
-      if (timer) clearTimeout(timer);
-      opts.signal?.removeEventListener("abort", onAbort);
-      resolve({ code, stdout, stderr, timedOut });
-    });
+    child.on("close", (code) => finish(code));
     if (opts.input !== undefined) child.stdin?.end(opts.input);
     else child.stdin?.end();
   });

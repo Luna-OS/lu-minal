@@ -84,13 +84,9 @@ function globSource(glob: string): string {
         let j = i + 2;
         while (glob[j] === "*") j++;
         if (atStart && glob[j] === "/") {
-          out += "(?:[^/]*(?:/|$))*?";
-          // "**/" matches zero or more whole directories: "(?:.*/)?".
-          out = out.slice(0, -"(?:[^/]*(?:/|$))*?".length) + "(?:.*/)?";
-          i = j; // skip the "/"
-        } else if (atStart && j >= glob.length) {
-          out += ".*";
-          i = j - 1;
+          // "**/" matches zero or more whole directories.
+          out += "(?:.*/)?";
+          i = j; // the "/" is part of it
         } else {
           out += ".*";
           i = j - 1;

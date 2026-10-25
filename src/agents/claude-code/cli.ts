@@ -158,6 +158,16 @@ export function interruptLine(requestId: string): string {
   return controlLine(requestId, { subtype: "interrupt" });
 }
 
+/** Our answer to a control request from the CLI (e.g. a can_use_tool permission decision). */
+export function controlResponseLine(requestId: string, response: Record<string, unknown>): string {
+  return `${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: requestId, response } })}\n`;
+}
+
+/** Turns down a control request from the CLI that lu-minal doesn't handle. */
+export function controlErrorLine(requestId: string, error: string): string {
+  return `${JSON.stringify({ type: "control_response", response: { subtype: "error", request_id: requestId, error } })}\n`;
+}
+
 /** Switches the running process to another permission mode without a restart. */
 export function setPermissionModeLine(requestId: string, mode: ClaudePermissionMode): string {
   return controlLine(requestId, { subtype: "set_permission_mode", mode });
@@ -171,7 +181,18 @@ export const MCP_TOOL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
  * started from one (a terminal in Claude Code), its agents must not inherit them: `claude` refuses
  * to start nested, and a fixed session id would make every agent write into the same conversation.
  */
-const NESTED_SESSION_VARS = ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"];
+/**
+ * Markers a Claude Code process leaves for its children. Started from inside a Claude Code session
+ * (a terminal tab of it, or a cloud session), a child `claude` would otherwise join that session.
+ */
+const NESTED_SESSION_VARS = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_REMOTE_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_PID",
+];
 
 /** The key under which `env` keeps the PATH (Windows spells it "Path"). */
 function pathKey(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {

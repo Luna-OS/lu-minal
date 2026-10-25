@@ -13,7 +13,8 @@ import { configFile, loadConfig } from "./core/config.js";
 import { errText, Hub } from "./core/hub.js";
 import { cacheDir, configDir, expandHome, stateDir } from "./platform/paths.js";
 import { openExternal, spawnProgram } from "./platform/process.js";
-import { installWindowsTerminalProfile } from "./platform/windows-terminal.js";
+import { launchCommand } from "./platform/install-info.js";
+import { installWindowsTerminalProfile, removeWindowsTerminalProfile } from "./platform/windows-terminal.js";
 import { AuthStore } from "./providers/auth.js";
 import { loadCatalog } from "./providers/catalog.js";
 import { formatModelRef, parseModelRef } from "./providers/models.js";
@@ -23,7 +24,18 @@ import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
 import { ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
 
-export const VERSION = process.env.LU_MINAL_VERSION ?? "0.1.0";
+/** The version: baked into the standalone binaries, read from package.json for npm installs. */
+function readVersion(): string {
+  if (process.env.LU_MINAL_VERSION) return process.env.LU_MINAL_VERSION;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+export const VERSION = readVersion();
 
 const HELP = `lu-minal ${VERSION} - a team of coding agents under the night sky
 
@@ -37,7 +49,7 @@ Usage
   lu-minal roblox install        install the Roblox Studio plugin
   lu-minal roblox path           print the Roblox plugins folder
   lu-minal themes                list themes
-  lu-minal setup windows-terminal    add a lu-minal profile to Windows Terminal
+  lu-minal setup windows-terminal [--remove]   add (or remove) a Windows Terminal profile
 
 Options
   --model <provider/model>       the lead's model (e.g. claude-code/opus, opencode/big-pickle)
@@ -173,10 +185,15 @@ async function subcommand(args: Args): Promise<number | null> {
         return 0;
       }
       if (sub === "install") {
-        const file = await installPlugin({ port: loadConfig().roblox.port });
-        print(`Installed the lu-minal plugin: ${file}`);
-        print("Open Roblox Studio, allow HTTP requests to localhost when asked, and click Connect on the lu-minal toolbar.");
-        return 0;
+        try {
+          const file = await installPlugin({ port: loadConfig().roblox.port });
+          print(`Installed the lu-minal plugin: ${file}`);
+          print("Open Roblox Studio, allow HTTP requests to localhost when asked, and click Connect on the lu-minal toolbar.");
+          return 0;
+        } catch (err) {
+          print(errText(err));
+          return 1;
+        }
       }
       print("Usage: lu-minal roblox install|path");
       return 1;
@@ -188,7 +205,13 @@ async function subcommand(args: Args): Promise<number | null> {
     }
     case "setup": {
       if (rest[0] === "windows-terminal") {
-        const file = await installWindowsTerminalProfile(process.execPath.endsWith("node.exe") || process.execPath.endsWith("node") ? `${process.execPath}" "${process.argv[1]}` : process.execPath);
+        if (args.flags.has("remove")) {
+          await removeWindowsTerminalProfile();
+          print("Removed the lu-minal profile from Windows Terminal.");
+          return 0;
+        }
+        const launch = launchCommand();
+        const file = await installWindowsTerminalProfile(launch.exe, { args: launch.args });
         print(`Added the lu-minal profile to Windows Terminal: ${file}`);
         return 0;
       }

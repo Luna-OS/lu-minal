@@ -454,6 +454,15 @@ function gitBashProc(abs: string, recursive: boolean): boolean {
   return /^(?:[a-z]:)?\\proc(?:\\|$)/i.test(abs) || (recursive && /^(?:[a-z]:)?\\$|^[a-z]:$/i.test(abs));
 }
 
+/** Whether `abs` is a folder, following a link. */
+function isFolder(abs: string): boolean {
+  try {
+    return fs.statSync(abs).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** Folder entries a glob check looks at before it gives up (and asks). */
 const GLOB_WALK_LIMIT = 20_000;
 
@@ -482,8 +491,11 @@ function globReachesSecret(base: string, pattern: string, opts: SensitiveOptions
     for (const entry of list) {
       if (++seen > GLOB_WALK_LIMIT) return true;
       const abs = path.join(dir, entry.name);
-      if (entry.isSymbolicLink() && assessRead(abs, { ...opts, recursive: true, cwd: base }) !== "read") return true;
-      if (entry.isDirectory() && (deep || level < parts.length)) stack.push([abs, level + 1]);
+      const link = entry.isSymbolicLink();
+      if (link && assessRead(abs, { ...opts, recursive: true, cwd: base }) !== "read") return true;
+      // The shell expands through a linked folder too: "*/*" reaches a/x when a -> deep/folder.
+      if (!deep && level >= parts.length) continue;
+      if (entry.isDirectory() || (link && isFolder(abs))) stack.push([abs, level + 1]);
     }
   }
   return false;

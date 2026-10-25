@@ -161,6 +161,14 @@ describe("shell commands that only look like reads", () => {
     for (const command of ["cat *", "cat n*", "tail -n +1 *.txt", "cat ./*"]) expect(ro(command), command).toBe(false);
   });
 
+  it("follows a glob through a linked folder to a link further down", () => {
+    fs.mkdirSync(path.join(project, "d1", "d2", "d3"), { recursive: true });
+    fs.symlinkSync(path.join(project, "d1", "d2", "d3"), path.join(project, "a"), "junction");
+    fs.symlinkSync(path.join(home, ".ssh"), path.join(project, "d1", "d2", "d3", "keys"), "junction");
+    for (const command of ["cat */*/id_ed25519", "cat */keys/*", "head */*/*"]) expect(ro(command), command).toBe(false);
+    expect(ro("cat *.md")).toBe(true);
+  });
+
   it("asks before reading lu-minal's own state and /proc on Linux", () => {
     const env = { ...process.env, LU_MINAL_HOME: path.join(home, "lm") };
     const opts = (command: string) => isReadOnlyShellCommand(command, { cwd: project, sensitive: { home, env } });

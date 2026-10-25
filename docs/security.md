@@ -65,9 +65,12 @@ the native `bash` tool and Claude Code's permission prompts):
   `--pre=sh` must not turn `rg foo *` into code execution.
 - No word may point into a secret store, a network share, or (with a glob) outside the project.
   `cd` is followed (with an option such as `cd -P` it asks). A glob, `grep -R` and `rg -L` follow
-  symlinks, so a link into a secret store where they reach makes them ask; the grep tool skips
-  links it finds, as ripgrep does. PowerShell's `-Path:value`, `a,b` arrays and wildcards are
-  checked too, and its provider paths (`env:`, `HKCU:`, `FileSystem::...`) ask.
+  symlinks, also through linked folders (`*/*` reaches `a/x` when `a` is a link), so a link into a
+  secret store where they reach makes them ask; the grep tool skips links it finds, as ripgrep
+  does. PowerShell's `-Path:value`, `a,b` arrays and wildcards are checked too, and its provider
+  paths (`env:`, `HKCU:`, `FileSystem::...`) ask. In the PowerShell fallback (Windows without Git
+  Bash) these rules apply to every program, so a few harmless words ask as well:
+  `git show HEAD:README.md`, `-Pattern 'TODO:'`, a regex with `*`. They err on the side of asking.
 
 "Always allow" remembers `bash:<first two words>` only for one simple command. A list, pipeline,
 substitution or redirection is remembered as the exact text (`bash=<command>`), so an "always" for

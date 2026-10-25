@@ -262,7 +262,9 @@ export class ClaudeCodeDriver implements AgentDriver {
       this.waiting.push(text);
       return;
     }
-    if (this.interrupting) {
+    // Also held back while a busy process still runs with the trust it started with (/trust came
+    // during the turn): it ends with the turn, and the message goes to the new one.
+    if (this.interrupting || (this.run && this.outstanding > 0 && this.staleTrust(this.run))) {
       this.deferred.push(text);
       return;
     }
@@ -894,6 +896,8 @@ export class ClaudeCodeDriver implements AgentDriver {
     // /trust came during the turn: the folder's hooks and MCP servers (or their absence) end with it.
     if (this.run && this.staleTrust(this.run)) this.retire(this.run);
     this.agent.endTurn(status);
+    // Messages held back for the new trust start the new process now.
+    if (!this.interrupting && this.deferred.length) this.flushDeferred();
   }
 
   private updateQueued(): void {

@@ -252,6 +252,20 @@ describe("project trust", () => {
     expect(t.agent.log.filter((e) => e.kind === "error")).toEqual([]);
   });
 
+  it("a message sent while the old process is still busy after /trust off waits for the new process", async () => {
+    const t = await claudeClone({ trusted: true });
+    t.agent.deliver({ from: "you", text: "pause" });
+    await hub.setTrust(t.project, false);
+    // Still the first turn, in the process that loaded the folder's own settings.
+    t.agent.deliver({ from: "you", text: "hello" });
+    await waitFor(() => t.answers() === 2 && t.agent.status === "idle" && t.agent.turnStartedAt === null, "both answers");
+    const starts = t.starts();
+    expect(starts).toHaveLength(2);
+    expect(starts[0]).not.toContain("--setting-sources");
+    expect(starts[1]).toContain("--setting-sources");
+    expect(starts[1]).toContain("--resume");
+  });
+
   it("/trust off ends an idle agent's process at once; the next message resumes without the folder's settings", async () => {
     const t = await claudeClone({ trusted: true });
     t.agent.deliver({ from: "you", text: "hello" });

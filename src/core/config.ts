@@ -155,11 +155,29 @@ export function rememberRecent(config: Config, folder: string, platform: NodeJS.
  * the folder is opened again (only the "no"s are kept: an unknown folder follows its origin).
  */
 export function rememberTrust(config: Config, folder: string, trusted: boolean, platform: NodeJS.Platform = process.platform): void {
-  const rest = config.untrusted.filter((f) => !samePath(f, folder, platform));
-  config.untrusted = trusted ? rest : [folder, ...rest].slice(0, 500);
+  const names = folderNames(folder, platform);
+  const rest = config.untrusted.filter((f) => !names.some((n) => samePath(f, n, platform)));
+  config.untrusted = trusted ? rest : [names[names.length - 1], ...rest].slice(0, 500);
 }
 
 /** Whether the user said no to a folder's own agent settings. */
 export function distrusted(config: Config, folder: string, platform: NodeJS.Platform = process.platform): boolean {
-  return config.untrusted.some((f) => samePath(f, folder, platform));
+  const names = folderNames(folder, platform);
+  return config.untrusted.some((f) => names.some((n) => samePath(f, n, platform)));
+}
+
+/**
+ * The folder as given and as the file system names it (links followed, and on macOS and Windows
+ * the case it has on disk), so a folder opened through a link or typed in another case is still
+ * the same folder. Only for this machine's own platform: tests that play another one never touch
+ * the disk.
+ */
+function folderNames(folder: string, platform: NodeJS.Platform): string[] {
+  if (platform !== process.platform) return [folder];
+  try {
+    const real = fs.realpathSync.native(folder);
+    return real === folder ? [folder] : [folder, real];
+  } catch {
+    return [folder];
+  }
 }

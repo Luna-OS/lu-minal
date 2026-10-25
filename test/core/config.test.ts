@@ -65,4 +65,23 @@ describe("rememberTrust", () => {
     expect(distrusted(loadConfig(file), "/home/ada/clone", "linux")).toBe(true);
     expect(mergeConfig({ untrusted: "/home/ada/clone" }).untrusted).toEqual([]);
   });
+
+  it("knows a folder again through a link or (on macOS and Windows) in another case", () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lm-trust-")));
+    dirs.push(dir);
+    const real = path.join(dir, "Evil-Repo");
+    const link = path.join(dir, "link");
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, link, "junction");
+    const config = defaultConfig();
+    rememberTrust(config, link, false);
+    expect(distrusted(config, real)).toBe(true);
+    expect(distrusted(config, link)).toBe(true);
+    // A case-insensitive file system (macOS, Windows) finds the folder under any case.
+    const otherCase = path.join(dir, "evil-repo");
+    if (fs.existsSync(otherCase)) expect(distrusted(config, otherCase)).toBe(true);
+    rememberTrust(config, real, true);
+    expect(distrusted(config, link)).toBe(false);
+    expect(config.untrusted).toEqual([]);
+  });
 });

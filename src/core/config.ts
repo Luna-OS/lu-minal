@@ -76,6 +76,8 @@ export interface Config {
   acpAgents: Record<string, AcpAgentConfig>;
   /** Folders opened recently, newest first. */
   recent: string[];
+  /** Folders whose own agent settings the user didn't trust (a clone answered "not now", /trust off). */
+  untrusted: string[];
   [key: string]: unknown;
 }
 
@@ -97,6 +99,7 @@ export function defaultConfig(): Config {
     providers: {},
     acpAgents: {},
     recent: [],
+    untrusted: [],
   };
 }
 
@@ -120,6 +123,7 @@ export function mergeConfig(stored: unknown): Config {
   if (!isObject(out.providers)) out.providers = {};
   if (!isObject(out.acpAgents)) out.acpAgents = {};
   if (!Array.isArray(out.recent)) out.recent = [];
+  if (!Array.isArray(out.untrusted)) out.untrusted = [];
   if (typeof out.theme !== "string" || !out.theme) out.theme = base.theme;
   return out;
 }
@@ -144,4 +148,18 @@ export function saveConfig(config: Config, file = configFile()): void {
  */
 export function rememberRecent(config: Config, folder: string, platform: NodeJS.Platform = process.platform): void {
   config.recent = [folder, ...config.recent.filter((f) => !samePath(f, folder, platform))].slice(0, 20);
+}
+
+/**
+ * Remembers whether the user trusts a folder's own agent settings, so the answer holds however
+ * the folder is opened again (only the "no"s are kept: an unknown folder follows its origin).
+ */
+export function rememberTrust(config: Config, folder: string, trusted: boolean, platform: NodeJS.Platform = process.platform): void {
+  const rest = config.untrusted.filter((f) => !samePath(f, folder, platform));
+  config.untrusted = trusted ? rest : [folder, ...rest].slice(0, 500);
+}
+
+/** Whether the user said no to a folder's own agent settings. */
+export function distrusted(config: Config, folder: string, platform: NodeJS.Platform = process.platform): boolean {
+  return config.untrusted.some((f) => samePath(f, folder, platform));
 }

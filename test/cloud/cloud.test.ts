@@ -64,15 +64,17 @@ describe("transcripts and replies", () => {
     expect(parseSendResult("", "error: not signed in")).toMatchObject({ ok: false, error: "error: not signed in" });
   });
 
-  it("sends with -p --cloud and json output", async () => {
+  it("sends with -p --cloud and json output, with only the user's own settings unless the folder is trusted", async () => {
     let seen: string[] = [];
     const run = async (_exe: string, args: string[]): Promise<RunResult> => {
       seen = args;
       return { code: 0, stdout: '{"ok":true,"session_id":"session_q","url":"https://claude.ai/code/session_q"}\n', stderr: "", timedOut: false };
     };
     const r = await sendToCloud("claude", "session_q", "also add tests", { run: run as never });
-    expect(seen).toEqual(["-p", "also add tests", "--cloud", "session_q", "--output-format", "json"]);
+    expect(seen).toEqual(["-p", "also add tests", "--cloud", "session_q", "--output-format", "json", "--setting-sources", "user", "--strict-mcp-config"]);
     expect(r.ok).toBe(true);
+    await sendToCloud("claude", "session_q", "also add tests", { run: run as never, trusted: true });
+    expect(seen).toEqual(["-p", "also add tests", "--cloud", "session_q", "--output-format", "json"]);
   });
 });
 

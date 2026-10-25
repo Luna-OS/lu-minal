@@ -58,6 +58,8 @@ export function ConfirmDialog(props: {
   no?: string;
   onYes: () => void;
   onNo: () => void;
+  /** Enter means no (and "no" is the highlighted answer): only y says yes. For risky questions. */
+  defaultNo?: boolean;
 }) {
   const size = useWindowSize();
   const c = props.theme.colors;
@@ -65,8 +67,17 @@ export function ConfirmDialog(props: {
   const text = props.lines.flatMap((l) => wrap(l, width - 4));
   useInput((input, key) => {
     if (key.escape || input === "n" || input === "N") return props.onNo();
-    if (key.return || input === "y" || input === "Y") return props.onYes();
+    if (input === "y" || input === "Y") return props.onYes();
+    if (key.return) return props.defaultNo ? props.onNo() : props.onYes();
   });
+  const button = (label: string, highlighted: boolean) =>
+    highlighted ? (
+      <Text color={c.bg} backgroundColor={c.accent} bold>
+        {label}
+      </Text>
+    ) : (
+      <Text color={c.muted}>{label}</Text>
+    );
   return (
     <DialogBox theme={props.theme} width={width} height={text.length + 5} title={props.title}>
       {text.map((l, i) => (
@@ -76,9 +87,9 @@ export function ConfirmDialog(props: {
       ))}
       <Text> </Text>
       <Text wrap="truncate">
-        <Text color={c.bg} backgroundColor={c.accent} bold>{` y ${props.yes ?? "yes"} `}</Text>
+        {button(` y ${props.yes ?? "yes"} `, !props.defaultNo)}
         <Text>{"  "}</Text>
-        <Text color={c.muted}>{` n ${props.no ?? "no"} `}</Text>
+        {button(` n ${props.no ?? "no"} `, Boolean(props.defaultNo))}
       </Text>
     </DialogBox>
   );

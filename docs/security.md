@@ -92,6 +92,14 @@ nobody trusted yet (`Project.trusted`: a folder the user opened is trusted, a re
 GitHub or Forgejo is not until the user says so) starts Claude Code with `--setting-sources user
 --strict-mcp-config`: only the user's own settings and lu-minal's MCP server.
 
+- The clone question defaults to "not now": enter doesn't trust a repository, only `y` does.
+- A "no" is remembered for the folder (`untrusted` in `config.json`), so the folder stays untrusted
+  when it is opened again from the Recent list, by path or with `lu-minal <dir>`.
+- `/trust` reaches running agents: a Claude Code process that started with the other trust ends
+  when it is idle, or when its turn ends, and the next message resumes in a new one.
+- Messages to a cloud session (`claude -p --cloud`) get the same two flags unless the folder is an
+  open, trusted tab.
+
 ## Secrets
 
 - `auth.json` (keys and tokens) is written atomically with mode 0600 in a 0700 folder, also on

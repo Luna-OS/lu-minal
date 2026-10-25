@@ -248,7 +248,7 @@ async function cloneAndOpen(hub: Hub, ui: UiServices, host: RepoHost, repo: Repo
 }
 
 /** Whether to load a cloned repository's own agent settings; "no" unless the user says yes. */
-function askTrust(hub: Hub, ui: UiServices, repo: RepoInfo, host: RepoHost): Promise<boolean> {
+export function askTrust(hub: Hub, ui: UiServices, repo: RepoInfo, host: RepoHost): Promise<boolean> {
   return new Promise((resolve) => {
     ui.openDialog({
       id: "trust",
@@ -262,6 +262,7 @@ function askTrust(hub: Hub, ui: UiServices, repo: RepoInfo, host: RepoHost): Pro
           ]}
           yes="trust it"
           no="not now"
+          defaultNo
           onYes={() => {
             close();
             resolve(true);

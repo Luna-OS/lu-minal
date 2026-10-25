@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultConfig, loadConfig, rememberRecent, saveConfig } from "../../src/core/config.js";
+import { defaultConfig, distrusted, loadConfig, mergeConfig, rememberRecent, rememberTrust, saveConfig } from "../../src/core/config.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -38,5 +38,31 @@ describe("rememberRecent", () => {
     rememberRecent(config, "/home/ada/App", "linux");
     rememberRecent(config, "/home/ada/app", "linux");
     expect(config.recent).toEqual(["/home/ada/app", "/home/ada/App"]);
+  });
+});
+
+describe("rememberTrust", () => {
+  it("keeps the folders the user didn't trust, one entry per folder", () => {
+    const config = defaultConfig();
+    expect(config.untrusted).toEqual([]);
+    rememberTrust(config, "C:\\Code\\Clone", false, "win32");
+    rememberTrust(config, "C:\\Code\\Other", false, "win32");
+    rememberTrust(config, "c:\\code\\clone\\", false, "win32");
+    expect(config.untrusted).toEqual(["c:\\code\\clone\\", "C:\\Code\\Other"]);
+    expect(distrusted(config, "C:\\CODE\\CLONE", "win32")).toBe(true);
+    rememberTrust(config, "C:\\code\\Clone", true, "win32");
+    expect(config.untrusted).toEqual(["C:\\Code\\Other"]);
+    expect(distrusted(config, "C:\\Code\\Clone", "win32")).toBe(false);
+  });
+
+  it("survives a save, and a broken list in the file reads as empty", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-config-"));
+    dirs.push(dir);
+    const file = path.join(dir, "config.json");
+    const config = defaultConfig();
+    rememberTrust(config, "/home/ada/clone", false, "linux");
+    saveConfig(config, file);
+    expect(distrusted(loadConfig(file), "/home/ada/clone", "linux")).toBe(true);
+    expect(mergeConfig({ untrusted: "/home/ada/clone" }).untrusted).toEqual([]);
   });
 });

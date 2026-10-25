@@ -112,6 +112,8 @@ interface ToolRow {
 interface Run {
   child: ChildProcess;
   mode: ClaudePermissionMode;
+  /** project.trusted when it started: whether it loaded the folder's own settings. */
+  trusted: boolean;
   /** The session id passed to --resume, if any. */
   resumed: string | null;
   /** The init line arrived. */
@@ -317,17 +319,31 @@ export class ClaudeCodeDriver implements AgentDriver {
     }
   }
 
+  /**
+   * The project's trust changed (/trust). Claude Code reads the folder's settings only when it
+   * starts: an idle process that started with the other trust ends now, a busy one when its turn
+   * does, and the next message starts a new one (resumed).
+   */
+  settingsChanged(): void {
+    const run = this.run;
+    if (run && this.staleTrust(run) && this.outstanding === 0 && !this.interrupting) this.retire(run);
+  }
+
+  private staleTrust(run: Run): boolean {
+    return run.trusted !== this.deps.project.trusted;
+  }
+
   // ---- the process -----------------------------------------------------------------------------
 
   private write(text: MessageContent): void {
     const desired = claudePermissionMode(this.agent.permissionMode);
     let run = this.run;
-    if (run && run.mode !== desired) {
+    if (run && (run.mode !== desired || this.staleTrust(run))) {
       if (this.outstanding === 0 && !this.interrupting) {
-        // Idle: restart in the new mode, on the same conversation.
+        // Idle: restart in the new mode (or with the new trust), on the same conversation.
         this.retire(run);
         run = null;
-      } else {
+      } else if (run.mode !== desired) {
         this.requestMode(run, desired);
       }
     }
@@ -418,6 +434,7 @@ export class ClaudeCodeDriver implements AgentDriver {
     const run: Run = {
       child,
       mode,
+      trusted: project.trusted,
       resumed: resume,
       initialized: false,
       retired: false,
@@ -872,6 +889,8 @@ export class ClaudeCodeDriver implements AgentDriver {
     this.rows.clear();
     this.turnTools.clear();
     this.agent.queued = 0;
+    // /trust came during the turn: the folder's hooks and MCP servers (or their absence) end with it.
+    if (this.run && this.staleTrust(this.run)) this.retire(this.run);
     this.agent.endTurn(status);
   }
 

@@ -116,16 +116,20 @@ export function parseSendResult(stdout: string, stderr = ""): CloudSendResult {
   return { ok: false, sessionId: null, url: null, error: text.split(/\r?\n/).filter(Boolean).pop() ?? "No answer from Claude Code." };
 }
 
-/** Sends a follow-up message to a cloud session (works without a terminal). */
+/**
+ * Sends a follow-up message to a cloud session (works without a terminal). `trusted`: the folder's
+ * own settings may load (`claude -p` would start its .mcp.json servers without asking).
+ */
 export async function sendToCloud(
   claude: string,
   sessionId: string,
   text: string,
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; run?: typeof runProgram } = {},
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; run?: typeof runProgram; trusted?: boolean } = {},
 ): Promise<CloudSendResult> {
   const run = opts.run ?? runProgram;
+  const strict = opts.trusted ? [] : ["--setting-sources", "user", "--strict-mcp-config"];
   try {
-    const res = await run(claude, ["-p", text, "--cloud", sessionId, "--output-format", "json"], {
+    const res = await run(claude, ["-p", text, "--cloud", sessionId, "--output-format", "json", ...strict], {
       cwd: opts.cwd,
       env: opts.env,
       timeoutMs: 120_000,

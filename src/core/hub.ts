@@ -42,7 +42,7 @@ import { toolsForAgent } from "../tools/index.js";
 import type { CloudApi, ToolServices } from "../tools/types.js";
 import { Agent, type SavedAgentState } from "./agent.js";
 import { attachmentsDir, pruneAttachments } from "./attachments.js";
-import { rememberRecent, saveConfig, type Config } from "./config.js";
+import { distrusted, rememberRecent, rememberTrust, saveConfig, type Config } from "./config.js";
 import { newId, Notifier } from "./emitter.js";
 import { Project, type ProjectRuntime } from "./project.js";
 import { StatsStore } from "./stats.js";
@@ -267,7 +267,10 @@ export class Hub implements ProjectRuntime {
     lead?: ModelRef;
     task?: string;
     permissionMode?: PermissionMode;
-    /** Load the folder's own agent settings (defaults to true for local folders, false for clones). */
+    /**
+     * Load the folder's own agent settings (defaults to the user's earlier answer for the folder,
+     * else true for local folders and false for clones).
+     */
     trusted?: boolean;
   }): Promise<Project> {
     const cwd = path.resolve(opts.cwd);
@@ -280,7 +283,8 @@ export class Hub implements ProjectRuntime {
         name: opts.name,
         origin: opts.origin,
         permissionMode: opts.permissionMode ?? this.config.permissionMode,
-        trusted: opts.trusted,
+        // A folder the user didn't trust stays untrusted, however it is opened again.
+        trusted: opts.trusted ?? (distrusted(this.config, cwd) ? false : undefined),
       },
       this.notifier,
       this,
@@ -288,6 +292,7 @@ export class Hub implements ProjectRuntime {
     this.projects.push(project);
     this.activeIndex = this.projects.length - 1;
     rememberRecent(this.config, cwd);
+    rememberTrust(this.config, cwd, project.trusted);
     this.persistConfig();
     this.notifier.changed();
     await project.addAgent({
@@ -481,7 +486,9 @@ export class Hub implements ProjectRuntime {
   async sendCloud(session: Pick<CloudSession, "id" | "cwd">, text: string) {
     const exe = findClaude(this.config.claudePath);
     if (!exe) return { ok: false, sessionId: null, url: null, error: "Claude Code is not installed." };
-    const result = await sendToCloud(exe, session.id, text, { cwd: session.cwd, env: this.claudeEnv() });
+    // `claude -p` runs in the folder: one that isn't an open, trusted tab gets the user's own settings only.
+    const trusted = this.projects.some((p) => p.trusted && samePath(p.cwd, session.cwd));
+    const result = await sendToCloud(exe, session.id, text, { cwd: session.cwd, env: this.claudeEnv(), trusted });
     const known = this.cloudSessions.find((s) => s.id === session.id);
     if (known) {
       known.lastMessageAt = Date.now();
@@ -525,27 +532,21 @@ export class Hub implements ProjectRuntime {
 
   /**
    * Trusts (or stops trusting) a project's own agent settings: its .claude settings (hooks,
-   * permission rules), CLAUDE.md and .mcp.json servers. Claude Code reads them when its process
-   * starts, so idle Claude Code agents restart now (resuming their sessions); busy ones follow the
-   * next time they start.
+   * permission rules), CLAUDE.md and .mcp.json servers, remembered for the folder. Claude Code reads
+   * them when its process starts, so each Claude Code driver replaces a process that started with
+   * the other trust: an idle one now, a busy one when its turn ends (both resume their session).
    */
   async setTrust(project: Project, trusted: boolean): Promise<void> {
     if (project.trusted === trusted) return;
     project.setTrusted(trusted);
-    const claude = project.agents.filter((a) => a.model.provider === "claude-code" && a.driver);
-    for (const agent of claude) {
-      if (agent.busy) {
-        agent.info(`${trusted ? "Trusted" : "No longer trusted"}: this agent picks it up the next time it starts.`);
-        continue;
-      }
-      await agent.driver?.dispose().catch(() => undefined);
-      agent.driver = null;
-      agent.info(trusted ? "Restarted with this folder's own settings (trusted)." : "Restarted without this folder's own settings.");
-      try {
-        await this.launch(project, agent);
-      } catch (err) {
-        agent.error(errText(err));
-      }
+    rememberTrust(this.config, project.cwd, trusted);
+    this.persistConfig();
+    for (const agent of project.agents) {
+      if (!(agent.driver instanceof ClaudeCodeDriver)) continue;
+      agent.driver.settingsChanged();
+      agent.info(
+        `${trusted ? "Trusted" : "No longer trusted"}: Claude Code restarts ${trusted ? "with" : "without"} this folder's own settings ${agent.busy ? "when this turn ends" : "at the next message"}.`,
+      );
     }
     this.scheduleSave();
     this.notifier.changed();
@@ -840,11 +841,13 @@ export class Hub implements ProjectRuntime {
     let restored = 0;
     for (const p of saved.projects) {
       if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => samePath(x.cwd, p.cwd))) continue;
+      const trusted = p.trusted ?? (distrusted(this.config, p.cwd) ? false : undefined);
       const project = new Project(
-        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode, trusted: p.trusted },
+        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode, trusted },
         this.notifier,
         this,
       );
+      rememberTrust(this.config, project.cwd, project.trusted);
       if (p.createdAt) project.createdAt = p.createdAt;
       project.tasks = Array.isArray(p.tasks) ? p.tasks : [];
       project.messages = Array.isArray(p.messages) ? p.messages : [];
@@ -881,6 +884,7 @@ export class Hub implements ProjectRuntime {
     }
     if (restored) {
       this.activeIndex = Math.min(Math.max(0, saved.active ?? 0), this.projects.length - 1);
+      this.persistConfig();
       this.notifier.changed();
     }
     return restored;

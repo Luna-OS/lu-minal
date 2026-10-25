@@ -150,7 +150,7 @@ async function buildTarget(bun: BunLike, t: ReleaseTarget, opts: Options): Promi
     minify: opts.minify,
     sourcemap: "none",
     define: {
-      "process.env.LU_MINAL_VERSION": JSON.stringify(opts.version),
+      "process.env.LU_MINAL_BUILD_VERSION": JSON.stringify(opts.version),
       "process.env.LU_MINAL_TARGET": JSON.stringify(t.name),
       "process.env.NODE_ENV": JSON.stringify("production"),
     },

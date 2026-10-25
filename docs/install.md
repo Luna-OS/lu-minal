@@ -4,11 +4,10 @@ lu-minal runs the same on **Windows, macOS and Linux**. Pick whichever fits:
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| **npm** (Node 22+) | `npm i -g lu-minal` | `npm i -g lu-minal` | `npm i -g lu-minal` |
-| **Try without installing** | `npx lu-minal` | `npx lu-minal` | `npx lu-minal` |
 | **Installer** (standalone binary, no Node needed) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` | same as macOS |
 | **Download a binary** | `lu-minal-windows-x64.exe`, `-arm64.exe` | `lu-minal-macos-arm64`, `-x64` | `lu-minal-linux-x64`, `-arm64`, `-musl` builds |
 | **App / integration** | Windows Terminal profile | the native **lu-minal app** (`LuMinal.app`) | applications-menu entry |
+| **From source** (Node 22+) | see [below](#from-source) | see [below](#from-source) | see [below](#from-source) |
 
 Then open a terminal in a project folder and run `lu-minal` (or `lu-minal path/to/project`).
 `lu-minal --version` prints the version, `lu-minal --help` lists the sub-commands.
@@ -16,15 +15,24 @@ Then open a terminal in a project folder and run `lu-minal` (or `lu-minal path/t
 To sign in to Claude with your subscription, lu-minal uses the official Claude Code CLI; it
 offers to install it on first use (ctrl+l). Other providers need nothing installed.
 
-## npm
+## From source
+
+lu-minal is not published to npm yet; on a system without a release binary, or to run the newest
+code, build it from a checkout. Needs Node.js 22 or newer and git:
 
 ```sh
-npm i -g lu-minal       # then: lu-minal
-npx lu-minal            # run the latest version once
+git clone https://github.com/Luna-OS/lu-minal
+cd lu-minal
+npm ci
+npm run build           # dist/cli.js
+npm link                # puts lu-minal on your PATH; or run node dist/cli.js
 ```
 
-Needs Node.js 22 or newer. On Windows, npm installs a `lu-minal.cmd` shim into
-`%APPDATA%\npm`, which is on the PATH after Node's installer. Update with `npm i -g lu-minal@latest`.
+On Windows, `npm link` installs a `lu-minal.cmd` shim into `%APPDATA%\npm`, which is on the PATH
+after Node's installer. On macOS and Linux it links into npm's global `bin` folder; if that fails
+with EACCES because the folder belongs to root, use a Node version manager (nvm, fnm, Volta) or
+`npm config set prefix ~/.local`. To update, run `git pull`, `npm ci` and `npm run build` in the
+checkout; `npm unlink -g lu-minal` removes the link.
 
 ## Standalone binaries
 
@@ -128,7 +136,7 @@ scheme (the Moon palette: the night-950 sky, lavender, mint, a moonlight-gold cu
 Cascadia Mono. It is a [JSON fragment](https://learn.microsoft.com/windows/terminal/json-fragment-extensions)
 in `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\lu-minal\lu-minal.json`, so your own
 `settings.json` is never touched; Windows Terminal picks it up the next time it starts. The
-profile starts the lu-minal you ran the command with (the binary, or node with the npm script).
+profile starts the lu-minal you ran the command with (the binary, or node with a source build).
 You can also pick "Moon Dark" for any other profile in Windows Terminal's settings.
 
 ## The macOS app
@@ -154,8 +162,8 @@ in [macos/README.md](../macos/README.md).
 
 ## Linux applications menu
 
-install.sh adds lu-minal to the applications menu on desktops (GNOME, KDE, Xfce, ...). For an
-npm install or a binary you placed yourself, run from a checkout or release:
+install.sh adds lu-minal to the applications menu on desktops (GNOME, KDE, Xfce, ...). For a
+source build or a binary you placed yourself, run from a checkout or release:
 
 ```sh
 linux/install-desktop.sh                     # uses the lu-minal on your PATH

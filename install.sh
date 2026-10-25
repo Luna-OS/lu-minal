@@ -51,7 +51,7 @@ detect_os() {
     MINGW* | MSYS* | CYGWIN* | Windows_NT)
       die "This is Windows: run install.ps1 in PowerShell instead:
     irm https://raw.githubusercontent.com/$REPO/main/install.ps1 | iex" ;;
-    *) die "There is no lu-minal binary for $(uname -s). Install it with npm instead: npm i -g lu-minal" ;;
+    *) die "There is no lu-minal binary for $(uname -s). Build it from source instead (Node 22+): https://github.com/$REPO#from-source" ;;
   esac
 }
 
@@ -60,14 +60,14 @@ detect_arch() {
   case "$arch" in
     x86_64 | amd64) arch=x64 ;;
     arm64 | aarch64 | armv8* | arm64e) arch=arm64 ;;
-    *) die "There is no lu-minal binary for the $arch CPU. Install it with npm instead: npm i -g lu-minal" ;;
+    *) die "There is no lu-minal binary for the $arch CPU. Build it from source instead (Node 22+): https://github.com/$REPO#from-source" ;;
   esac
   if [ "$1" = macos ] && [ "$arch" = x64 ]; then
     # An x64 shell under Rosetta on Apple silicon still gets the native binary.
     if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then arch=arm64; fi
   fi
   if [ "$1" = linux ] && [ "$arch" = arm64 ] && has getconf && [ "$(getconf LONG_BIT 2>/dev/null || echo 64)" = 32 ]; then
-    die "This is a 32-bit system on a 64-bit CPU; lu-minal needs a 64-bit system. Install it with npm instead: npm i -g lu-minal"
+    die "This is a 32-bit system on a 64-bit CPU; lu-minal needs a 64-bit system. Build it from source instead (Node 22+): https://github.com/$REPO#from-source"
   fi
   echo "$arch"
 }
@@ -304,7 +304,7 @@ main() {
     if [ -n "$libc" ]; then
       warn "It did not start. The musl build needs the C++ runtime: apk add libstdc++ (Alpine)"
     else
-      warn "It did not start (\`$dir/lu-minal --version\` failed). On very old systems, try: npm i -g lu-minal"
+      warn "It did not start (\`$dir/lu-minal --version\` failed). On very old systems, build it from source instead (Node 22+): https://github.com/$REPO#from-source"
     fi
   fi
 

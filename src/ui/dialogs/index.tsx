@@ -222,7 +222,8 @@ export function createLaunchers(
               onSelect={async (item) => {
                 if (item.id === "install") {
                   try {
-                    const file = await installPlugin({ port: s.port, token: bridgeToken() });
+                    // The token the running bridge accepts (the file may have changed since it started).
+                    const file = await installPlugin({ port: s.port, token: hub.robloxToken ?? bridgeToken() });
                     hub.toast(`Plugin installed: ${tildify(file)} - restart Studio or reload plugins.`, "success");
                   } catch (err) {
                     hub.toast(err instanceof Error ? err.message : String(err), "error");

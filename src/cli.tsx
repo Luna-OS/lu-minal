@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { render } from "ink";
 import React from "react";
+import { forgetAcpModels } from "./agents/acp/models.js";
 import { acpEnv, findAcpAgent, findAcpProgram } from "./agents/acp/presets.js";
 import { readClaudeAccount } from "./agents/claude-code/account.js";
 import { findClaude } from "./agents/claude-code/cli.js";
@@ -25,6 +26,7 @@ import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
 import { bridgeToken } from "./roblox/token.js";
 import { ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
+import { VERSION } from "./version.js";
 
 // `lu-minal models | head` closes the pipe early: end quietly instead of crashing with EPIPE
 // (Node throws an unhandled 'error' event; the Bun binaries print a stack trace and exit 1).
@@ -34,19 +36,6 @@ for (const stream of [process.stdout, process.stderr]) {
     throw err;
   });
 }
-
-/** The version: baked into the standalone binaries, read from package.json for npm installs. */
-function readVersion(): string {
-  if (process.env.LU_MINAL_VERSION) return process.env.LU_MINAL_VERSION;
-  try {
-    const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: string };
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
-export const VERSION = readVersion();
 
 const HELP = `lu-minal ${VERSION} - a team of coding agents under the night sky
 
@@ -178,7 +167,10 @@ async function subcommand(args: Args): Promise<number | null> {
           return 0;
         }
         const loginExe = acp.login.command === acp.command ? exe : (findProgram(acp.login.command) ?? acp.login.command);
-        return runInherit(loginExe, acp.login.args, acpEnv(acp));
+        const code = await runInherit(loginExe, acp.login.args, acpEnv(acp));
+        // The sign-in may have added providers: the next start asks for the models again.
+        if (code === 0) forgetAcpModels(acp, cacheDir());
+        return code;
       }
       const auth = AuthStore.default();
       if (rest[1]) {

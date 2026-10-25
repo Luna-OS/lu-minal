@@ -47,7 +47,7 @@ function Install-LuMinal {
   switch -Regex ($arch) {
     '^(AMD64|x64|x86_64)$' { $arch = 'x64'; break }
     '^(ARM64|arm64|aarch64)$' { $arch = 'arm64'; break }
-    default { throw "There is no lu-minal binary for the $arch CPU. Install it with npm instead: npm i -g lu-minal" }
+    default { throw "There is no lu-minal binary for the $arch CPU. Build it from source instead (Node 22+): https://github.com/Luna-OS/lu-minal#from-source" }
   }
   $asset = "lu-minal-windows-$arch.exe"
 

@@ -34,7 +34,8 @@ start with "LuMinal can't be opened because Apple cannot check it for malicious 
 
 The app contains its own lu-minal (`LuMinal.app/Contents/Resources/bin/lu-minal`, a universal
 arm64 + x86_64 binary), so nothing else needs to be installed. A build without it runs the
-`lu-minal` on your PATH instead (`npm i -g lu-minal` or `install.sh`).
+`lu-minal` on your PATH instead (`install.sh`, or a build from source:
+https://github.com/Luna-OS/lu-minal#from-source).
 
 ## How it starts lu-minal
 

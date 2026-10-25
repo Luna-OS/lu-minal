@@ -20,6 +20,7 @@ import { workVerb } from "../../core/verbs.js";
 import { isWindows } from "../../platform/paths.js";
 import { killTree, spawnProgram, withProgramPath } from "../../platform/process.js";
 import type { ToolDisplay } from "../../tools/types.js";
+import { VERSION } from "../../version.js";
 import { firstLine } from "../claude-code/display.js";
 import type { McpLink } from "../claude-code/driver.js";
 import {
@@ -615,7 +616,7 @@ export class AcpDriver implements AgentDriver {
         {
           protocolVersion: ACP_PROTOCOL_VERSION,
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-          clientInfo: { name: "lu-minal", title: "lu-minal", version: this.deps.version ?? process.env.LU_MINAL_VERSION ?? "dev" },
+          clientInfo: { name: "lu-minal", title: "lu-minal", version: this.deps.version ?? VERSION },
         },
         { timeoutMs },
       );

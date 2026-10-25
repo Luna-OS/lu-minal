@@ -22,7 +22,7 @@ enum Launcher {
     printf '  This build of the app has no lu-minal inside, and there is none on your PATH.\r\n'
     printf '  Install it with one of these, then press Cmd+N:\r\n\r\n'
     printf '    curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh | sh\r\n'
-    printf '    npm i -g lu-minal\r\n\r\n'
+    printf '    or build it from source: https://github.com/Luna-OS/lu-minal#from-source\r\n\r\n'
     exit 127
     """#
 

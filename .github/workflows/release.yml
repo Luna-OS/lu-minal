@@ -8,8 +8,10 @@ on:
   push:
     tags: ["v*"]
 
+# Read-only for every job; only publish gets a write token (npm ci's install scripts, the tests and
+# the bundlers run in the others).
 permissions:
-  contents: write
+  contents: read
 
 env:
   BUN_VERSION: "1.4.4"
@@ -22,6 +24,8 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: version
         name: The tag must match package.json
         run: |
@@ -43,6 +47,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -57,6 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -81,6 +89,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -102,6 +112,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -138,6 +150,8 @@ jobs:
     name: Publish the release
     needs: [version, test, linux, windows, macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -156,7 +170,7 @@ jobs:
           done
           sha256sum lu-minal-* > SHA256SUMS
           cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: lu-minal ${{ needs.version.outputs.version }}
           files: assets/*

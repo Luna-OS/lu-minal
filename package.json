@@ -17,6 +17,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
+    "prepack": "npm run build",
     "dev": "tsx src/cli.tsx",
     "start": "node dist/cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",

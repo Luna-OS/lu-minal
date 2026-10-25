@@ -7,7 +7,7 @@
 // model: "opencode/big-pickle" }.
 import fs from "node:fs";
 import path from "node:path";
-import { runProgram } from "../../platform/process.js";
+import { runProgram, withProgramPath } from "../../platform/process.js";
 import type { ModelInfo } from "../../providers/models.js";
 import { ACP_DEFAULT_MODEL, acpEnv, type AcpPreset } from "./presets.js";
 
@@ -177,6 +177,15 @@ function writeModelCache(file: string, at: number, models: ModelInfo[]): void {
   }
 }
 
+/** Drops the cached list, so the next listAcpModels asks the CLI (a sign-in may add providers). */
+export function forgetAcpModels(preset: AcpPreset, cacheDir: string): void {
+  try {
+    fs.rmSync(cacheFile(cacheDir, preset), { force: true });
+  } catch {
+    // a day old at most anyway
+  }
+}
+
 /**
  * The models to offer for an ACP agent: "default", then OpenCode's own list (`opencode models
  * --verbose`, cached for a day in `cacheDir`) or the preset's static list. Never throws; when the
@@ -199,7 +208,10 @@ export async function listAcpModels(preset: AcpPreset, opts: ListAcpModelsOption
     opts.run ??
     ((exe: string, args: string[], o: { env: NodeJS.ProcessEnv; timeoutMs: number }) => runProgram(exe, args, { env: o.env, timeoutMs: o.timeoutMs }));
   try {
-    const res = await run(opts.exe, ["models", "--verbose"], { env: acpEnv(preset, opts.env ?? process.env), timeoutMs: opts.timeoutMs ?? 60_000 });
+    // npm-installed agents are node scripts: the node next to the program must be on the PATH even
+    // when lu-minal was started from the Dock / Finder with a bare one (as in the ACP driver).
+    const env = withProgramPath(acpEnv(preset, opts.env ?? process.env), opts.exe);
+    const res = await run(opts.exe, ["models", "--verbose"], { env, timeoutMs: opts.timeoutMs ?? 60_000 });
     const models = parseOpenCodeModels(res.stdout, preset.id);
     if (models.length) {
       if (file) writeModelCache(file, now(), models);

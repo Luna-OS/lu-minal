@@ -60,21 +60,37 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
   Gruvbox, Rosé Pine, Mono – or ask an agent to design a new one (`create_theme`).
 - **Roblox Studio.** A Studio plugin connects to lu-minal, and agents can read the place tree, edit
   scripts, create instances and run Luau in Studio.
-- **Windows, macOS and Linux.** `npx lu-minal`, a standalone binary per platform, and a native
-  macOS app written in Swift.
+- **Windows, macOS and Linux.** A standalone binary per platform, a native macOS app written in
+  Swift, or a build from source with Node.
 
 ## Install
 
 | | |
 | --- | --- |
-| **npm** (any OS, Node 22+) | `npm i -g lu-minal` or `npx lu-minal` |
 | **macOS / Linux** | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` |
 | **Windows** (PowerShell) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` |
 | **macOS app** | `lu-minal-macos-app.dmg` (or `.zip`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest): **LuMinal.app**, a native Swift window running lu-minal |
 | **Standalone binary** | `lu-minal-linux-x64`, `lu-minal-macos-arm64`, `lu-minal-windows-x64.exe`, … from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), with `SHA256SUMS` (all files: [docs/install.md](docs/install.md)) |
+| **From source** (any OS, Node 22+) | `git clone https://github.com/Luna-OS/lu-minal && cd lu-minal && npm ci && npm run build && npm link` |
 
 Then run `lu-minal` in a project folder. Details for every platform (Windows Terminal profile,
 the Linux desktop entry, terminals with true colour) are in [docs/install.md](docs/install.md).
+
+### From source
+
+lu-minal is not published to npm yet. With Node.js 22 or newer and git, on any system:
+
+```sh
+git clone https://github.com/Luna-OS/lu-minal
+cd lu-minal
+npm ci
+npm run build
+npm link        # puts lu-minal on your PATH
+```
+
+To update, run `git pull`, `npm ci` and `npm run build` in that folder; `npm unlink -g lu-minal`
+removes it. If `npm link` fails with EACCES, your global npm folder belongs to root: use a Node
+version manager (nvm, fnm, Volta) or point npm at your home folder (`npm config set prefix ~/.local`).
 
 ## Sign in
 
@@ -179,7 +195,7 @@ npm install
 npm run dev          # run from source
 npm test             # vitest
 npm run typecheck
-npm run build        # dist/ for npm
+npm run build        # dist/ (node dist/cli.js; npm link puts it on the PATH)
 npm run build:bin    # standalone binaries for every platform (needs Bun)
 npm run build:app    # macOS only: LuMinal.app in macos/build (needs Xcode)
 ```

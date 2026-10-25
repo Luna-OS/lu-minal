@@ -186,6 +186,17 @@ const entries = <K extends LogEntry["kind"]>(agent: Agent, kind: K) => agent.log
 // ---- the tests -------------------------------------------------------------------------------
 
 describe("NativeDriver", () => {
+  it("tells the statistics one turn per model request", async () => {
+    const { agent, driver } = await setup({
+      steps: [callTools([{ name: "echo", arguments: { text: "one" } }], { usage: usage(100, 10) }), reply("Done.", { usage: usage(200, 5) })],
+    });
+    const turns: boolean[] = [];
+    agent.onUsage = (u) => void turns.push(u.turn);
+    agent.deliver({ from: "you", text: "hello" });
+    await driver.idle();
+    expect(turns).toEqual([true, true]);
+  });
+
   it("starts idle and answers a message with streamed text, usage and cost", async () => {
     const { agent, client, driver } = await setup({ steps: [reply("Hi! The moon is full tonight.", { usage: usage(1000, 50, 400) })] });
     expect(agent.status).toBe("idle");

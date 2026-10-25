@@ -282,7 +282,11 @@ export function createLaunchers(
             onSelect={(item) => {
               if (!item.id.startsWith("c:")) return;
               close();
-              getCtx().setPrompt(`/${item.id.slice(2)} `);
+              const ctx = getCtx();
+              if (ctx.agent) return ctx.setPrompt(`/${item.id.slice(2)} `);
+              // No prompt to put it in (the welcome screen): run it.
+              const cmd = COMMANDS.find((c) => c.name === item.id.slice(2));
+              if (cmd) void Promise.resolve(cmd.run(ctx, "")).catch((err) => hub.toast(String(err), "error"));
             }}
           />
         ),
@@ -448,15 +452,14 @@ function StatsDialog({ hub, onClose }: { hub: Hub; onClose: () => void }) {
     },
     { text: `Lines written by agents: +${s.lines.added.toLocaleString("en-US")} -${s.lines.removed.toLocaleString("en-US")}`, color: c.muted },
   ];
-  if (confirmReset) {
-    lines.push("", { text: "Reset all statistics? y = yes, any other key = no", color: c.warning });
-  }
+  // The reset question goes in the hint line, which stays in view however far the list is scrolled.
   return (
     <MessageDialog
       theme={hub.theme}
       title="Statistics"
       lines={lines}
-      hints="x reset · enter / esc close"
+      hints={confirmReset ? "Reset all statistics? y = yes, any other key = no" : "x reset · enter / esc close"}
+      hintsColor={confirmReset ? c.warning : undefined}
       onKey={(input) => {
         if (confirmReset) {
           setConfirmReset(false);

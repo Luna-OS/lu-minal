@@ -506,7 +506,8 @@ export class AcpDriver implements AgentDriver {
       const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
       const input = n(usage.inputTokens) + n(usage.cachedReadTokens) + n(usage.cachedWriteTokens);
       const output = n(usage.outputTokens) + n(usage.thoughtTokens);
-      if (input || output) this.agent.addUsage({ input, output });
+      // The prompt's turn (the session's cost arrives separately, in usage_update).
+      if (input || output) this.agent.addUsage({ input, output, turn: true });
     }
     const note = stopReasonNote(r.stopReason, this.name);
     if (!note) return "idle";

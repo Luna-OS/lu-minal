@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILTIN_THEMES, builtinTheme } from "../../src/themes/builtin.js";
-import { ThemeManager } from "../../src/themes/manager.js";
+import { startThemes, ThemeManager } from "../../src/themes/manager.js";
 import type { Theme } from "../../src/themes/types.js";
 import { themeToJson } from "../../src/themes/validate.js";
 
@@ -247,5 +247,20 @@ describe("ThemeManager", () => {
     expect(list.slice(BUILTIN_THEMES.length).map((t) => t.label)).toEqual(["Alpha", "Mid", "Zeta"]);
     expect(list.find((t) => t.name === "mid")!.dark).toBe(false);
     expect(themeToJson(m.get("alpha")!)).toContain('"name": "alpha"');
+  });
+});
+
+describe("startThemes", () => {
+  it("starts with the saved theme, or --theme's for this run", () => {
+    expect(startThemes({ dir, initial: "nord" }).themes.current.name).toBe("nord");
+    const flagged = startThemes({ dir, initial: "nord", flag: "Tokyo Night" });
+    expect(flagged.themes.current.name).toBe("tokyo-night");
+    expect(flagged.unknown).toBeNull();
+  });
+
+  it("names a --theme that is no theme and keeps the saved one", () => {
+    const started = startThemes({ dir, initial: "nord", flag: "nope" });
+    expect(started.unknown).toBe("nope");
+    expect(started.themes.current.name).toBe("nord");
   });
 });

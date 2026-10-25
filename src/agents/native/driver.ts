@@ -382,6 +382,7 @@ export class NativeDriver implements AgentDriver {
             output: ev.outputTokens,
             context: ev.inputTokens + ev.outputTokens,
             costUsd: costOf(ev, resolved.model.cost),
+            turn: true,
           });
           break;
         }

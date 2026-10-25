@@ -35,6 +35,8 @@ export interface UsageRecord {
   input: number;
   output: number;
   costUsd: number;
+  /** Model turns this report closes (1 when left out). */
+  turns?: number;
 }
 
 export interface StatsSummary {
@@ -107,10 +109,10 @@ export class StatsStore {
 
   /** Adds one usage report. */
   record(r: UsageRecord): void {
-    if (!r.input && !r.output && !r.costUsd) return;
+    if (!r.input && !r.output && !r.costUsd && !r.turns) return;
     const day = dayKey(r.at);
     const key = `${r.provider}/${r.model}`;
-    const amount: UsageAmount = { input: r.input, output: r.output, costUsd: r.costUsd, turns: 1 };
+    const amount: UsageAmount = { input: r.input, output: r.output, costUsd: r.costUsd, turns: r.turns ?? 1 };
     const byModel = (this.data.days[day] ??= {});
     add((byModel[key] ??= zero()), amount);
     if (this.total !== null) this.total += r.input + r.output;

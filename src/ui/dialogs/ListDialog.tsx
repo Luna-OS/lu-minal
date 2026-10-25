@@ -63,6 +63,8 @@ export function DialogBox(props: {
   subtitle?: string;
   children: React.ReactNode;
   hints?: string;
+  /** The hint line's colour (faint by default). */
+  hintsColor?: string;
 }) {
   const size = useWindowSize();
   const c = props.theme.colors;
@@ -97,7 +99,7 @@ export function DialogBox(props: {
         {props.children}
       </Box>
       {props.hints ? (
-        <Text color={c.faint} wrap="truncate">
+        <Text color={props.hintsColor ?? c.faint} wrap="truncate">
           {props.hints}
         </Text>
       ) : null}

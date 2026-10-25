@@ -574,6 +574,31 @@ describe("ClaudeCodeDriver", () => {
     expect(t.agent.log.some((e) => e.kind === "error" || e.kind === "info")).toBe(false);
   });
 
+  it("tells the statistics one turn per model request, however many usage reports it brings", async () => {
+    const t = setup();
+    const turns: boolean[] = [];
+    t.agent.onUsage = (u) => void turns.push(u.turn);
+    await t.driver.start();
+    // A reply: its context, its output and the turn's cost.
+    t.agent.deliver({ from: "you", text: "hello" });
+    await t.idle();
+    expect(turns.length).toBeGreaterThan(1);
+    expect(turns.filter(Boolean)).toHaveLength(1);
+    // An edit takes two model requests.
+    const file = path.join(t.dir, "room.lua");
+    fs.writeFileSync(file, "old line\n");
+    t.agent.deliver({ from: "you", text: `edit ${file}` });
+    await t.idle();
+    expect(turns.filter(Boolean)).toHaveLength(3);
+    // Without partial messages the result's usage is the turn.
+    const plain = path.join(t.dir, "plain.jsonl");
+    const lines = fs.readFileSync(realTranscriptPath("stream-reply-ok.jsonl"), "utf8").split("\n").filter(Boolean);
+    fs.writeFileSync(plain, lines.filter((l) => JSON.parse(l).type !== "stream_event").join("\n"));
+    t.agent.deliver({ from: "you", text: `replay 1 ${plain}` });
+    await t.idle();
+    expect(turns.filter(Boolean)).toHaveLength(4);
+  });
+
   it("replays real permission prompts and an interrupted turn as tool rows", async () => {
     const t = setup();
     await t.driver.start();

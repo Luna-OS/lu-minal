@@ -24,7 +24,7 @@ import { startOpenRouterLogin } from "./providers/openrouter.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
 import { bridgeToken } from "./roblox/token.js";
-import { ThemeManager } from "./themes/manager.js";
+import { startThemes, ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
 import { VERSION } from "./version.js";
 
@@ -277,9 +277,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (args.flags.has("no-sky")) config.sky.enabled = false;
   const themeFlag = args.flags.get("theme");
-  const themes = new ThemeManager({
+  // Before the Hub exists, which saves every theme change: --theme is for this run only.
+  const { themes, unknown: unknownTheme } = startThemes({
     dir: path.join(configDir(), "themes"),
-    initial: typeof themeFlag === "string" ? themeFlag : config.theme,
+    initial: config.theme,
+    flag: typeof themeFlag === "string" ? themeFlag : undefined,
   });
   const hub = new Hub({
     config,
@@ -321,6 +323,7 @@ async function main(): Promise<void> {
   // Read the last session before anything can overwrite it.
   const saved = args.flags.has("fresh") ? null : hub.readSavedSession();
   await hub.init();
+  if (unknownTheme) hub.toast(`There is no theme "${unknownTheme}" - using ${themes.current.label}.`, "warning");
   const modelFlag = args.flags.get("model");
   const lead = typeof modelFlag === "string" ? parseModelRef(modelFlag) ?? undefined : undefined;
   const restored = saved ? await hub.restoreSession(saved) : 0;

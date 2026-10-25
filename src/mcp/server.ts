@@ -556,8 +556,11 @@ export class McpServer {
     const tools = binding
       ? binding.tools.filter((t) => t.name !== APPROVE_TOOL_NAME && (!t.leadOnly || binding.agent.role === "lead"))
       : [];
+    const listed = tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.parameters }));
+    // The approve tool is Claude Code's permission prompt; ACP agents ask over ACP instead.
+    if (binding?.agent.driver?.kind === "acp") return listed;
     return [
-      ...tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.parameters })),
+      ...listed,
       { name: APPROVE_TOOL.name, description: APPROVE_TOOL.description, inputSchema: APPROVE_TOOL.inputSchema },
     ];
   }

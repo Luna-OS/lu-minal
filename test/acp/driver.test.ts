@@ -103,7 +103,7 @@ function setup(
   cleanups.push(async () => {
     await driver.dispose();
     for (const c of children) if (c.exitCode === null) c.kill("SIGKILL");
-    if (!opts.dir) fs.rmSync(dir, { recursive: true, force: true });
+    if (!opts.dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const logged = (): Logged[] =>
     fs.existsSync(logFile)
@@ -308,7 +308,7 @@ describe("AcpDriver", () => {
 
   it("kills an agent that ignores the cancel and resumes its session in a new process", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-acp-"));
-    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
     const t = setup({ dir, stateFile: path.join(dir, "state.json") });
     await t.driver.start();
     t.agent.deliver({ from: "you", text: "hang" });
@@ -430,7 +430,7 @@ describe("AcpDriver", () => {
 
   it("loads an earlier session without showing its replayed history", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-acp-"));
-    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
     const stateFile = path.join(dir, "state.json");
     const first = setup({ dir, stateFile, env: { FAKE_ACP_LOAD: "1" } });
     await first.driver.start();

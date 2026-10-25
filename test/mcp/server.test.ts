@@ -322,6 +322,14 @@ describe("McpServer: tools", () => {
     expect(workerList.map((t: any) => t.name)).toEqual(["echo", "approve"]);
   });
 
+  it("leaves the approve tool out for ACP agents (they ask over ACP)", async () => {
+    worker.driver = { kind: "acp" } as Agent["driver"];
+    const w = await register(worker);
+    const list = (await post(w, { jsonrpc: "2.0", id: 1, method: "tools/list" })).json.result.tools;
+    expect(list.map((t: any) => t.name)).toEqual(["echo"]);
+    worker.driver = null;
+  });
+
   it("runs a tool quietly and keeps its display for the driver", async () => {
     const r = await register(lead);
     const res = await post(r, call(7, "echo", { text: "hi" }));

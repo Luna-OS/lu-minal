@@ -32,13 +32,17 @@ describe("dropped files", () => {
     const b = path.join(dir, "notes.md");
     fs.writeFileSync(a, PNG);
     fs.writeFileSync(b, "# notes");
-    const quoted = `'${a}' '${b}'`;
-    expect(droppedFiles(quoted, "linux")).toEqual([a, b]);
-    expect(droppedFiles(`${a.replace(/ /g, "\\ ")}`, "linux")).toEqual([a]);
-    expect(droppedFiles(`please look at '${a}'`, "linux")).toBeNull();
-    expect(droppedFiles("hello world", "linux")).toBeNull();
-    expect(droppedFiles(`'${path.join(dir, "missing.png")}'`, "linux")).toBeNull();
-    expect(droppedFiles(`'${dir}'`, "linux")).toBeNull();
+    // The real paths of this OS, pasted the way its terminals do it.
+    const platform = process.platform;
+    const win = platform === "win32";
+    const q = (p: string) => (win ? `"${p}"` : `'${p}'`);
+    expect(droppedFiles(`${q(a)} ${q(b)}`, platform)).toEqual([a, b]);
+    // macOS and Linux terminals also escape spaces with a backslash (a path separator on Windows).
+    if (!win) expect(droppedFiles(a.replace(/ /g, "\\ "), platform)).toEqual([a]);
+    expect(droppedFiles(`please look at ${q(a)}`, platform)).toBeNull();
+    expect(droppedFiles("hello world", platform)).toBeNull();
+    expect(droppedFiles(q(path.join(dir, "missing.png")), platform)).toBeNull();
+    expect(droppedFiles(q(dir), platform)).toBeNull();
   });
 });
 

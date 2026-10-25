@@ -68,10 +68,10 @@ function LoginDialog({ hub, ui, close, preselect }: { hub: Hub; ui: UiServices; 
   const rest = providers.filter((p) => !p.featured && p.kind !== "acp");
   const items: ListItem[] = [
     ...featured.map((p) => providerItem(hub, p, "AI providers")),
-    ...agents.map((p) => providerItem(hub, p, "Coding agents")),
     ...(all
       ? rest.map((p) => providerItem(hub, p, `All providers (${rest.length})`))
       : [{ id: "more", label: `All providers… (${rest.length} more)`, hint: "models.dev catalog", group: "AI providers" }]),
+    ...agents.map((p) => providerItem(hub, p, "Coding agents")),
     { id: "git:github", label: "GitHub", hint: "open repositories in new tabs", group: "Repositories", badge: hub.auth.secretFor("github") || process.env.GITHUB_TOKEN || process.env.GH_TOKEN ? { text: "✓ token", color: c.success } : findGh() ? { text: "gh", color: c.faint } : undefined },
     ...hub.config.forgejo.map((f) => ({
       id: `git:forgejo:${f.url}`,

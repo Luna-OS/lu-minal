@@ -231,7 +231,7 @@ describe("project trust", () => {
     await hub.setTrust(t.project, true);
     await t.idle("the first turn");
     t.agent.deliver({ from: "you", text: "hello" });
-    await waitFor(() => t.answers() === 2, "the second answer");
+    await waitFor(() => t.answers() === 2 && t.agent.status === "idle" && t.agent.turnStartedAt === null, "the second answer");
     const starts = t.starts();
     expect(starts).toHaveLength(2);
     expect(starts[0]).toContain("--setting-sources");
@@ -261,7 +261,7 @@ describe("project trust", () => {
     await hub.setTrust(t.project, false);
     await waitFor(() => driver.pid === null, "the old process to end");
     t.agent.deliver({ from: "you", text: "hello" });
-    await waitFor(() => t.answers() === 2, "the second answer");
+    await waitFor(() => t.answers() === 2 && t.agent.status === "idle" && t.agent.turnStartedAt === null, "the second answer");
     const starts = t.starts();
     expect(starts).toHaveLength(2);
     expect(starts[0]).not.toContain("--setting-sources");
@@ -278,7 +278,8 @@ describe("project trust", () => {
     // A teammate's send_message (or the user's enter) while /trust is on its way.
     t.agent.deliver({ from: "vega", text: "the build is green" });
     await pending;
-    await waitFor(() => t.answers() === 2, "the answer to the teammate");
+    // An answer's row appears when it starts streaming: wait for the turn to end before reading it.
+    await waitFor(() => t.answers() === 2 && t.agent.status === "idle" && t.agent.turnStartedAt === null, "the answer to the teammate");
     expect(t.agent.log.filter((e) => e.kind === "text").at(-1)).toMatchObject({ text: "got [message from vega] the build is green" });
   });
 });

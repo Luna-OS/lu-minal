@@ -197,8 +197,8 @@ case "$*" in
 esac
 `;
       for (const name of ["xclip", "wl-paste"]) fs.writeFileSync(path.join(bin, name), tool, { mode: 0o755 });
-      // osascript: the JavaScript asks for the pasteboard's file URLs (one path a line).
-      fs.writeFileSync(path.join(bin, "osascript"), `#!/bin/sh\n[ "$2" = JavaScript ] && printf '%s\\n' ${shots.map((f) => `'${f}'`).join(" ")}\n`, { mode: 0o755 });
+      // osascript: the JavaScript asks for the pasteboard's file URLs (a JSON list of paths).
+      fs.writeFileSync(path.join(bin, "osascript"), `#!/bin/sh\n[ "$2" = JavaScript ] && printf '%s\\n' '${JSON.stringify(shots)}'\n`, { mode: 0o755 });
       vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH ?? ""}`);
     });
 

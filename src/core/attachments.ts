@@ -342,13 +342,28 @@ const WINDOWS_FILES = [
   "foreach ($f in [System.Windows.Forms.Clipboard]::GetFileDropList()) { $f }",
 ].join(" ");
 
-/** Copied files as macOS lists them: the pasteboard's file URLs (Finder puts one per file). */
+/**
+ * Copied files as macOS lists them, as JSON: each pasteboard item's file URL (Finder puts one item
+ * per file), else Finder's older list of paths.
+ */
 const MACOS_FILES = [
   "ObjC.import('AppKit');",
-  "var urls = $.NSPasteboard.generalPasteboard.readObjectsForClassesOptions($([$.NSURL]), $({ NSPasteboardURLReadingFileURLsOnlyKey: true }));",
+  "var pb = $.NSPasteboard.generalPasteboard;",
   "var out = [];",
-  "if (urls && !urls.isNil()) for (var i = 0; i < urls.count; i++) out.push(urls.objectAtIndex(i).path.js);",
-  "out.join('\\n');",
+  "var items = pb.pasteboardItems;",
+  "var n = items && !items.isNil() ? items.count : 0;",
+  "for (var i = 0; i < n; i++) {",
+  "  var s = items.objectAtIndex(i).stringForType('public.file-url');",
+  "  if (!s || s.isNil()) continue;",
+  "  var u = $.NSURL.URLWithString(s);",
+  "  if (u && !u.isNil() && u.isFileURL) out.push(u.path.js);",
+  "}",
+  "if (!out.length) {",
+  "  var names = pb.propertyListForType('NSFilenamesPboardType');",
+  "  var m = names && !names.isNil() ? names.count : 0;",
+  "  for (var j = 0; j < m; j++) out.push(ObjC.unwrap(names.objectAtIndex(j)));",
+  "}",
+  "JSON.stringify(out);",
 ].join(" ");
 
 /**
@@ -372,7 +387,14 @@ export async function clipboardFiles(platform: NodeJS.Platform = process.platfor
   }
   if (platform === "darwin") {
     const out = await run("osascript", ["-l", "JavaScript", "-e", MACOS_FILES]);
-    return out === null ? [] : lines(out).filter((p) => p.startsWith("/"));
+    if (out === null) return [];
+    let list: unknown;
+    try {
+      list = JSON.parse(out.trim() || "[]");
+    } catch {
+      list = lines(out);
+    }
+    return Array.isArray(list) ? list.filter((p): p is string => typeof p === "string" && p.startsWith("/")) : [];
   }
   // Linux: only when the clipboard offers a uri-list (asking for a missing type can hang xclip).
   const tools = env.WAYLAND_DISPLAY

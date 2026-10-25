@@ -151,6 +151,14 @@ describe("classifyCommand", () => {
     expect(classifyCommand(command)).toBe(risk);
   });
 
+  it("classifies a command with Windows line ends as bash runs it, with LF", () => {
+    expect(classifyCommand("git status\r\n")).toBe("read");
+    expect(classifyCommand("ls\r\ncat a.txt\r\n")).toBe("read");
+    expect(classifyCommand("ls\r\nrm x\r\n")).toBe("exec");
+    // A lone "\r" is part of a word for bash.
+    expect(classifyCommand("ls\rrm -rf x")).toBe("exec");
+  });
+
   it("remembers commands by their first two words", () => {
     expect(commandAllowKey("npm test -- --watch=false")).toBe("bash:npm test");
     expect(commandAllowKey("git commit -m 'msg'")).toBe("bash:git commit");

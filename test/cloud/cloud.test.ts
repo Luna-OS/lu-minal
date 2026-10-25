@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   cloudReadiness,
   cloudStartCommand,
@@ -33,6 +33,18 @@ describe("cloudStartCommand", () => {
     if (mac.transcript) expect(mac.args).toEqual(["-q", "/tmp/t.log", "/usr/local/bin/claude", "--cloud", "fix it"]);
     const linux = cloudStartCommand("/usr/bin/claude", "fix 'it'", { platform: "linux", transcript: "/tmp/t.log" });
     if (linux.transcript) expect(linux.args).toEqual(["-q", "-e", "-c", "/usr/bin/claude --cloud 'fix '\\''it'\\'''", "/tmp/t.log"]);
+  });
+
+  it.runIf(process.platform !== "win32")("records into a private folder of its own, removed with the transcript", async () => {
+    const c = cloudStartCommand("/usr/bin/claude", "fix it", { platform: process.platform });
+    if (!c.transcript) return; // no `script` here
+    const dir = path.dirname(c.transcript);
+    expect(path.dirname(dir)).toBe(path.resolve(os.tmpdir()));
+    expect(path.basename(dir)).toMatch(/^lu-minal-cloud-/);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(c.args).toContain(c.transcript);
+    expect(sessionFromTranscript(c.transcript)).toBeNull();
+    await vi.waitFor(() => expect(fs.existsSync(dir)).toBe(false));
   });
 
   it("quotes for a POSIX shell", () => {

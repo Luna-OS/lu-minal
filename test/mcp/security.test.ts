@@ -84,6 +84,44 @@ describe("Claude Code's approvals", () => {
     });
   });
 
+  it("checks the file Claude Code opens: \"~\" expanded, trimmed, NFC, Git Bash paths on Windows", () => {
+    // Claude Code's expandPath trims the path, expands "~" and "~/" and normalizes it to NFC.
+    expect(claudeToolRisk("Read", { file_path: "~/.ssh/id_ed25519" }, project)).toBe("other");
+    expect(claudeToolRisk("Read", { file_path: " ~/.ssh/id_ed25519\n" }, project)).toBe("other");
+    expect(claudeToolRisk("Grep", { pattern: "BEGIN", path: "~" }, project)).toBe("other");
+    expect(claudeToolRisk("Edit", { file_path: "~/.bashrc", old_string: "a", new_string: "b" }, project)).toBe("other");
+    expect(assessClaudeTool("Write", { file_path: "~/.claude/settings.json", content: "{}" }, project)).toMatchObject({
+      risk: "other",
+      allowKey: `Write:${path.join(dir, ".claude", "settings.json")}`,
+    });
+    // Quoted: as written, and as lu-minal's own tools read it.
+    expect(claudeToolRisk("Read", { file_path: "'~/.ssh/id_ed25519'" }, project)).toBe("other");
+    expect(claudeToolRisk("Read", { file_path: "~/notes/a.md" }, project)).toBe("read");
+    expect(claudeToolRisk("Write", { file_path: " src/a.ts " }, project)).toBe("edit");
+    const nfc = path.join(dir, "caf\u00e9");
+    fs.mkdirSync(path.join(nfc, ".ssh"), { recursive: true });
+    vi.stubEnv("LU_MINAL_HOME_DIR", nfc);
+    expect(claudeToolRisk("Read", { file_path: path.join(dir, "cafe\u0301", ".ssh", "id_ed25519") }, project)).toBe("other");
+    // On Windows "/c/..." is Git Bash's spelling of C:\...
+    vi.stubEnv("LU_MINAL_HOME_DIR", "C:\\Users\\ada");
+    const win = "C:\\Users\\ada\\proj";
+    expect(claudeToolRisk("Read", { file_path: "/c/Users/ada/.ssh/id_rsa" }, win, "win32")).toBe("other");
+    expect(claudeToolRisk("Read", { file_path: "~/.ssh/id_rsa" }, win, "win32")).toBe("other");
+    expect(claudeToolRisk("Edit", { file_path: "/c/Users/ada/.bashrc" }, win, "win32")).toBe("other");
+    expect(claudeToolRisk("Edit", { file_path: "C:\\Users\\ada\\proj\\src\\a.ts" }, win, "win32")).toBe("edit");
+    // Without cygpath Claude Code keeps "/c/..." as \c\... on the current drive: outside the project.
+    expect(claudeToolRisk("Edit", { file_path: "/c/Users/ada/proj/src/a.ts" }, win, "win32")).toBe("other");
+  });
+
+  it("keeps the plain spelling too: a link named with quotes is not the file without them", () => {
+    try {
+      fs.symlinkSync(path.join(dir, ".ssh", "id_ed25519"), path.join(project, "'notes'"), "file");
+    } catch {
+      return; // no symlinks here
+    }
+    expect(claudeToolRisk("Read", { file_path: "'notes'" }, project)).toBe("other");
+  });
+
   it("keeps an always for one edit or command from covering others", () => {
     expect(assessClaudeTool("Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" }, project).allowKey).toBe("Edit");
     const outside = path.join(dir, ".bashrc");

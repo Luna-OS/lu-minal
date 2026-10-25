@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -49,9 +49,14 @@ function setup(opts: {
   onSpawn?: (args: string[], options: SpawnOptions) => void;
   interruptGraceMs?: number;
   permissionMode?: "ask" | "auto-edit" | "yolo" | "plan";
+  /** Another copy of the driver module (to catch its exit hook). */
+  Driver?: typeof ClaudeCodeDriver;
+  /** POSIX: a shell in front of the CLI starts a sleeper in its process group, like the CLI's own shells. */
+  grandchild?: boolean;
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lm-driver-"));
   const logFile = path.join(dir, "starts.jsonl");
+  const grandchildPid = path.join(dir, "grandchild.pid");
   const notifier = new Notifier();
   const runtime: ProjectRuntime = {
     launch: async () => undefined,
@@ -75,7 +80,7 @@ function setup(opts: {
   };
   const rateLimits: ClaudeRateLimitEvent[] = [];
   const children: ChildProcess[] = [];
-  const driver = new ClaudeCodeDriver({
+  const driver = new (opts.Driver ?? ClaudeCodeDriver)({
     agent,
     project,
     exe: opts.exe ?? "claude",
@@ -84,7 +89,9 @@ function setup(opts: {
     onRateLimit: (ev) => rateLimits.push(ev),
     spawnImpl: (_exe, args, options) => {
       opts.onSpawn?.(args, options);
-      const child = spawn(process.execPath, [FAKE, ...args], options);
+      const child = opts.grandchild
+        ? spawn("/bin/sh", ["-c", 'sleep 30 </dev/null >/dev/null 2>&1 & echo $! > "$0"; exec "$@"', grandchildPid, process.execPath, FAKE, ...args], options)
+        : spawn(process.execPath, [FAKE, ...args], options);
       children.push(child);
       return child;
     },
@@ -112,7 +119,22 @@ function setup(opts: {
   const texts = () => agent.log.filter((e): e is Extract<LogEntry, { kind: "text" }> => e.kind === "text").map((e) => e.text);
   const tools = () => agent.log.filter((e): e is Extract<LogEntry, { kind: "tool" }> => e.kind === "tool");
   const idle = (what = "the turn to end") => waitFor(() => agent.status === "idle" && agent.turnStartedAt === null, what);
-  return { dir, agent, project, driver, mcp, unregistered, rateLimits, children, starts, kinds, texts, tools, idle, endTurns, configFile };
+  return { dir, agent, project, driver, mcp, unregistered, rateLimits, children, starts, kinds, texts, tools, idle, endTurns, configFile, grandchildPid };
+}
+
+/** Whether a process still runs (a killed one nobody reaped yet is a zombie, not alive). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    if (process.platform === "linux") return !/^\d+ \([^)]*\) Z/.test(fs.readFileSync(`/proc/${pid}/stat`, "utf8"));
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
 }
 
 describe("ClaudeCodeDriver", () => {
@@ -726,5 +748,34 @@ describe("ClaudeCodeDriver", () => {
     // A disposed driver takes no more messages.
     t.driver.send({ from: "you", text: "hello" });
     expect(t.starts()).toHaveLength(1);
+  });
+
+  it.runIf(process.platform !== "win32")("ends the CLI's whole process tree when lu-minal exits", async () => {
+    // A fresh copy of the module, so the exit hook it sets up with its first CLI is caught here.
+    vi.resetModules();
+    const hooks: Array<() => void> = [];
+    const once = process.once.bind(process);
+    const spy = vi.spyOn(process, "once").mockImplementation(((event: string | symbol, listener: (...args: any[]) => void) => {
+      if (event !== "exit") return once(event, listener);
+      hooks.push(listener);
+      return process;
+    }) as typeof process.once);
+    let pid = 0;
+    try {
+      const { ClaudeCodeDriver: Driver } = await import("../../src/agents/claude-code/driver.js");
+      const t = setup({ Driver, grandchild: true });
+      await t.driver.start();
+      t.agent.deliver({ from: "you", text: "hello" });
+      await t.idle();
+      await waitFor(() => fs.existsSync(t.grandchildPid) && fs.readFileSync(t.grandchildPid, "utf8").trim() !== "", "the sleeper");
+      pid = Number(fs.readFileSync(t.grandchildPid, "utf8"));
+      expect(alive(pid)).toBe(true);
+      expect(hooks).toHaveLength(1);
+      hooks[0]();
+      await waitFor(() => !alive(pid), "the sleeper to end", 3000);
+    } finally {
+      spy.mockRestore();
+      if (pid && alive(pid)) process.kill(pid, "SIGKILL");
+    }
   });
 });

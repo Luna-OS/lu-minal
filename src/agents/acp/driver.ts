@@ -34,7 +34,6 @@ import {
   planSummary,
   resultDetail,
   assessAcpCall,
-  riskFor,
   rowStatus,
   stopReasonNote,
   toolKind,

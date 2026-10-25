@@ -99,13 +99,16 @@ function foldsCase(platform: NodeJS.Platform): boolean {
   return platform === "win32" || platform === "darwin";
 }
 
-/** A path in the form comparisons use: case folded where the file system ignores it. */
-function comparable(p: string, platform: NodeJS.Platform): string {
+/**
+ * A path in the form comparisons use: case folded where the file system ignores it (by default;
+ * `fold` decides where folding would make a check more lenient).
+ */
+function comparable(p: string, platform: NodeJS.Platform, fold = foldsCase(platform)): string {
   const api = pathApi(platform);
   let out = api.normalize(p);
   if (out.length > 1) out = out.replace(/[\\/]+$/, "");
   if (platform === "win32") out = out.replace(/\//g, "\\");
-  return foldsCase(platform) ? out.toLowerCase() : out;
+  return fold ? out.toLowerCase() : out;
 }
 
 /** Whether `child` is `parent` or inside it (both comparable). */
@@ -249,12 +252,17 @@ export function canonicalSegment(segment: string, platform: NodeJS.Platform = pr
   return `.${short[1]}`;
 }
 
-/** Whether `abs` is `cwd` or inside it, after following symlinks on both. */
+/**
+ * Whether `abs` is `cwd` or inside it, after following symlinks on both. Case counts except on
+ * Windows, as in protectedProjectPath: a case-sensitive macOS volume can hold /Proj next to
+ * /proj, and on the default one the real paths already have the case on disk.
+ */
 export function isRealInside(cwd: string, abs: string, platform: NodeJS.Platform = process.platform): boolean {
   const api = pathApi(platform);
   if (foreignShare(abs, cwd, platform)) return false;
-  const root = comparable(realPath(cwd, platform), platform);
-  const target = comparable(realPath(api.resolve(cwd, abs), platform), platform);
+  const fold = platform === "win32";
+  const root = comparable(realPath(cwd, platform), platform, fold);
+  const target = comparable(realPath(api.resolve(cwd, abs), platform), platform, fold);
   return within(root, target, platform);
 }
 

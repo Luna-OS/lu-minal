@@ -147,7 +147,10 @@ function syntaxOf(kind: ShellInfo["kind"] | undefined): ShellKind {
  * command that reads a secret store (~/.ssh, lu-minal's auth.json) is not "read".
  */
 export function classifyCommand(command: string, shell?: ShellInfo["kind"], cwd?: string): RiskKind {
-  return isReadOnlyShellCommand(command, { shell: syntaxOf(shell), cwd }) ? "read" : "exec";
+  const syntax = syntaxOf(shell);
+  // What runs: runCommand hands bash Windows line ends as LF (a lone "\r" stays and asks).
+  const text = syntax === "bash" && typeof command === "string" ? command.replace(/\r\n/g, "\n") : command;
+  return isReadOnlyShellCommand(text, { shell: syntax, cwd }) ? "read" : "exec";
 }
 
 /**

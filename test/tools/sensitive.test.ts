@@ -8,7 +8,7 @@ import { Agent } from "../../src/core/agent.js";
 import { Notifier } from "../../src/core/emitter.js";
 import { createGrepTool, readFileTool, writeFileTool, editFileTool } from "../../src/tools/fs.js";
 import { runToolCall } from "../../src/tools/run.js";
-import { assessRead, assessWrite, isUncPath, protectedProjectPath } from "../../src/tools/sensitive.js";
+import { assessRead, assessWrite, isRealInside, isUncPath, protectedProjectPath } from "../../src/tools/sensitive.js";
 import type { Tool } from "../../src/tools/types.js";
 import { makeCtx } from "./helpers.js";
 
@@ -67,6 +67,18 @@ describe("assessWrite", () => {
     expect(assessWrite(project, path.join(project, "notes.md"), { home })).toMatchObject({ risk: "other", outside: true });
     if (!link(path.join(outside, "new-file"), path.join(project, "later.md"), "file")) return;
     expect(assessWrite(project, path.join(project, "later.md"), { home })).toMatchObject({ risk: "other", outside: true });
+  });
+
+  it("tells the project from a folder that differs only in case on macOS, not on Windows", () => {
+    // A case-sensitive APFS volume can have /Users/ada/Proj next to /Users/ada/proj; on the default
+    // volume the real path already has the case on disk.
+    expect(isRealInside("/Users/ada/proj", "/Users/ada/Proj/evil.sh", "darwin")).toBe(false);
+    expect(assessWrite("/Users/ada/proj", "/Users/ada/Proj/.git/hooks/pre-commit", { platform: "darwin" })).toMatchObject({ risk: "other", outside: true });
+    expect(assessWrite("/Users/ada/proj", "/Users/ada/Proj/src/x.ts", { platform: "darwin" }).risk).toBe("other");
+    expect(assessWrite("/Users/ada/proj", "/Users/ada/proj/.GIT/config", { platform: "darwin" }).risk).toBe("other");
+    expect(assessWrite("/Users/ada/proj", "/Users/ada/proj/src/x.ts", { platform: "darwin" }).risk).toBe("edit");
+    expect(isRealInside("C:\\Users\\ada\\proj", "c:\\users\\ADA\\Proj\\x.ts", "win32")).toBe(true);
+    expect(assessWrite("C:\\Users\\ada\\proj", "c:\\users\\ada\\PROJ\\.Git\\config", { platform: "win32" }).risk).toBe("other");
   });
 
   it("asks for secrets and dotfiles of a home folder opened as the project", () => {

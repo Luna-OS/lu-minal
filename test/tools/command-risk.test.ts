@@ -92,15 +92,73 @@ describe("shell commands that only look like reads", () => {
     "cd ../.. && cat .ssh/id_ed25519",
     "cd .. && cd .. && cat .ssh/id_ed25519",
     "grep --file=~/.ssh/id_ed25519 x",
+    // Without a folder, "cd -P" goes home; lu-minal can't follow options.
+    "cd -P && cat .ssh/id_ed25519",
+    "cd -L; cat .ssh/id_ed25519",
   ])("reads a secret store, so it asks: %j", (command) => {
     expect(ro(command)).toBe(false);
   });
+
+  // Git Bash on Windows: /c/... is C:\..., and its /proc serves other processes' environment.
+  const gitBash = (command: string) =>
+    isReadOnlyShellCommand(command, { cwd: "C:\\Users\\ada\\proj", sensitive: { platform: "win32", home: "C:\\Users\\ada" } });
+
+  it.each([
+    "cd /c/Users/ada && cat .ssh/id_rsa",
+    "cd /c/Users/ada; cat .ssh/id_rsa",
+    "cd /cygdrive/c/Users/ada && cat .ssh/id_rsa",
+    "cd /c/Users/ada && grep -r x .",
+    "cat /proc/self/environ",
+    "cat /proc/1234/environ",
+    "cd /proc/self && cat environ",
+    "cd / && cat proc/self/environ",
+    "cd /c && grep -r x",
+  ])("reads a secret store in Git Bash on Windows, so it asks: %j", (command) => {
+    expect(gitBash(command)).toBe(false);
+  });
+
+  it.each(["cd /c/Users/ada/proj/src && cat a.ts", "cat /c/Users/ada/proj/README.md", "cd src && cat a.ts"])(
+    "stays a free read in Git Bash on Windows: %j",
+    (command) => {
+      expect(gitBash(command)).toBe(true);
+    },
+  );
 
   it("follows a symlink in the project that points at a secret store", () => {
     // A junction on Windows (no admin rights needed); the type is ignored elsewhere.
     fs.symlinkSync(path.join(home, ".ssh"), path.join(project, "keys"), "junction");
     expect(ro("cat keys/id_ed25519")).toBe(false);
     expect(ro("cat README.md")).toBe(true);
+  });
+
+  it("follows the links a glob or a link-following search reaches", () => {
+    fs.mkdirSync(path.join(project, "src"));
+    fs.symlinkSync(path.join(home, ".ssh"), path.join(project, "src", "keys"), "junction");
+    // The shell follows a link when it expands a glob (any link in a folder the glob reaches counts);
+    // grep -R, BSD grep -S and rg -L follow them while searching.
+    for (const command of [
+      "cat src/*/*",
+      "head src/k*/id*",
+      "cat */*/id_ed25519",
+      "cat **/id_ed25519",
+      "cat src/*.md",
+      "grep -R BEGIN .",
+      "grep --dereference-recursive x .",
+      "grep --der x .",
+      "grep -rS x .",
+      "rg -L x",
+      "rg --follow x",
+    ]) {
+      expect(ro(command), command).toBe(false);
+    }
+    // grep -r and rg don't follow links found while searching; a glob elsewhere doesn't reach it.
+    for (const command of ["grep -r x .", "rg x", "cat *.md", "wc -l *.json", "cat docs/*"]) expect(ro(command), command).toBe(true);
+    try {
+      fs.symlinkSync(path.join(home, ".ssh", "id_ed25519"), path.join(project, "notes.txt"), "file");
+    } catch {
+      return; // file links need developer mode on Windows
+    }
+    for (const command of ["cat *", "cat n*", "tail -n +1 *.txt", "cat ./*"]) expect(ro(command), command).toBe(false);
   });
 
   it("asks before reading lu-minal's own state and /proc on Linux", () => {
@@ -126,6 +184,41 @@ describe("shell commands that only look like reads", () => {
   ] as const)("needs an approval in %s: %j", (command, shell) => {
     expect(ro(command, shell)).toBe(false);
   });
+
+  // PowerShell: the bash tool's fallback on Windows without Git Bash.
+  const powershell = (command: string) =>
+    isReadOnlyShellCommand(command, { shell: "powershell", cwd: "C:\\Users\\ada\\proj", sensitive: { platform: "win32", home: "C:\\Users\\ada" } });
+
+  it.each([
+    // "-Param:value" binds the value (also after an en dash, which PowerShell takes as "-").
+    "Get-Content -Path:C:\\Users\\ada\\.ssh\\id_rsa",
+    "Get-Content -LiteralPath:C:\\Users\\ada\\.ssh\\id_rsa",
+    "Get-Content \u2013Path:C:\\Users\\ada\\.ssh\\id_rsa",
+    // "a,b" is an array of both.
+    "Get-Content a.txt,C:\\Users\\ada\\.ssh\\id_rsa",
+    "Get-Content ,C:\\Users\\ada\\.ssh\\id_rsa",
+    "Get-Content -Path:a.txt,~\\.ssh\\id_rsa",
+    // Provider drives and paths: env: holds the environment, HKCU: the registry.
+    "Get-ChildItem env:",
+    "Get-Content env:GH_PAT",
+    "gc variable:x",
+    "Get-Item HKCU:\\Software\\x",
+    "Get-Content Microsoft.PowerShell.Core\\FileSystem::C:\\Users\\ada\\.ssh\\id_rsa",
+    // The provider expands wildcards, quoted or not.
+    "Get-Content ~\\*\\id_rsa",
+    "Get-Content 'C:\\Users\\ada\\.ss?\\id_rsa'",
+    "Get-Content ..\\*\\id_rsa",
+    "cd -Path:C:\\Users\\ada; gc .ssh\\id_rsa",
+  ])("reads a secret store in PowerShell on Windows, so it asks: %j", (command) => {
+    expect(powershell(command)).toBe(false);
+  });
+
+  it.each(["Get-Content README.md", "Get-Content src\\a.ts,README.md", "Get-Content -Path:src\\a.ts -Raw", "Get-ChildItem src\\*.ts", "Get-ChildItem C:"])(
+    "stays a free read in PowerShell on Windows: %j",
+    (command) => {
+      expect(powershell(command)).toBe(true);
+    },
+  );
 
   it.each([
     "ls -la",

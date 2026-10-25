@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Agent } from "../../src/core/agent.js";
 import { Notifier } from "../../src/core/emitter.js";
 import {
@@ -419,6 +419,23 @@ describe("grep", () => {
         const bad = await run(grep, { pattern: "(unclosed" });
         expect(bad.isError).toBe(true);
       });
+
+      it("leaves out the symlinks it finds, as ripgrep does (one may point at ~/.ssh)", async () => {
+        write("a.txt", "moon\n");
+        const outside = tempProject({ id_ed25519: "moon key\n" });
+        try {
+          try {
+            fs.symlinkSync(path.join(outside, "id_ed25519"), path.join(dir, "notes.txt"), "file");
+          } catch {
+            return; // file links need developer mode on Windows
+          }
+          expect((await run(grep, { pattern: "moon" })).content).toBe("a.txt:1: moon");
+          // A link named as the path is followed, like ripgrep does.
+          expect((await run(grep, { pattern: "moon", path: "notes.txt" })).content).toBe("notes.txt:1: moon key");
+        } finally {
+          removeDir(outside);
+        }
+      });
     });
   }
 
@@ -426,5 +443,27 @@ describe("grep", () => {
     write("a.txt", "moon\n");
     const res = await run(createGrepTool({ rg: path.join(dir, "no-such-rg") }), { pattern: "moon" });
     expect(res.content).toBe("a.txt:1: moon");
+  });
+
+  it.runIf(process.platform !== "win32")("has ripgrep match globs without regard to case on macOS and Windows, like the JS search", async () => {
+    // A stand-in rg that notes its arguments.
+    const rg = path.join(dir, "fake-rg");
+    fs.writeFileSync(rg, `#!/bin/sh\nprintf '%s\\n' "$@" > "${path.join(dir, "rg-args.txt")}"\n`, { mode: 0o755 });
+    const argsOn = async (platform: NodeJS.Platform) => {
+      // The file systems' case rules are read when the module loads.
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+      vi.resetModules();
+      Object.defineProperty(process, "platform", { ...descriptor, value: platform });
+      let fresh: typeof import("../../src/tools/fs.js");
+      try {
+        fresh = await import("../../src/tools/fs.js");
+      } finally {
+        Object.defineProperty(process, "platform", descriptor);
+      }
+      await run(fresh.createGrepTool({ rg }), { pattern: "moon", glob: "*.MD" });
+      return fs.readFileSync(path.join(dir, "rg-args.txt"), "utf8").split("\n");
+    };
+    expect(await argsOn("darwin")).toContain("--glob-case-insensitive");
+    expect(await argsOn("linux")).not.toContain("--glob-case-insensitive");
   });
 });

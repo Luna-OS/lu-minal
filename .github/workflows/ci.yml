@@ -236,4 +236,27 @@ jobs:
           if (Test-Path -LiteralPath $fragment) { throw 'the uninstaller left the Windows Terminal profile behind' }
           if (Test-Path -LiteralPath $shortcut) { throw 'the uninstaller left the Start menu shortcut behind' }
           if (Get-ChildItem $apps | Where-Object { $_.GetValue('DisplayName') -eq 'lu-minal' }) { throw 'the Settings > Apps entry is still there' }
+          if (Test-Path -LiteralPath 'HKCU:\Software\Luna-OS\lu-minal') { throw "the uninstaller left lu-minal's registry key behind" }
           Write-Host 'Installed, checked and uninstalled.'
+
+          # Over install.ps1's copy: the PowerShell 7 step installed one in lu-minal-ps7 and put that
+          # folder on the PATH. The setup updates it in place; its uninstaller removes the emptied
+          # folder but leaves the PATH entry it did not add.
+          $ps = Join-Path $env:RUNNER_TEMP 'lu-minal-ps7'
+          $psExe = Join-Path $ps 'lu-minal.exe'
+          if (-not (Test-Path -LiteralPath $psExe)) { throw 'install.ps1 left no copy to update' }
+          $psOnPath = { @(([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') | Where-Object { $_.TrimEnd('\') -ieq $ps }).Count }
+          $setup = Start-Process -FilePath dist-bin\lu-minal-windows-x64-setup.exe -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="path"', "/DIR=`"$ps`"", "/LOG=`"$log`""
+          )
+          if ($setup.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 60; throw "setup over install.ps1's copy exited with $($setup.ExitCode)" }
+          & $psExe --version
+          if ($LASTEXITCODE -ne 0) { throw 'the updated lu-minal.exe did not start' }
+          if ((& $psOnPath) -ne 1) { throw "the PATH should list $ps once, it lists it $(& $psOnPath) times" }
+          $uninstall = Start-Process -FilePath (Join-Path $ps 'unins000.exe') -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+          if ($uninstall.ExitCode -ne 0) { throw "the uninstaller exited with $($uninstall.ExitCode)" }
+          $until = (Get-Date).AddSeconds(90)
+          while ((Test-Path -LiteralPath $ps) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path -LiteralPath $ps) { throw "the uninstaller left the emptied folder behind: $(Get-ChildItem -LiteralPath $ps -Force | Out-String)" }
+          if ((& $psOnPath) -ne 1) { throw 'the uninstaller took a PATH entry it had not added' }
+          Write-Host "Updated install.ps1's copy and uninstalled it; its PATH entry stayed."

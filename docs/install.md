@@ -108,26 +108,37 @@ uses, so either one updates the other). It asks what else to do:
 
 - **Add lu-minal to my PATH**, so `lu-minal` works in any new terminal;
 - **Add a lu-minal profile to Windows Terminal** (Moon Dark colours); the Start menu entry then
-  opens lu-minal in Windows Terminal;
+  opens lu-minal in Windows Terminal (a Windows Terminal that is already open shows the colours
+  after a restart, lu-minal starts either way);
 - **Create a desktop shortcut** (off unless you tick it).
 
-Running a newer setup updates lu-minal in place (it closes a running lu-minal first, after
-asking). Uninstall it in Settings > Apps > Installed apps: that removes the program, the PATH
-entry, the shortcuts and the Windows Terminal profile, and keeps your settings, keys and sessions
-(`%APPDATA%\lu-minal`, `%LOCALAPPDATA%\lu-minal`).
+Running a newer setup updates lu-minal in place, also while lu-minal is running: the running copy
+keeps going, and the next start is the new version. Uninstall it in Settings > Apps: that removes
+the program, the shortcuts and the Windows Terminal profile, and the PATH entry when the setup
+added it (a folder that was on your PATH before stays there). Your settings, keys and sessions
+(`%APPDATA%\lu-minal`, `%LOCALAPPDATA%\lu-minal`) are kept.
+
+On Windows on Arm, use the arm64 setup: the x64 one asks first, because its lu-minal runs
+emulated there.
 
 The setup programs are not code-signed yet, so Windows SmartScreen may say "Windows protected
 your PC": click **More info**, then **Run anyway**. Check the download against `SHA256SUMS` first
 if you like (`Get-FileHash lu-minal-windows-x64-setup.exe`).
 
-For scripted installs:
+For scripted installs (`-Wait`: PowerShell doesn't wait for a setup program by itself; in cmd,
+use `start /wait`):
 
 ```powershell
-.\lu-minal-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS="path,terminal"
+$setup = Start-Process .\lu-minal-windows-x64-setup.exe -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="path,terminal"'
+$setup.ExitCode
 ```
 
-`/DIR="..."` installs somewhere else; `/LOG="setup.log"` writes a log. The uninstaller
-(`unins000.exe` in the install folder) takes `/VERYSILENT` too.
+`/DIR="..."` installs somewhere else; `/LOG="setup.log"` writes a log. The uninstaller takes
+`/VERYSILENT` too; it finishes removing the files a moment after it exits:
+
+```powershell
+Start-Process "$env:LOCALAPPDATA\Programs\lu-minal\unins000.exe" -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES'
+```
 
 ## install.ps1 (Windows)
 

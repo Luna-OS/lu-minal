@@ -19,7 +19,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ReleaseTarget } from "../src/platform/install-info.js";
-import { writeIco } from "./windows-icon.js";
 
 /** The part of Bun's API this script uses (no @types/bun in this repo). */
 interface BunBuildOutput {
@@ -41,6 +40,7 @@ if (!(globalThis as { Bun?: unknown }).Bun) {
 const { CHECKSUMS_FILE, formatChecksums, hostReleaseTarget, RELEASE_TARGETS, resolveTargets } = await import(
   "../src/platform/install-info.js"
 );
+const { writeIco } = await import("./windows-icon.js");
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEVTOOLS_STUB = path.join(ROOT, "scripts", "stubs", "react-devtools-core.js");

@@ -207,19 +207,43 @@ describe("the Windows installer (Inno Setup)", () => {
   it("puts lu-minal on the PATH, in Start and Windows Terminal, and takes it all away again", () => {
     for (const task of ["path", "terminal", "desktopicon"]) expect(iss).toMatch(new RegExp(`^Name: "${task}"; Description:`, "m"));
     expect(iss).toContain('Parameters: "setup windows-terminal"; Flags: runhidden waituntilterminated; Tasks: terminal');
-    expect(iss).toContain('Parameters: "setup windows-terminal --remove"; Flags: runhidden waituntilterminated; Tasks: terminal');
+    // The profile goes on every uninstall: install.ps1 or `lu-minal setup windows-terminal` may have added it.
+    expect(iss).toContain('Parameters: "setup windows-terminal --remove"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId:');
+    expect(iss).not.toMatch(/^\[UninstallRun\][^[]*Tasks:/m);
     expect(iss).toMatch(/CurStepChanged[\s\S]*AddToPath\(ExpandConstant\('\{app\}'\)\)/);
-    expect(iss).toMatch(/CurUninstallStepChanged[\s\S]*RemoveFromPath\(ExpandConstant\('\{app\}'\)\)/);
+    // Off the PATH before the uninstaller tells Explorer, and only an entry this setup added (or the default folder's).
+    expect(iss).toMatch(/if CurUninstallStep = usUninstall then[\s\S]*if OwnsPathEntry\(ExpandConstant\('\{app\}'\)\) then RemoveFromPath\(ExpandConstant\('\{app\}'\)\)/);
+    expect(iss).toContain("RegWriteStringValue(HKCU, StateKey, 'AddedToPath', Dir)");
+    expect(iss).not.toContain("usPostUninstall");
     // Expandable, so the user's %VARIABLE% entries keep working.
     expect(iss).toContain("RegWriteExpandStringValue(HKCU, EnvironmentKey, 'Path'");
     expect(iss).toMatch(/^ChangesEnvironment=yes$/m);
     expect(iss).toMatch(/^Name: "\{autoprograms\}\\lu-minal"/m);
+    // Through Windows Terminal with the command line too: an open one hasn't loaded the new profile.
+    expect(iss).toContain(`Result := '-p "lu-minal" -d "' + ExpandConstant('{%USERPROFILE}') + '" -- "' + ExpandConstant('{app}\\lu-minal.exe') + '"';`);
+    expect(iss).not.toContain('Parameters: "-p ""lu-minal"""');
+  });
+
+  it("updates over install.ps1's copy and a running lu-minal without stopping it", () => {
+    expect(iss).toMatch(/^DirExistsWarning=no$/m);
+    expect(iss).toContain("if DirExists(Dir) and not FileExists(AddBackslash(Dir) + 'lu-minal.exe') then");
+    expect(iss).toMatch(/^CloseApplications=no$/m);
+    expect(iss).toContain("BeforeInstall: MoveRunningExeAside");
+    expect(iss).toMatch(/\[InstallDelete\]\n[^[]*Name: "\{app\}\\lu-minal\.old\*\.exe"/);
+    // The folder goes when it is empty, also when install.ps1 made it.
+    expect(iss).toContain('Name: "{app}"; Flags: uninsalwaysuninstall');
+    // The x64 setup points Windows on Arm to the native one.
+    expect(iss).toMatch(/#if Arch == "x64"\n\{[^}]*\}\nfunction InitializeSetup: Boolean;[\s\S]*IsArm64/);
   });
 
   it("is built for x64 and arm64 from the release binaries, with the moon icon", () => {
     expect(iss).toContain('Source: "{#DistDir}\\lu-minal-windows-{#Arch}.exe"; DestDir: "{app}"; DestName: "lu-minal.exe"');
     expect(iss).toMatch(/^OutputBaseFilename=lu-minal-windows-\{#Arch\}-setup$/m);
     expect(iss).toMatch(/^SetupIconFile=\{#DistDir\}\\lu-minal.ico$/m);
+    // Also next to the exe, for the Windows Terminal profile's icon.
+    expect(iss).toContain('Source: "{#DistDir}\\lu-minal.ico"; DestDir: "{app}"; Flags: ignoreversion');
+    // Pre-release parts and build metadata are cut for the numeric file version.
+    expect(iss).toContain('#define NumericVersion Copy(VersionCore, 1, Pos("+", VersionCore + "+") - 1) + ".0"');
     expect(read("scripts", "build-binaries.ts")).toContain('icon: writeIco(path.join(opts.outdir, "lu-minal.ico"))');
     expect(release).toContain("foreach ($arch in 'x64', 'arm64')");
     expect(release).toContain('& $env:ISCC /Q "/DAppVersion=$env:VERSION" "/DArch=$arch" windows\\lu-minal.iss');

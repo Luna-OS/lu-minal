@@ -38,7 +38,11 @@ describe.skipIf(!real)("the real clipboard", () => {
     const written = await write(
       process.platform === "win32"
         ? `Add-Type -AssemblyName System.Windows.Forms; $c = New-Object System.Collections.Specialized.StringCollection; ${files.map((f) => `[void]$c.Add(${quote(f)});`).join(" ")} [System.Windows.Forms.Clipboard]::SetFileDropList($c); [System.Windows.Forms.Clipboard]::GetFileDropList().Count`
-        : `ObjC.import('AppKit'); var pb = $.NSPasteboard.generalPasteboard; pb.clearContents; var urls = $.NSMutableArray.array; ${files.map((f) => `urls.addObject($.NSURL.fileURLWithPath(${js(f)}));`).join(" ")} pb.writeObjects(urls); pb.pasteboardItems.count;`,
+        : // As Finder does: an item per file with its file URL set right away (writeObjects with NSURLs
+          // may leave later items to be asked for, from this script, which has ended by then).
+          `ObjC.import('AppKit'); var pb = $.NSPasteboard.generalPasteboard; pb.clearContents; var items = $.NSMutableArray.array; ${files
+            .map((f) => `var it = $.NSPasteboardItem.alloc.init; it.setStringForType($.NSURL.fileURLWithPath(${js(f)}).absoluteString, 'public.file-url'); items.addObject(it);`)
+            .join(" ")} pb.writeObjects(items); pb.pasteboardItems.count;`,
     );
     if (written === null) return ctx.skip();
     expect(written).toBe(String(files.length));

@@ -285,7 +285,8 @@ describe("McpServer: HTTP", () => {
 
   it("limits headers and how long a request may take to arrive, not how long an approval waits", async () => {
     const r = await register(lead);
-    // More than 64 headers: Node refuses the request or drops the rest (here the token, sent last).
+    // More than 64 headers: Node refuses the request (431 on newer Node 22 releases) or drops the
+    // rest (here the token, sent last: 400 / 401).
     const withPads = (n: number) =>
       new Promise<number>((resolve, reject) => {
         const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
@@ -300,7 +301,7 @@ describe("McpServer: HTTP", () => {
         req.end(body);
       });
     expect(await withPads(10)).toBe(200);
-    expect([400, 401]).toContain(await withPads(70));
+    expect([400, 401, 431]).toContain(await withPads(70));
     // The 15 s and 120 s limits are too slow to wait for here.
     const listener = (server as unknown as { server: http.Server }).server;
     expect({ headers: listener.headersTimeout, request: listener.requestTimeout, socket: listener.timeout }).toEqual({

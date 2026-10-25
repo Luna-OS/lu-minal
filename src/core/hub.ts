@@ -10,6 +10,14 @@ import { claudeInstallCommand, claudeLoginArgs, claudeLogoutArgs } from "../agen
 import { applyRateLimit, fetchPlanUsage } from "../agents/claude-code/usage.js";
 import { NativeDriver } from "../agents/native/driver.js";
 import { systemPrompt } from "../agents/prompts.js";
+import {
+  cloudStartCommand,
+  parseCloudSession,
+  sendToCloud,
+  sessionFromTranscript,
+  teleportArgs,
+  type CloudSession,
+} from "../cloud/claude-cloud.js";
 import { McpServer } from "../mcp/server.js";
 import { stateDir as defaultStateDir } from "../platform/paths.js";
 import { findProgram } from "../platform/process.js";
@@ -26,7 +34,7 @@ import type { ThemeManager } from "../themes/manager.js";
 import type { Theme } from "../themes/types.js";
 import { detectShell } from "../tools/exec.js";
 import { toolsForAgent } from "../tools/index.js";
-import type { ToolServices } from "../tools/types.js";
+import type { CloudApi, ToolServices } from "../tools/types.js";
 import { Agent, type SavedAgentState } from "./agent.js";
 import { rememberRecent, saveConfig, type Config } from "./config.js";
 import { newId, Notifier } from "./emitter.js";
@@ -47,7 +55,11 @@ export interface Toast {
  * Runs a program in the real terminal while the UI steps aside (sign-ins, installers). The UI
  * provides it through Ink's suspendTerminal; resolves to the exit code.
  */
-export type TerminalRunner = (exe: string, args: string[], opts?: { cwd?: string }) => Promise<number | null>;
+export type TerminalRunner = (
+  exe: string,
+  args: string[],
+  opts?: { cwd?: string; env?: NodeJS.ProcessEnv },
+) => Promise<number | null>;
 
 export interface HubOptions {
   config: Config;
@@ -69,6 +81,8 @@ export interface SavedSession {
   version: 2;
   savedAt: number;
   active: number;
+  /** Cloud sessions started from lu-minal (the CLI can't list them). */
+  cloud?: CloudSession[];
   projects: Array<{
     cwd: string;
     name: string;
@@ -111,6 +125,7 @@ export class Hub implements ProjectRuntime {
   usageError: string | null = null;
   balances = new Map<string, ProviderBalance>();
   toasts: Toast[] = [];
+  cloudSessions: CloudSession[] = [];
   catalogSource: Catalog["source"] | null = null;
   ready = false;
 
@@ -353,7 +368,98 @@ export class Hub implements ProjectRuntime {
   }
 
   servicesFor(project: Project): ToolServices {
-    return { team: project.teamApi(), themes: this.themes.api(), roblox: this.roblox };
+    return { team: project.teamApi(), themes: this.themes.api(), roblox: this.roblox, cloud: this.cloudApi(project) };
+  }
+
+  // ---- Claude cloud sessions -------------------------------------------------------------------
+
+  /**
+   * The environment for Claude Code processes that must use the Claude subscription: with -p, an
+   * ANTHROPIC_API_KEY in the environment wins over the claude.ai login, so it is left out (lu-minal
+   * keeps API keys for its own "anthropic" provider).
+   */
+  claudeEnv(): NodeJS.ProcessEnv {
+    const env = { ...process.env };
+    if (!this.config.claudeUseApiKey) {
+      delete env.ANTHROPIC_API_KEY;
+      delete env.ANTHROPIC_AUTH_TOKEN;
+    }
+    return env;
+  }
+
+  private cloudApi(project: Project): CloudApi {
+    return {
+      list: () =>
+        this.cloudSessions
+          .filter((s) => s.cwd === project.cwd)
+          .map((s) => ({ id: s.id, url: s.url, task: s.task, startedAt: s.startedAt })),
+      send: async (sessionId, text) => {
+        const session = this.cloudSessions.find((s) => s.id === sessionId) ?? null;
+        const result = await this.sendCloud(session ?? { id: sessionId, cwd: project.cwd }, text);
+        if (!result.ok) throw new Error(result.error ?? "The cloud session did not take the message.");
+        return result.url ?? `https://claude.ai/code/${sessionId}`;
+      },
+    };
+  }
+
+  /**
+   * Starts a cloud session for `task` in the real terminal (`claude --cloud`). Returns the session
+   * when its link could be read from the CLI's output; null otherwise (the UI asks for the link).
+   */
+  async startCloud(project: Project, task: string, run: TerminalRunner): Promise<CloudSession | null> {
+    const exe = findClaude(this.config.claudePath);
+    if (!exe) throw new Error("Claude Code is not installed - /login claude installs it.");
+    const cmd = cloudStartCommand(exe, task);
+    await run(cmd.exe, cmd.args, { cwd: project.cwd, env: this.claudeEnv() });
+    const found = sessionFromTranscript(cmd.transcript);
+    return found ? this.addCloudSession(project, task, found.url) : null;
+  }
+
+  /** Remembers a cloud session from a pasted link or id. */
+  addCloudSession(project: Project, task: string, link: string): CloudSession | null {
+    const found = parseCloudSession(link);
+    if (!found) return null;
+    const existing = this.cloudSessions.find((s) => s.id === found.id);
+    if (existing) return existing;
+    const session: CloudSession = {
+      id: found.id,
+      url: found.url,
+      task: task.trim() || "Cloud session",
+      cwd: project.cwd,
+      startedAt: Date.now(),
+      lastMessageAt: null,
+      lastError: null,
+    };
+    this.cloudSessions.unshift(session);
+    this.toast(`Cloud session ${found.id} is running on claude.ai/code.`, "success");
+    this.notifier.changed();
+    return session;
+  }
+
+  async sendCloud(session: Pick<CloudSession, "id" | "cwd">, text: string) {
+    const exe = findClaude(this.config.claudePath);
+    if (!exe) return { ok: false, sessionId: null, url: null, error: "Claude Code is not installed." };
+    const result = await sendToCloud(exe, session.id, text, { cwd: session.cwd, env: this.claudeEnv() });
+    const known = this.cloudSessions.find((s) => s.id === session.id);
+    if (known) {
+      known.lastMessageAt = Date.now();
+      known.lastError = result.ok ? null : result.error;
+      if (result.url) known.url = result.url.replace(/\?.*$/, "");
+    }
+    this.notifier.changed();
+    return result;
+  }
+
+  /** Continues a cloud session in this terminal (`claude --teleport`), in the project's folder. */
+  async teleport(project: Project, session: CloudSession, run: TerminalRunner): Promise<void> {
+    const exe = findClaude(this.config.claudePath);
+    if (!exe) throw new Error("Claude Code is not installed.");
+    await run(exe, teleportArgs(session.id), { cwd: project.cwd, env: this.claudeEnv() });
+  }
+
+  forgetCloud(id: string): void {
+    this.cloudSessions = this.cloudSessions.filter((s) => s.id !== id);
+    this.notifier.changed();
   }
 
   private promptFor(project: Project, agent: Agent, driverKind: "native" | "claude-code"): string {
@@ -554,6 +660,7 @@ export class Hub implements ProjectRuntime {
       version: 2,
       savedAt: Date.now(),
       active: this.activeIndex,
+      cloud: this.cloudSessions.slice(0, 50),
       projects: this.projects.map((p) => ({
         cwd: p.cwd,
         name: p.name,
@@ -616,6 +723,9 @@ export class Hub implements ProjectRuntime {
    */
   async restoreSession(saved: SavedSession | null = this.readSavedSession()): Promise<number> {
     if (!saved) return 0;
+    for (const c of saved.cloud ?? []) {
+      if (c?.id && !this.cloudSessions.some((s) => s.id === c.id)) this.cloudSessions.push(c);
+    }
     let restored = 0;
     for (const p of saved.projects) {
       if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => x.cwd === path.resolve(p.cwd))) continue;

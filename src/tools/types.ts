@@ -123,8 +123,17 @@ export interface ThemeApi {
   save(theme: Theme, apply: boolean): Promise<void>;
 }
 
+/** Claude Code cloud sessions (claude.ai/code) started from lu-minal, as tools reach them. */
+export interface CloudApi {
+  list(): Array<{ id: string; url: string; task: string; startedAt: number }>;
+  /** Sends a follow-up message to a cloud session; resolves to its URL or rejects with the error. */
+  send(sessionId: string, text: string): Promise<string>;
+}
+
 export interface ToolServices {
   team: TeamApi;
   themes: ThemeApi;
   roblox: RobloxApi;
+  /** Present when Claude Code is installed. */
+  cloud?: CloudApi;
 }

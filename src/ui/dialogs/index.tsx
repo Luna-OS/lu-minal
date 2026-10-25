@@ -9,14 +9,15 @@ import { installPlugin, robloxPluginsDir } from "../../roblox/install.js";
 import { openExternal } from "../../platform/process.js";
 import { tildify } from "../../platform/paths.js";
 import { COMMANDS, type CommandContext, type DialogLaunchers } from "../commands.js";
-import { formatCost, formatElapsed, formatTokens, sparkline } from "../format.js";
+import { formatCost, formatTokens, sparkline } from "../format.js";
 import type { UiServices } from "../store.js";
-import { formatResetIn } from "../components/MoonGauge.js";
 import { ConfirmDialog, InputDialog, MessageDialog } from "./InputDialog.js";
 import { ListDialog, type ListItem } from "./ListDialog.js";
 import { openLoginDialog } from "./login.js";
 import { openModelPicker } from "./models.js";
 import { openNewTabDialog } from "./newtab.js";
+import { UsageDialog } from "./usage.js";
+import { openCloudDialog } from "./cloud.js";
 
 const ROBLOX_DOCS = "https://github.com/Luna-OS/lu-minal/blob/main/docs/roblox.md";
 
@@ -117,62 +118,9 @@ export function createLaunchers(
       });
     },
     usage: () => {
-      ui.openDialog({
-        id: "usage",
-        render: (close) => {
-          const c = theme().colors;
-          const u = hub.planUsage;
-          const acc = hub.claudeAccount;
-          const pct = (x: number) => `${Math.round(x * 100)}%`;
-          const win = (label: string, w: { utilization: number; resetsAt: number | null } | null) =>
-            w ? `${label}: ${pct(w.utilization)} used${w.resetsAt ? ` · resets in ${formatResetIn(w.resetsAt - Date.now())}` : ""}` : `${label}: –`;
-          const lines: Array<string | { text: string; color?: string }> = [];
-          lines.push({ text: "Claude plan", color: c.accent });
-          if (!acc?.installed) lines.push("Claude Code is not installed - /login claude");
-          else if (!acc.loggedIn) lines.push("Not signed in - /login claude");
-          else {
-            lines.push(`${acc.email ?? "signed in"}${acc.plan ? ` · ${acc.plan}` : ""}${acc.version ? ` · Claude Code ${acc.version}` : ""}`);
-            lines.push(win("Session (5 hours)", u?.session ?? null));
-            lines.push(win("Week", u?.week ?? null));
-            for (const m of u?.models ?? []) lines.push(win(`Week · ${m.name}`, m));
-            if (u?.extra?.enabled) {
-              lines.push(`Extra usage: ${u.extra.used !== null ? (u.extra.used / 100).toFixed(2) : "?"} of ${u.extra.limit !== null ? (u.extra.limit / 100).toFixed(2) : "?"} ${u.extra.currency ?? ""}`);
-            }
-            if (u) lines.push({ text: `read ${formatElapsed(Date.now() - u.at)} ago`, color: c.faint });
-            if (hub.usageError) lines.push({ text: hub.usageError, color: c.error });
-          }
-          const or = hub.balances.get("openrouter");
-          if (or) {
-            lines.push("", { text: "OpenRouter", color: c.accent });
-            lines.push(`$${(or.used ?? 0).toFixed(2)} used${or.limit !== null ? ` of $${or.limit.toFixed(2)}` : ""}`);
-          }
-          const p = hub.activeProject;
-          if (p) {
-            lines.push("", { text: `This tab: ${p.name}`, color: c.accent });
-            for (const a of p.agents) {
-              lines.push(`${a.name.padEnd(10)} ${a.modelLabel.padEnd(34)} ↓ ${formatTokens(a.tokensIn + a.tokensOut).padStart(7)}  ${formatCost(a.costUsd)}`);
-            }
-          }
-          return (
-            <MessageDialog
-              theme={theme()}
-              title="Usage"
-              lines={lines}
-              hints="r refresh · enter / esc close"
-              onKey={(input) => {
-                if (input === "r") {
-                  void hub.refreshUsage();
-                  void hub.refreshBalances();
-                  return true;
-                }
-                return false;
-              }}
-              onClose={close}
-            />
-          );
-        },
-      });
+      ui.openDialog({ id: "usage", render: (close) => <UsageDialog hub={hub} onClose={close} /> });
     },
+    cloud: () => openCloudDialog(hub, ui),
     stats: () => {
       ui.openDialog({
         id: "stats",

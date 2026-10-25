@@ -90,6 +90,8 @@ export class Agent {
   tokensOut = 0;
   /** Tokens the conversation takes up right now (the context window's fill). */
   contextTokens = 0;
+  /** The model's context window when the driver knows it (Claude Code reports where it compacts). */
+  contextWindow: number | null = null;
   costUsd = 0;
   linesAdded = 0;
   linesRemoved = 0;

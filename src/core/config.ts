@@ -43,6 +43,11 @@ export interface Config {
   usagePollSeconds: number;
   /** A configured path to the `claude` program. */
   claudePath: string | null;
+  /**
+   * Let Claude Code agents use an ANTHROPIC_API_KEY from the environment. Off by default: with it
+   * set, `claude -p` bills the API key instead of the Claude subscription.
+   */
+  claudeUseApiKey: boolean;
   providers: Record<string, ProviderOverride>;
   /** Folders opened recently, newest first. */
   recent: string[];
@@ -63,6 +68,7 @@ export function defaultConfig(): Config {
     roblox: { enabled: true, port: 44766 },
     usagePollSeconds: 60,
     claudePath: null,
+    claudeUseApiKey: false,
     providers: {},
     recent: [],
   };

@@ -28,6 +28,7 @@ export interface DialogLaunchers {
   theme(): void;
   usage(): void;
   stats(): void;
+  cloud(): void;
   roblox(): void;
   help(): void;
   agents(): void;
@@ -118,6 +119,7 @@ export const COMMANDS: Command[] = [
   },
   { name: "usage", aliases: ["limits"], description: "Plan limits, credits and token use", run: (ctx) => ctx.dialogs.usage() },
   { name: "stats", aliases: ["statistics", "tokens"], description: "Token statistics: today, this week, all time, by model and project", run: (ctx) => ctx.dialogs.stats() },
+  { name: "cloud", aliases: ["web", "remote"], description: "Claude on the web: start, message and teleport cloud sessions", run: (ctx) => ctx.dialogs.cloud() },
   { name: "roblox", aliases: ["studio"], description: "Connect Roblox Studio", run: (ctx) => ctx.dialogs.roblox() },
   {
     name: "perm",

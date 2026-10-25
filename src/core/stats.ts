@@ -44,6 +44,8 @@ export interface StatsSummary {
   /** The last `days` days, oldest first, with zero days filled in. */
   daily: Array<{ day: string } & UsageAmount>;
   models: Array<{ model: string } & UsageAmount>;
+  /** Today's usage per "provider/model". */
+  todayByModel: Record<string, UsageAmount>;
   providers: Array<{ provider: string } & UsageAmount>;
   projects: Array<{ cwd: string; name: string; lastUsed: number } & UsageAmount>;
   agents: Record<string, number>;
@@ -176,6 +178,7 @@ export class StatsStore {
       month,
       daily,
       models: [...models].map(([model, u]) => ({ model, ...u })).sort(byTokens),
+      todayByModel: Object.fromEntries(Object.entries(this.data.days[todayKey] ?? {}).map(([m, u]) => [m, { ...u }])),
       providers: [...providers].map(([provider, u]) => ({ provider, ...u })).sort(byTokens),
       projects: Object.entries(this.data.projects)
         .map(([cwd, u]) => ({ cwd, ...u }))

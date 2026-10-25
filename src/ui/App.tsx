@@ -70,7 +70,7 @@ function Screen({ onExit }: { onExit: () => void }) {
       await suspendTerminal(
         () =>
           new Promise<void>((resolve) => {
-            const child = spawnProgram(exe, args, { stdio: "inherit", cwd: opts?.cwd ?? process.cwd() });
+            const child = spawnProgram(exe, args, { stdio: "inherit", cwd: opts?.cwd ?? process.cwd(), env: opts?.env ?? process.env });
             child.on("error", () => resolve());
             child.on("exit", (exitCode) => {
               code = exitCode;

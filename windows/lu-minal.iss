@@ -123,7 +123,8 @@ Type: files; Name: "{app}\lu-minal.old*.exe"
 [Code]
 const
   EnvironmentKey = 'Environment';
-  { Where this setup notes that it put {app} on the PATH (so uninstall leaves other entries alone). }
+  { Where this setup notes that it put the install folder on the PATH (so uninstall leaves other
+    entries alone). }
   StateKey = 'Software\Luna-OS\lu-minal';
 
 { Windows Terminal's app alias (installed from the Store or with winget), or '' without it. }
@@ -226,7 +227,7 @@ begin
       Log('Could not move the running lu-minal.exe aside.');
 end;
 
-{ Whether uninstall should take {app} off the PATH: this setup put it there, or it is the default
+{ Whether uninstall should take Dir off the PATH: this setup put it there, or it is the default
   folder (install.ps1's entry, emptied by the uninstall anyway). A shared folder such as C:\tools
   that was on the PATH before stays. }
 function OwnsPathEntry(Dir: String): Boolean;

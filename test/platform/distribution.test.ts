@@ -251,6 +251,23 @@ describe("the Windows installer (Inno Setup)", () => {
     for (const arch of ["x64", "arm64"]) expect(check.split(/\s+/)).toContain(`lu-minal-windows-${arch}-setup.exe`);
   });
 
+  it("keeps every Pascal Script comment closed where it looks closed", () => {
+    // { ... } comments don't nest: a {app} inside one ends it early and ISCC stops on the rest.
+    const code = iss.slice(iss.indexOf("\n[Code]\n"));
+    const nested: string[] = [];
+    for (let i = 0; i < code.length; i++) {
+      if (code[i] === "'") i = code.indexOf("'", i + 1);
+      else if (code.startsWith("//", i)) i = code.indexOf("\n", i);
+      else if (code[i] === "{") {
+        const end = code.indexOf("}", i);
+        if (code.slice(i + 1, end).includes("{")) nested.push(code.slice(i, end + 1));
+        i = end;
+      }
+      if (i < 0) break;
+    }
+    expect(nested).toEqual([]);
+  });
+
   it("is installed, checked and uninstalled on a real Windows machine in CI", () => {
     expect(ci).toContain("'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=\"path,terminal\"'");
     expect(ci).toContain("(Join-Path $dir 'unins000.exe')");

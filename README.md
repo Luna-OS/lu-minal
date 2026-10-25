@@ -68,6 +68,7 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
 | | |
 | --- | --- |
 | **macOS / Linux** | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` |
+| **Windows** (setup) | `lu-minal-windows-x64-setup.exe` (or `-arm64-`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), from 0.1.1 on: no administrator rights; PATH, Start menu and Windows Terminal profile; uninstall in Settings > Apps |
 | **Windows** (PowerShell) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` |
 | **macOS app** | `lu-minal-macos-app.dmg` (or `.zip`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest): **LuMinal.app**, a native Swift window running lu-minal |
 | **Standalone binary** | `lu-minal-linux-x64`, `lu-minal-macos-arm64`, `lu-minal-windows-x64.exe`, … from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), with `SHA256SUMS` (all files: [docs/install.md](docs/install.md)) |
@@ -75,6 +76,11 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
 
 Then run `lu-minal` in a project folder. Details for every platform (Windows Terminal profile,
 the Linux desktop entry, terminals with true colour) are in [docs/install.md](docs/install.md).
+
+**Updates** (from 0.1.1 on): lu-minal asks GitHub once a day whether a newer version is out and
+shows `↑ 0.1.2 /update` in the tab bar. `/update` (or `lu-minal update` in a shell) installs it the
+way lu-minal was installed, checked against the release's `SHA256SUMS`; start lu-minal again to use
+it, and your tabs come back. See [docs/install.md](docs/install.md#updates).
 
 ### From source
 

@@ -292,22 +292,39 @@ async function runClone(git: string, repo: RepoInfo, dir: string, cwd: string, o
     for (const part of parts) handle(part);
   });
 
-  const onAbort = () => killTree(child);
-  opts.signal?.addEventListener("abort", onAbort, { once: true });
-  if (opts.signal?.aborted) onAbort();
+  let giveUp: () => void = () => {};
+  const onAbort = () => {
+    killTree(child);
+    giveUp();
+  };
+  let timer: NodeJS.Timeout | undefined;
   let code: number | null;
   try {
     code = await new Promise<number | null>((resolve, reject) => {
+      // After a kill, a helper git started in that instant (taskkill /T only ends the processes it
+      // found) can still hold stderr open, and "close" would never come: stop waiting for it.
+      giveUp = () => {
+        timer ??= setTimeout(() => {
+          killTree(child, { signal: "SIGKILL" });
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          resolve(child.exitCode);
+        }, 2000);
+      };
       // `on`, not `once`: a late "error" (a failed kill) must never be an unhandled event.
       child.on("error", reject);
       child.once("close", (c) => resolve(c));
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      if (opts.signal?.aborted) onAbort();
     });
   } catch (err) {
+    clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onAbort);
     await removeDir(dir);
     if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new GitMissingError();
     throw err;
   }
+  clearTimeout(timer);
   opts.signal?.removeEventListener("abort", onAbort);
   handle(pending);
   if (opts.signal?.aborted) {

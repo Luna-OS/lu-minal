@@ -4,6 +4,7 @@ lu-minal runs the same on **Windows, macOS and Linux**. Pick whichever fits:
 
 | | Windows | macOS | Linux |
 | --- | --- | --- | --- |
+| **Setup program** | `lu-minal-windows-x64-setup.exe`, `-arm64-setup.exe` ([below](#windows-setup)) | – | – |
 | **Installer** (standalone binary, no Node needed) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` | same as macOS |
 | **Download a binary** | `lu-minal-windows-x64.exe`, `-arm64.exe` | `lu-minal-macos-arm64`, `-x64` | `lu-minal-linux-x64`, `-arm64`, `-musl` builds |
 | **App / integration** | Windows Terminal profile | the native **lu-minal app** (`LuMinal.app`) | applications-menu entry |
@@ -97,6 +98,47 @@ curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh | 
 
 Running it again updates lu-minal (even while it is running). To uninstall, delete
 `~/.local/bin/lu-minal` (and `~/.local/share/applications/lu-minal.desktop`).
+
+## Windows setup
+
+From 0.1.1 on, every release has a setup program: `lu-minal-windows-x64-setup.exe`, or
+`lu-minal-windows-arm64-setup.exe` for Windows on Arm. It installs lu-minal for you alone,
+without administrator rights, into `%LOCALAPPDATA%\Programs\lu-minal` (the folder install.ps1
+uses, so either one updates the other). It asks what else to do:
+
+- **Add lu-minal to my PATH**, so `lu-minal` works in any new terminal;
+- **Add a lu-minal profile to Windows Terminal** (Moon Dark colours); the Start menu entry then
+  opens lu-minal in Windows Terminal (a Windows Terminal that is already open shows the colours
+  after a restart, lu-minal starts either way);
+- **Create a desktop shortcut** (off unless you tick it).
+
+Running a newer setup updates lu-minal in place, also while lu-minal is running: the running copy
+keeps going, and the next start is the new version. Uninstall it in Settings > Apps: that removes
+the program, the shortcuts and the Windows Terminal profile, and the PATH entry when the setup
+added it (a folder that was on your PATH before stays there). Your settings, keys and sessions
+(`%APPDATA%\lu-minal`, `%LOCALAPPDATA%\lu-minal`) are kept.
+
+On Windows on Arm, use the arm64 setup: the x64 one asks first, because its lu-minal runs
+emulated there.
+
+The setup programs are not code-signed yet, so Windows SmartScreen may say "Windows protected
+your PC": click **More info**, then **Run anyway**. Check the download against `SHA256SUMS` first
+if you like (`Get-FileHash lu-minal-windows-x64-setup.exe`).
+
+For scripted installs (`-Wait`: PowerShell doesn't wait for a setup program by itself; in cmd,
+use `start /wait`):
+
+```powershell
+$setup = Start-Process .\lu-minal-windows-x64-setup.exe -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="path,terminal"'
+$setup.ExitCode
+```
+
+`/DIR="..."` installs somewhere else; `/LOG="setup.log"` writes a log. The uninstaller takes
+`/VERYSILENT` too; it finishes removing the files a moment after it exits:
+
+```powershell
+Start-Process "$env:LOCALAPPDATA\Programs\lu-minal\unins000.exe" -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES'
+```
 
 ## install.ps1 (Windows)
 
@@ -196,6 +238,28 @@ lu-minal detects true colour through `COLORTERM=truecolor` (most modern terminal
 colours look washed out in a terminal that does support true colour, `export COLORTERM=truecolor`.
 Every keyboard shortcut also has a slash command (`/help`), for terminals that keep some keys
 for themselves.
+
+## Updates
+
+From 0.1.1 on, lu-minal asks GitHub once a day whether a newer release is out (one request to
+`github.com/Luna-OS/lu-minal/releases/latest`, nothing about you is sent) and shows
+`↑ 0.1.2 /update` in the tab bar. `/update` in lu-minal, or `lu-minal update` in a shell, installs
+it the way this copy was installed:
+
+| Installed with | `/update` |
+| --- | --- |
+| install.sh, install.ps1, a standalone binary | downloads the new binary next to the old one, checks it against `SHA256SUMS` and swaps it in (on Windows the running exe is moved aside and removed on a later start) |
+| the Windows setup | downloads the new `lu-minal-windows-*-setup.exe`, checks it and runs it silently: same folder, same tasks, and Settings > Apps shows the new version |
+| the macOS app | downloads `lu-minal-macos-app.zip`, checks it and puts the new **LuMinal.app** in place of the old one |
+| a checkout (from source) | only shows the commands: `git pull`, `npm ci`, `npm run build` |
+
+The running lu-minal keeps going; quit it and start it again to use the new version (your tabs
+come back). If the folder can't be written (a binary in `/usr/local/bin` owned by root, an app
+in a folder you can't change), it says so: run the install script again (with sudo) or download
+the release by hand. `lu-minal update --check` only says whether there is a newer version.
+
+To turn the daily check off, set `"updates": { "check": false }` in `config.json` (see below), or
+`LU_MINAL_NO_UPDATE_CHECK=1`; `/update` still works.
 
 ## Where lu-minal keeps its files
 

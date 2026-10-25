@@ -1,8 +1,9 @@
 // Builds lu-minal's standalone binaries with Bun (`bun build --compile`), one per release target:
 // lu-minal-<os>-<arch>[-musl][.exe] in dist-bin/, plus SHA256SUMS. Cross-compiles every target from
-// any host; Windows version info (publisher, version, description) is only embedded when the
-// Windows binaries are built on Windows, and macOS binaries are only signed (ad-hoc, codesign)
-// when built on macOS, so the release workflow builds each of them on its own system.
+// any host; Windows version info (publisher, version, description) and the icon (dist-bin's
+// lu-minal.ico, also the installer's) are only embedded when the Windows binaries are built on
+// Windows, and macOS binaries are only signed (ad-hoc, codesign) when built on macOS, so the
+// release workflow builds each of them on its own system.
 //
 //   bun scripts/build-binaries.ts                       all targets
 //   bun scripts/build-binaries.ts --target=host         this machine only
@@ -39,6 +40,7 @@ if (!(globalThis as { Bun?: unknown }).Bun) {
 const { CHECKSUMS_FILE, formatChecksums, hostReleaseTarget, RELEASE_TARGETS, resolveTargets } = await import(
   "../src/platform/install-info.js"
 );
+const { writeIco } = await import("./windows-icon.js");
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEVTOOLS_STUB = path.join(ROOT, "scripts", "stubs", "react-devtools-core.js");
@@ -137,6 +139,8 @@ async function buildTarget(bun: BunLike, t: ReleaseTarget, opts: Options): Promi
   const compile: Record<string, unknown> = { target: t.bunTarget, outfile };
   if (t.os === "windows" && process.platform === "win32") {
     compile.windows = {
+      // The moon icon, also the installer's (windows/lu-minal.iss reads it from the same folder).
+      icon: writeIco(path.join(opts.outdir, "lu-minal.ico")),
       title: "lu-minal",
       publisher: "Luna-OS",
       version: windowsVersion(opts.version),

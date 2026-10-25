@@ -50,6 +50,9 @@ export function TabBar({ hub, rect, frame }: { hub: Hub; rect: Rect; frame: numb
     { text: " ☾ ", color: c.accent, bold: true },
     { text: "lu-minal ", color: c.text, bold: true },
   ];
+  if (hub.updateStatus) left.push({ text: `${hub.updateStatus} `, color: c.accent2 });
+  else if (hub.updateInstalled) left.push({ text: `✓ ${hub.updateInstalled}: restart `, color: c.success });
+  else if (hub.updateAvailable) left.push({ text: `↑ ${hub.updateAvailable.version} /update `, color: c.success });
   const room = rect.width - rightW - segsWidth(left) - 6;
   const tabs = hub.projects;
   const each = Math.max(8, Math.floor(room / Math.max(1, tabs.length)) - 1);

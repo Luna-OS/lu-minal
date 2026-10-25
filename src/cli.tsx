@@ -15,7 +15,8 @@ import { configFile, loadConfig } from "./core/config.js";
 import { errText, Hub } from "./core/hub.js";
 import { cacheDir, configDir, expandHome, samePath, stateDir } from "./platform/paths.js";
 import { findProgram, openExternal, spawnProgram, withProgramPath } from "./platform/process.js";
-import { launchCommand } from "./platform/install-info.js";
+import { detectInstall, isCompiledBinary, launchCommand } from "./platform/install-info.js";
+import { applyUpdate, checkForUpdate, removeOldCopies, updatePlan } from "./platform/update.js";
 import { installWindowsTerminalProfile, removeWindowsTerminalProfile } from "./platform/windows-terminal.js";
 import { AuthStore } from "./providers/auth.js";
 import { loadCatalog } from "./providers/catalog.js";
@@ -50,6 +51,7 @@ Usage
   lu-minal roblox path           print the Roblox plugins folder
   lu-minal themes                list themes
   lu-minal setup windows-terminal [--remove]   add (or remove) a Windows Terminal profile
+  lu-minal update [--check]      install the newest lu-minal (--check: only say whether there is one)
 
 Options
   --model <provider/model>       the lead's model (e.g. claude-code/opus, opencode/big-pickle)
@@ -228,6 +230,33 @@ async function subcommand(args: Args): Promise<number | null> {
       for (const t of themes.list()) print(`${t.name.padEnd(20)} ${t.label}${t.builtin ? "" : " (custom)"}`);
       return 0;
     }
+    case "update": {
+      let check;
+      try {
+        check = await checkForUpdate({ current: VERSION, cacheFile: path.join(cacheDir(), "update-check.json"), force: true });
+      } catch (err) {
+        print(`Could not ask GitHub for the newest lu-minal: ${errText(err)}`);
+        return 1;
+      }
+      if (!check?.newer) {
+        print(`lu-minal ${VERSION} is the newest version.`);
+        return 0;
+      }
+      print(`lu-minal ${check.version} is out (this is ${VERSION}): ${check.url}`);
+      if (args.flags.has("check")) return 0;
+      const plan = updatePlan(detectInstall());
+      if (plan.kind === "manual") {
+        print(`This copy runs from a checkout - update it with: ${plan.commands.join(" && ")}`);
+        return 0;
+      }
+      try {
+        print(await applyUpdate(plan, check.version, { onStatus: (line) => print(`  ${line}`) }));
+        return 0;
+      } catch (err) {
+        print(`Update failed: ${errText(err)}`);
+        return 1;
+      }
+    }
     case "setup": {
       if (rest[0] === "windows-terminal") {
         if (args.flags.has("remove")) {
@@ -276,6 +305,8 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   if (args.flags.has("no-sky")) config.sky.enabled = false;
+  // Copies an update moved aside on Windows (the running exe can only be renamed) go now.
+  if (process.platform === "win32" && isCompiledBinary()) removeOldCopies(process.execPath);
   const themeFlag = args.flags.get("theme");
   // Before the Hub exists, which saves every theme change: --theme is for this run only.
   const { themes, unknown: unknownTheme } = startThemes({
@@ -291,6 +322,7 @@ async function main(): Promise<void> {
     cacheDir: cacheDir(),
     stateDir: stateDir(),
     offline: args.flags.has("offline"),
+    checkUpdates: config.updates.check && process.env.LU_MINAL_NO_UPDATE_CHECK !== "1",
   });
 
   const setTitle = (title: string) => process.stdout.write(`\u001b]0;${title}\u0007`);

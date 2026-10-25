@@ -180,3 +180,83 @@ jobs:
           }
           lu-minal.exe --version
           if ($LASTEXITCODE -ne 0) { throw "lu-minal.exe is not on the PATH of this session" }
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          # On the runner image already, or from Chocolatey.
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw 'Chocolatey could not install Inno Setup' }
+          }
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "no ISCC.exe at $iscc" }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          & $env:ISCC /Q "/DAppVersion=$version" /DArch=x64 windows\lu-minal.iss
+          if ($LASTEXITCODE -ne 0) { throw 'ISCC failed' }
+          Get-Item dist-bin\lu-minal-windows-x64-setup.exe | Format-List Name, Length
+          (Get-Item dist-bin\lu-minal-windows-x64-setup.exe).VersionInfo | Format-List ProductName, ProductVersion, FileVersion
+      - name: Install silently, check everything, uninstall
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'lu-minal-setup'
+          $log = Join-Path $env:RUNNER_TEMP 'lu-minal-setup.log'
+          $setup = Start-Process -FilePath dist-bin\lu-minal-windows-x64-setup.exe -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="path,terminal"', "/DIR=`"$dir`"", "/LOG=`"$log`""
+          )
+          if ($setup.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 60; throw "setup exited with $($setup.ExitCode)" }
+
+          $exe = Join-Path $dir 'lu-minal.exe'
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'the installed lu-minal.exe did not start' }
+          $onPath = { ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') | Where-Object { $_.TrimEnd('\') -ieq $dir } }
+          if (-not (& $onPath)) { throw "setup did not add $dir to the user PATH" }
+          $fragment = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\lu-minal\lu-minal.json'
+          $profileLine = (Get-Content -Raw -LiteralPath $fragment | ConvertFrom-Json).profiles[0].commandline
+          if ($profileLine -notlike "*$dir*") { throw "the Windows Terminal profile doesn't start the installed exe: $profileLine" }
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'lu-minal.lnk'
+          if (-not (Test-Path -LiteralPath $shortcut)) { throw "no Start menu shortcut at $shortcut" }
+          $apps = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $entry = Get-ChildItem $apps | Where-Object { $_.GetValue('DisplayName') -eq 'lu-minal' }
+          if (-not $entry) { throw 'no lu-minal entry in Settings > Apps' }
+          Write-Host "Installed: $($entry.GetValue('DisplayVersion')) in $($entry.GetValue('InstallLocation'))"
+
+          # The uninstaller copies itself to a temp folder and goes on from there: wait for the files.
+          $uninstall = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+          if ($uninstall.ExitCode -ne 0) { throw "the uninstaller exited with $($uninstall.ExitCode)" }
+          $until = (Get-Date).AddSeconds(90)
+          while (((Test-Path -LiteralPath $exe) -or (Get-ChildItem $apps | Where-Object { $_.GetValue('DisplayName') -eq 'lu-minal' })) -and (Get-Date) -lt $until) {
+            Start-Sleep -Milliseconds 500
+          }
+          if (Test-Path -LiteralPath $exe) { throw 'the uninstaller left lu-minal.exe behind' }
+          if (& $onPath) { throw "the uninstaller left $dir on the user PATH" }
+          if (Test-Path -LiteralPath $fragment) { throw 'the uninstaller left the Windows Terminal profile behind' }
+          if (Test-Path -LiteralPath $shortcut) { throw 'the uninstaller left the Start menu shortcut behind' }
+          if (Get-ChildItem $apps | Where-Object { $_.GetValue('DisplayName') -eq 'lu-minal' }) { throw 'the Settings > Apps entry is still there' }
+          if (Test-Path -LiteralPath 'HKCU:\Software\Luna-OS\lu-minal') { throw "the uninstaller left lu-minal's registry key behind" }
+          Write-Host 'Installed, checked and uninstalled.'
+
+          # Over install.ps1's copy: the PowerShell 7 step installed one in lu-minal-ps7 and put that
+          # folder on the PATH. The setup updates it in place; its uninstaller removes the emptied
+          # folder but leaves the PATH entry it did not add.
+          $ps = Join-Path $env:RUNNER_TEMP 'lu-minal-ps7'
+          $psExe = Join-Path $ps 'lu-minal.exe'
+          if (-not (Test-Path -LiteralPath $psExe)) { throw 'install.ps1 left no copy to update' }
+          $psOnPath = { @(([Environment]::GetEnvironmentVariable('Path', 'User') -split ';') | Where-Object { $_.TrimEnd('\') -ieq $ps }).Count }
+          $setup = Start-Process -FilePath dist-bin\lu-minal-windows-x64-setup.exe -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS="path"', "/DIR=`"$ps`"", "/LOG=`"$log`""
+          )
+          if ($setup.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 60; throw "setup over install.ps1's copy exited with $($setup.ExitCode)" }
+          & $psExe --version
+          if ($LASTEXITCODE -ne 0) { throw 'the updated lu-minal.exe did not start' }
+          if ((& $psOnPath) -ne 1) { throw "the PATH should list $ps once, it lists it $(& $psOnPath) times" }
+          $uninstall = Start-Process -FilePath (Join-Path $ps 'unins000.exe') -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+          if ($uninstall.ExitCode -ne 0) { throw "the uninstaller exited with $($uninstall.ExitCode)" }
+          $until = (Get-Date).AddSeconds(90)
+          while ((Test-Path -LiteralPath $ps) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 500 }
+          if (Test-Path -LiteralPath $ps) { throw "the uninstaller left the emptied folder behind: $(Get-ChildItem -LiteralPath $ps -Force | Out-String)" }
+          if ((& $psOnPath) -ne 1) { throw 'the uninstaller took a PATH entry it had not added' }
+          Write-Host "Updated install.ps1's copy and uninstalled it; its PATH entry stayed."

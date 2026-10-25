@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -243,6 +244,65 @@ describe("cloneRepo with a fake git", () => {
       }
     }
     expect(alive).toBe(false);
+  });
+
+  it("stops waiting for a helper that outlives the kill and keeps stderr open", async () => {
+    // As a helper git starts while taskkill /T runs: outside git's tree (its parent is gone) and
+    // its process group, holding the stderr pipe, so the pipe never closes on its own.
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const helper = path.join(bin, "helper.cjs");
+    fs.writeFileSync(helper, "setTimeout(() => {}, 30000);\n");
+    const middle = path.join(bin, "middle.cjs");
+    fs.writeFileSync(
+      middle,
+      `const { spawn } = require("node:child_process");
+       const child = spawn(process.execPath, [${JSON.stringify(helper)}], { stdio: ["ignore", "ignore", "inherit"], detached: true, windowsHide: true });
+       console.log(child.pid);
+       child.unref();`,
+    );
+    const fake = fakeGit(
+      bin,
+      `if (args[0] === "--version") { console.log("git version 2.45.2"); process.exit(0); }
+       const { spawn } = await import("node:child_process");
+       fs.mkdirSync(args[args.length - 1], { recursive: true });
+       // Outside the test's folder: Windows can't remove a folder that is a process's working directory.
+       const mid = spawn(process.execPath, [${JSON.stringify(middle)}], { cwd: ${JSON.stringify(os.tmpdir())}, stdio: ["ignore", "pipe", "inherit"], detached: true, windowsHide: true });
+       let out = "";
+       mid.stdout.on("data", (d) => (out += d));
+       mid.on("close", () => {
+         log({ helper: Number(out.trim()) });
+         process.stderr.write("Receiving objects:  42% (420/1000)\\r");
+       });
+       setInterval(() => {}, 1000);`,
+    );
+    const controller = new AbortController();
+    const started = Date.now();
+    try {
+      const err = await cloneRepo(repoInfo("https://github.com/luna/moon-app.git"), {
+        destRoot: dir,
+        git: fake.program,
+        signal: controller.signal,
+        onProgress: (p) => {
+          if (p.percent === 42) controller.abort();
+        },
+      }).catch((e: Error) => e);
+      expect((err as Error).name).toBe("AbortError");
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(fs.existsSync(path.join(dir, "moon-app"))).toBe(false);
+    } finally {
+      // Gone before afterEach removes the folder (the kill itself doesn't wait on Windows).
+      for (const { helper: pid } of fake.log()) {
+        for (let i = 0; i < 50; i++) {
+          try {
+            process.kill(pid, i === 0 ? "SIGTERM" : 0);
+            await new Promise((r) => setTimeout(r, 50));
+          } catch {
+            break;
+          }
+        }
+      }
+    }
   });
 
   it("rejects at once with an already aborted signal", async () => {

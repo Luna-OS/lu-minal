@@ -14,7 +14,7 @@ import { claudeLoginArgs } from "./agents/claude-code/login.js";
 import { configFile, loadConfig } from "./core/config.js";
 import { errText, Hub } from "./core/hub.js";
 import { cacheDir, configDir, expandHome, samePath, stateDir } from "./platform/paths.js";
-import { findProgram, openExternal, spawnProgram } from "./platform/process.js";
+import { findProgram, openExternal, spawnProgram, withProgramPath } from "./platform/process.js";
 import { launchCommand } from "./platform/install-info.js";
 import { installWindowsTerminalProfile, removeWindowsTerminalProfile } from "./platform/windows-terminal.js";
 import { AuthStore } from "./providers/auth.js";
@@ -167,7 +167,8 @@ async function subcommand(args: Args): Promise<number | null> {
           return 0;
         }
         const loginExe = acp.login.command === acp.command ? exe : (findProgram(acp.login.command) ?? acp.login.command);
-        const code = await runInherit(loginExe, acp.login.args, acpEnv(acp));
+        // npm-installed agents are node scripts: node goes on the PATH next to them, as in the app.
+        const code = await runInherit(loginExe, acp.login.args, withProgramPath(acpEnv(acp), loginExe));
         // The sign-in may have added providers: the next start asks for the models again.
         if (code === 0) forgetAcpModels(acp, cacheDir());
         return code;

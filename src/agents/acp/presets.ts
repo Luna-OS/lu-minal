@@ -242,10 +242,13 @@ function overridePreset(base: AcpPreset, entry: AcpAgentConfig): AcpPreset {
   const args = Array.isArray(entry.args) ? cleanStrings(entry.args) : base.args;
   const modelArgs = Array.isArray(entry.modelArgs) ? modelArgsFrom(cleanStrings(entry.modelArgs)) : base.modelArgs;
   const staticModels = cleanStrings(entry.models).map((id) => ({ id, name: id }));
+  const command = typeof entry.command === "string" && entry.command.trim() ? entry.command.trim() : base.command;
   return {
     ...base,
     name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : base.name,
-    command: typeof entry.command === "string" && entry.command.trim() ? entry.command.trim() : base.command,
+    command,
+    // A sign-in that runs the agent's own program (`opencode auth login`) runs the configured one.
+    login: base.login && base.login.command === base.command ? { ...base.login, command } : base.login,
     args,
     env: { ...base.env, ...cleanEnv(entry.env) },
     modelArgs,

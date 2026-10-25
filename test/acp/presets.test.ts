@@ -140,6 +140,13 @@ describe("config.json acpAgents", () => {
     expect(acpCommandArgs(gemini, "gemini-next")).toEqual(["--acp", "--model", "gemini-next"]);
   });
 
+  it("signs in with the configured program when the sign-in runs the agent's own program", () => {
+    const config = mergeConfig({ acpAgents: { [OPENCODE_CLI_ID]: { command: "/opt/oc/bin/opencode" } } });
+    expect(findAcpAgent(OPENCODE_CLI_ID, config)!.login).toEqual({ command: "/opt/oc/bin/opencode", args: ["auth", "login"] });
+    // Without an override the sign-in stays as it was.
+    expect(findAcpAgent(OPENCODE_CLI_ID, mergeConfig({}))!.login).toEqual({ command: "opencode", args: ["auth", "login"] });
+  });
+
   it("is kept by mergeConfig and defaults to an empty object", () => {
     expect(defaultConfig().acpAgents).toEqual({});
     expect(mergeConfig({ acpAgents: [1] }).acpAgents).toEqual({});

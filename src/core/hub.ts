@@ -11,7 +11,7 @@ import { readClaudeAccount } from "../agents/claude-code/account.js";
 import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
 import { claudeInstallCommand, claudeLoginArgs, claudeLogoutArgs } from "../agents/claude-code/login.js";
-import { applyRateLimit, fetchPlanUsage, mergeUsage, readSavedUsage, writeSavedUsage } from "../agents/claude-code/usage.js";
+import { applyRateLimit, detectEarlyResets, fetchPlanUsage, mergeUsage, readSavedUsage, writeSavedUsage, type EarlyReset } from "../agents/claude-code/usage.js";
 import { NativeDriver } from "../agents/native/driver.js";
 import { systemPrompt } from "../agents/prompts.js";
 import {
@@ -167,6 +167,8 @@ export class Hub implements ProjectRuntime {
   private lastUsageRefresh = 0;
   /** The account the numbers on disk belong to. */
   private savedUsageEmail: string | null = null;
+  /** Limits Anthropic reset early ("free resets") this run, newest first, for the home screen. */
+  planEvents: Array<{ at: number; text: string }> = [];
   private saveTimer: NodeJS.Timeout | null = null;
   private newsInFlight: Promise<void> | null = null;
   private disposed = false;
@@ -501,7 +503,9 @@ export class Hub implements ProjectRuntime {
         env: this.claudeEnv(),
         systemPrompt: () => this.promptFor(project, agent, "claude-code"),
         onRateLimit: (ev) => {
-          this.planUsage = applyRateLimit(this.planUsage, ev);
+          const next = applyRateLimit(this.planUsage, ev);
+          this.noteEarlyResets(detectEarlyResets(this.planUsage, next));
+          this.planUsage = next;
           this.notifier.changed();
           this.scheduleUsageRefresh();
         },
@@ -759,6 +763,7 @@ export class Hub implements ProjectRuntime {
       const usage = await fetchPlanUsage(account.exe);
       if (usage) {
         // A window the report leaves out keeps its last numbers (from a report or a running agent).
+        this.noteEarlyResets(detectEarlyResets(this.planUsage, usage));
         this.planUsage = mergeUsage(this.planUsage, usage);
         this.usageError = null;
         this.saveUsage();
@@ -783,6 +788,16 @@ export class Hub implements ProjectRuntime {
       void this.refreshUsage();
     }, wait);
     this.usageRefreshTimer.unref();
+  }
+
+  /** Says so when a limit went back to nothing before its time: a reset Anthropic gave. */
+  private noteEarlyResets(resets: EarlyReset[]): void {
+    for (const r of resets) {
+      const limit = r.window === "week" ? "weekly" : "5-hour";
+      const was = Math.round(r.was * 100);
+      this.planEvents = [{ at: Date.now(), text: `Free reset: ${limit} (was ${was} %)` }, ...this.planEvents].slice(0, 3);
+      this.toast(`Free reset: Anthropic reset your ${limit} limit early (it was at ${was} %).`, "success");
+    }
   }
 
   private usageFile(): string {

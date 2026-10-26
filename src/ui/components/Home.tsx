@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Box } from "ink";
 import React from "react";
+import type { ClaudeNewsKind } from "../../core/claude-news.js";
 import type { Hub } from "../../core/hub.js";
 import { NEW_MODEL_DAYS, newestModels, type NewModel } from "../../core/news.js";
 import { samePath, tildify } from "../../platform/paths.js";
@@ -271,6 +272,37 @@ export function shortDate(date: string): string {
   return m ? `${MONTHS[Number(m[2]) - 1] ?? m[2]} ${Number(m[3])}` : date;
 }
 
+/** The marks for Claude's news: a model launch, an offer (credits, a free reset), the rest. */
+const NEWS_MARK: Record<ClaudeNewsKind, string> = { model: "✦ ", offer: "★ ", news: "· " };
+
+/**
+ * Free resets of this run first (they are about the user's own plan), then Claude's release notes:
+ * "✦ Claude Haiku 5.5 launch   Oct 7". Model launches and offers are kept longest.
+ */
+function claudeNewsRows(hub: Hub, w: number, pending: string): HomeRow[] {
+  const c = hub.theme.colors;
+  const color: Record<ClaudeNewsKind, string> = { model: c.accent2, offer: c.warning, news: c.faint };
+  const dated = (mark: Seg, text: Seg, date: string, cut: number): HomeRow => {
+    const room = Math.max(1, w - DATE_W - 1);
+    return {
+      pieces: [piece(0, room, [mark, text]), piece(w - textWidth(date), textWidth(date), [{ text: date, color: c.faint }])],
+      cut,
+    };
+  };
+  const rows: HomeRow[] = hub.planEvents.map((e) =>
+    dated({ text: NEWS_MARK.offer, color: c.warning }, { text: e.text, color: c.text }, shortDate(new Date(e.at).toISOString()), 0),
+  );
+  const items = hub.news?.claude ?? null;
+  if (items) {
+    for (const item of items.slice(0, 5)) {
+      rows.push(dated({ text: NEWS_MARK[item.kind], color: color[item.kind] }, { text: item.title, color: item.kind === "news" ? c.muted : c.text }, shortDate(item.date), item.kind === "news" ? 2 : 1));
+    }
+  } else if (!rows.length) {
+    rows.push(line(w, [{ text: hub.news ? "– couldn't load Claude's release notes" : pending, color: c.faint }]));
+  }
+  return rows;
+}
+
 function newsBlocks(hub: Hub, w: number, models: NewModel[], now: number): HomeBlock[] {
   const c = hub.theme.colors;
   const news = hub.news;
@@ -335,6 +367,7 @@ function newsBlocks(hub: Hub, w: number, models: NewModel[], now: number): HomeB
       min: 0,
       drop: DECORATION + 1,
     },
+    { title: titleRow(c, w, "Claude", "release notes"), rows: claudeNewsRows(hub, w, pending), min: 1 },
     {
       title: titleRow(c, w, "New models", `last ${NEW_MODEL_DAYS} days`),
       rows: modelRows.length ? modelRows : [line(w, [{ text: `Nothing new in the last ${NEW_MODEL_DAYS} days.`, color: c.faint }])],

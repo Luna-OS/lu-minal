@@ -23,7 +23,12 @@ import {
   type News,
 } from "../../src/core/news.js";
 import type { ModelInfo, ProviderInfo } from "../../src/providers/models.js";
+import { APPS_NOTES_URL, parseAppNotes, parsePlatformNotes, PLATFORM_NOTES_URL } from "../../src/core/claude-news.js";
 import { fakeFetch } from "../providers/helpers.js";
+
+// Trimmed copies of Claude's two release-notes pages.
+const APPS_NOTES = fs.readFileSync(path.join(import.meta.dirname, "..", "fixtures", "claude-apps-release-notes.html"), "utf8");
+const PLATFORM_NOTES = fs.readFileSync(path.join(import.meta.dirname, "..", "fixtures", "claude-platform-release-notes.md"), "utf8");
 
 let dir: string;
 beforeEach(() => {
@@ -262,21 +267,28 @@ describe("loadNews", () => {
       if (url === CLAUDE_CODE_NPM_URL) return Response.json(NPM);
       if (url === CLAUDE_CODE_CHANGELOG_URL) return new Response(CHANGELOG, { status: 206 });
       if (url === ANTHROPIC_STATUS_URL) return Response.json(STATUS);
+      if (url === APPS_NOTES_URL) return new Response(APPS_NOTES);
+      if (url === PLATFORM_NOTES_URL) return new Response(PLATFORM_NOTES);
       return new Response("not found", { status: 404 });
     });
   }
 
-  it("asks the three sources at once and keeps the answers for an hour", async () => {
+  it("asks every source at once and keeps the answers for an hour", async () => {
     const fetchImpl = sources();
     const news = await loadNews({ cacheDir: dir, fetchImpl, now: NOW });
+    const claude = [...parseAppNotes(APPS_NOTES), ...parsePlatformNotes(PLATFORM_NOTES).filter((i) => i.kind !== "news")].sort((a, b) => b.date.localeCompare(a.date));
     expect(news).toEqual({
       claudeCodeLatest: "2.1.320",
       changelog: parseChangelog(CHANGELOG),
       status: parseStatus(STATUS),
+      claude: expect.any(Array),
       fetchedAt: NOW,
       loadedAt: NOW,
     });
-    expect(fetchImpl.calls.map((c) => c.url).sort()).toEqual([ANTHROPIC_STATUS_URL, CLAUDE_CODE_CHANGELOG_URL, CLAUDE_CODE_NPM_URL].sort());
+    // Claude's release notes, newest first, a dozen at most.
+    expect(news.claude?.map((i) => i.date)).toEqual(claude.slice(0, 12).map((i) => i.date));
+    expect(news.claude?.some((i) => i.title === "Claude Haiku 5.5 launch" && i.kind === "model")).toBe(true);
+    expect(fetchImpl.calls.map((c) => c.url).sort()).toEqual([ANTHROPIC_STATUS_URL, APPS_NOTES_URL, CLAUDE_CODE_CHANGELOG_URL, CLAUDE_CODE_NPM_URL, PLATFORM_NOTES_URL].sort());
     // Only the top of the changelog, with a deadline for every request.
     const changelog = fetchImpl.calls.find((c) => c.url === CLAUDE_CODE_CHANGELOG_URL)!;
     expect((changelog.init?.headers as Record<string, string>).range).toBe("bytes=0-65535");
@@ -284,13 +296,14 @@ describe("loadNews", () => {
     expect(fs.existsSync(path.join(dir, NEWS_CACHE_FILE))).toBe(true);
 
     const later = await loadNews({ cacheDir: dir, fetchImpl, now: NOW + 30 * 60_000 });
-    expect(fetchImpl.calls).toHaveLength(3);
+    expect(fetchImpl.calls).toHaveLength(5);
     expect(later).toMatchObject({ claudeCodeLatest: "2.1.320", fetchedAt: NOW, loadedAt: NOW + 30 * 60_000 });
+    expect(later.claude).toEqual(news.claude);
 
     await loadNews({ cacheDir: dir, fetchImpl, now: NOW + NEWS_MAX_AGE_MS });
-    expect(fetchImpl.calls).toHaveLength(6);
+    expect(fetchImpl.calls).toHaveLength(10);
     await loadNews({ cacheDir: dir, fetchImpl, now: NOW + NEWS_MAX_AGE_MS + 1, force: true });
-    expect(fetchImpl.calls).toHaveLength(9);
+    expect(fetchImpl.calls).toHaveLength(15);
   });
 
   it("gives each source that fails its own null and tries it again next time", async () => {
@@ -298,11 +311,14 @@ describe("loadNews", () => {
       [CLAUDE_CODE_NPM_URL]: () => new Response("Service Unavailable", { status: 503 }),
       [CLAUDE_CODE_CHANGELOG_URL]: () => Promise.reject(new TypeError("fetch failed")),
       [ANTHROPIC_STATUS_URL]: () => new Response("<html>Just a moment...</html>", { headers: { "content-type": "text/html" } }),
+      [APPS_NOTES_URL]: () => new Response("", { status: 500 }),
+      [PLATFORM_NOTES_URL]: () => Promise.reject(new TypeError("fetch failed")),
     });
     await expect(loadNews({ cacheDir: dir, fetchImpl: broken, now: NOW })).resolves.toEqual({
       claudeCodeLatest: null,
       changelog: null,
       status: null,
+      claude: null,
       fetchedAt: NOW,
       loadedAt: NOW,
     });
@@ -349,6 +365,7 @@ describe("newsStale", () => {
     claudeCodeLatest: "2.1.320",
     changelog: { version: "2.1.320", bullets: [] },
     status: { indicator: "none", description: "All Systems Operational", incidents: [] },
+    claude: [{ date: "2026-10-07", title: "Claude Haiku 5.5 launch", kind: "model", source: "apps", url: "https://support.claude.com/" }],
     fetchedAt: NOW,
     loadedAt: NOW,
     ...over,

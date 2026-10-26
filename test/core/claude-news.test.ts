@@ -48,13 +48,15 @@ describe("Claude's release notes", () => {
     expect(classifyNews("Usage limits reset for all Pro and Max plans")).toBe("offer");
     expect(classifyNews("Double usage on weekends for Max plans")).toBe("offer");
     expect(classifyNews("Memory for free users")).toBe("news");
-    expect(classifyNews("Fast mode is available for Claude Opus 5.5 on Google Cloud")).toBe("model");
+    expect(classifyNews("Claude Opus 5.5 is now available in Claude Code")).toBe("model");
+    // A feature for a model is not the model's launch.
+    expect(classifyNews("Fast mode is available for Claude Opus 5.5 on Google Cloud")).toBe("news");
     expect(classifyNews("Build plugins for Claude")).toBe("news");
     expect(isoDate("October 7, 2026")).toBe("2026-10-07");
     expect(isoDate("Smarch 7, 2026")).toBeNull();
   });
 
-  it("merges both pages newest first, and leaves out one that can't be loaded", async () => {
+  it("merges both pages newest first, the platform's API details left out, and leaves out a page that can't be loaded", async () => {
     const calls: string[] = [];
     const fetchImpl = async (input: string | URL) => {
       calls.push(String(input));
@@ -64,8 +66,23 @@ describe("Claude's release notes", () => {
     };
     const items = await fetchClaudeNews({ fetchImpl, limit: 5 });
     expect(calls.sort()).toEqual([APPS_NOTES_URL, PLATFORM_NOTES_URL].sort());
-    expect(items.map((i) => i.date)).toEqual(["2026-10-22", "2026-10-22", "2026-10-21", "2026-10-21", "2026-10-21"]);
-    expect(items[2]).toMatchObject({ source: "apps", title: "Claude Duet research preview for Pro and Max plans" });
+    expect(items.map((i) => [i.date, i.title, i.kind])).toEqual([
+      ["2026-10-21", "Claude Duet research preview for Pro and Max plans", "news"],
+      ["2026-10-07", "Claude Haiku 5.5 launch", "model"],
+      ["2026-10-07", "Monthly API credits for Max and Team plans", "offer"],
+      ["2026-09-28", "Claude Sonnet 5.5 launch", "model"],
+      ["2026-09-25", "Build plugins for Claude", "news"],
+    ]);
+    // What the platform page adds: launches and offers only, none the apps' page already has.
+    const all = await fetchClaudeNews({ fetchImpl, limit: 100 });
+    expect(all.filter((i) => i.source === "platform").every((i) => i.kind !== "news")).toBe(true);
+    const bothPages = `### October 7, 2026\n\n* We've launched Claude Haiku 5.5 (claude-haiku-5-5), our most capable small model.\n* Claude Max and Team plans now include monthly API credits.\n* We've launched Claude Fable 5.5 in the API.\n`;
+    const merged = await fetchClaudeNews({ fetchImpl: async (u) => new Response(String(u) === APPS_NOTES_URL ? APPS : bothPages), limit: 100 });
+    expect(merged.filter((i) => i.date === "2026-10-07").map((i) => [i.title, i.source])).toEqual([
+      ["Claude Haiku 5.5 launch", "apps"],
+      ["Monthly API credits for Max and Team plans", "apps"],
+      ["We've launched Claude Fable 5.5 in the API", "platform"],
+    ]);
 
     const down = async (input: string | URL) => (String(input) === APPS_NOTES_URL ? new Response(APPS) : Promise.reject(new Error("offline")));
     const onlyApps = await fetchClaudeNews({ fetchImpl: down });

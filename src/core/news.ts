@@ -1,6 +1,6 @@
-// News for the home screen: the newest models in the catalog (Claude first), what's new in Claude
-// Code (npm's newest version and the top of its changelog) and Anthropic's status page. The three
-// downloads run in parallel when the hub isn't offline, each answer is kept for an hour in
+// News for the home screen: the newest models in the catalog (Claude first), Claude's own release
+// notes (model launches, offers; src/core/claude-news.ts), what's new in Claude Code (npm's newest
+// version and the top of its changelog) and Anthropic's status page. The downloads run in parallel when the hub isn't offline, each answer is kept for an hour in
 // <cacheDir>/news.json, and a source that can't be loaded is null (the home screen says so).
 // Nothing here throws.
 import fs from "node:fs";
@@ -8,6 +8,7 @@ import path from "node:path";
 import { writeFileAtomicSync } from "../platform/files.js";
 import type { ModelInfo, ProviderInfo } from "../providers/models.js";
 import type { FetchLike } from "../providers/types.js";
+import { fetchClaudeNews, type ClaudeNewsItem } from "./claude-news.js";
 
 /** npm's newest Claude Code release ({ version, ... }). */
 export const CLAUDE_CODE_NPM_URL = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest";
@@ -53,6 +54,8 @@ export interface News {
   changelog: ChangelogSection | null;
   /** Anthropic's status; null when it couldn't be loaded. */
   status: ServiceStatus | null;
+  /** Claude's release notes (apps and platform), newest first; null when neither page loaded. */
+  claude: ClaudeNewsItem[] | null;
   /** When the oldest of these answers was fetched (the time of loading when none was). */
   fetchedAt: number;
   /** When loadNews put this together. */
@@ -246,7 +249,7 @@ export function newestModels(source: ModelSource, now: number, opts: { days?: nu
 
 // ---- loading ------------------------------------------------------------------------------------
 
-type SourceId = "npm" | "changelog" | "status";
+type SourceId = "npm" | "changelog" | "status" | "claude";
 
 interface CachedAnswer {
   at: number;
@@ -272,7 +275,7 @@ function readCache(file: string): NewsCache {
     const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
     if (!isObject(raw) || !isObject(raw.sources)) return {};
     const out: NewsCache = {};
-    for (const id of ["npm", "changelog", "status"] as const) {
+    for (const id of ["npm", "changelog", "status", "claude"] as const) {
       const entry = raw.sources[id];
       if (isObject(entry) && typeof entry.at === "number" && entry.value != null) out[id] = { at: entry.at, value: entry.value };
     }
@@ -305,6 +308,15 @@ function parseJson(text: string | null): unknown {
 /** A cached changelog section or status as it was written (null when it has the wrong shape). */
 function asSection(v: unknown): ChangelogSection | null {
   return isObject(v) && typeof v.version === "string" && Array.isArray(v.bullets) ? { version: v.version, bullets: v.bullets.filter((b): b is string => typeof b === "string") } : null;
+}
+
+function asClaudeNews(v: unknown): ClaudeNewsItem[] | null {
+  if (!Array.isArray(v)) return null;
+  const items = v.filter(
+    (i): i is ClaudeNewsItem =>
+      isObject(i) && typeof i.date === "string" && typeof i.title === "string" && typeof i.url === "string" && ["model", "offer", "news"].includes(i.kind as string),
+  );
+  return items.length ? items : null;
 }
 
 function asStatus(v: unknown): ServiceStatus | null {
@@ -343,7 +355,7 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
     return { value, at: now };
   };
 
-  const [npm, changelog, status] = await Promise.all([
+  const [npm, changelog, status, claude] = await Promise.all([
     get(
       "npm",
       async (f) => parseNpmLatest(parseJson(await download(f, CLAUDE_CODE_NPM_URL, { accept: "application/json" }, timeoutMs))),
@@ -358,6 +370,14 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
       asSection,
     ),
     get("status", async (f) => parseStatus(parseJson(await download(f, ANTHROPIC_STATUS_URL, { accept: "application/json" }, timeoutMs))), asStatus),
+    get(
+      "claude",
+      async (f) => {
+        const items = await fetchClaudeNews({ fetchImpl: f, limit: 12, timeoutMs });
+        return items.length ? items : null;
+      },
+      asClaudeNews,
+    ),
   ]);
 
   if (wrote) {
@@ -368,11 +388,12 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
       // The cache only saves downloads.
     }
   }
-  const loaded = [npm, changelog, status].filter((s) => s.value !== null);
+  const loaded = [npm, changelog, status, claude].filter((s) => s.value !== null);
   return {
     claudeCodeLatest: npm.value,
     changelog: changelog.value,
     status: status.value,
+    claude: claude.value,
     fetchedAt: loaded.length ? Math.min(...loaded.map((s) => s.at)) : now,
     loadedAt: now,
   };
@@ -385,6 +406,6 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
 export function newsStale(news: News | null, now: number): boolean {
   if (!news) return true;
   if (now - news.fetchedAt >= NEWS_MAX_AGE_MS || now < news.loadedAt) return true;
-  const missing = news.claudeCodeLatest === null || news.changelog === null || news.status === null;
+  const missing = news.claudeCodeLatest === null || news.changelog === null || news.status === null || news.claude === null;
   return missing && now - news.loadedAt >= NEWS_RETRY_MS;
 }

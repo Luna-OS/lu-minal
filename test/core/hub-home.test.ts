@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/core/config.js";
 import { Hub } from "../../src/core/hub.js";
 import { ANTHROPIC_STATUS_URL, CLAUDE_CODE_CHANGELOG_URL, CLAUDE_CODE_NPM_URL } from "../../src/core/news.js";
+import { PLATFORM_NOTES_URL } from "../../src/core/claude-news.js";
 import { Project } from "../../src/core/project.js";
 import { AuthStore } from "../../src/providers/auth.js";
 import type { FetchLike } from "../../src/providers/types.js";
@@ -41,6 +42,7 @@ const newsFetch = () =>
     if (url === CLAUDE_CODE_NPM_URL) return Response.json({ version: "2.1.320" });
     if (url === CLAUDE_CODE_CHANGELOG_URL) return new Response("## 2.1.320\n\n- Added /rewind\n");
     if (url === ANTHROPIC_STATUS_URL) return Response.json({ incidents: [], status: { indicator: "none", description: "All Systems Operational" } });
+    if (url === PLATFORM_NOTES_URL) return new Response("### October 7, 2026\n\n* We've launched Claude Haiku 5.5.\n");
     return new Response("", { status: 404 });
   });
 
@@ -98,16 +100,22 @@ describe("the home screen in the hub", () => {
     hub.openHome();
     // One load at a time: asking again while it runs joins it.
     await hub.refreshNews();
-    expect(fetchImpl.calls).toHaveLength(3);
-    expect(hub.news).toMatchObject({ claudeCodeLatest: "2.1.320", changelog: { bullets: ["Added /rewind"] }, status: { indicator: "none" } });
+    // npm, the changelog, the status and Claude's two release-notes pages.
+    expect(fetchImpl.calls).toHaveLength(5);
+    expect(hub.news).toMatchObject({
+      claudeCodeLatest: "2.1.320",
+      changelog: { bullets: ["Added /rewind"] },
+      status: { indicator: "none" },
+      claude: [{ date: "2026-10-07", title: "We've launched Claude Haiku 5.5", kind: "model" }],
+    });
 
     // Fresh news isn't asked for again when home opens once more.
     hub.closeHome();
     tabs(hub, ["a"]);
     hub.openHome();
     await hub.refreshNews();
-    expect(fetchImpl.calls).toHaveLength(3);
+    expect(fetchImpl.calls).toHaveLength(5);
     await hub.refreshNews(true);
-    expect(fetchImpl.calls).toHaveLength(6);
+    expect(fetchImpl.calls).toHaveLength(10);
   });
 });

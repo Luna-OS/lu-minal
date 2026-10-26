@@ -32,10 +32,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function daysAgoIso(n: number): string {
+  return new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+}
+
 const NEWS: News = {
   claudeCodeLatest: "2.1.320",
   changelog: { version: "2.1.320", bullets: ["Added /rewind to step back through a conversation", "Fixed a hang with slow MCP servers", "Faster start on Windows"] },
   status: { indicator: "minor", description: "Partially Degraded Service", incidents: ["Elevated errors on Claude Opus 5.5"] },
+  claude: [
+    { date: daysAgoIso(1), title: "Claude Duet research preview for Pro and Max plans", kind: "news", source: "apps", url: "https://support.claude.com/" },
+    { date: daysAgoIso(19), title: "Claude Haiku 5.5 launch", kind: "model", source: "apps", url: "https://support.claude.com/" },
+    { date: daysAgoIso(19), title: "Monthly API credits for Max and Team plans", kind: "offer", source: "apps", url: "https://support.claude.com/" },
+  ],
   fetchedAt: Date.now() - 5 * 60_000,
   loadedAt: Date.now(),
 };
@@ -69,6 +78,7 @@ function setup() {
   t.hub.config.recent = [...folders, t.dir];
   const tab = addProject(t.hub, t.dir);
   t.hub.news = NEWS;
+  t.hub.planEvents = [{ at: Date.now(), text: "Free reset: weekly (was 63 %)" }];
   t.hub.claudeAccount = { installed: true, exe: "/bin/claude", version: "2.1.300", loggedIn: true, authMethod: "claude.ai", email: "ada@example.com", organization: null, plan: "max" };
   t.hub.updateAvailable = { version: "0.1.4", url: "https://github.com/Luna-OS/lu-minal/releases/tag/v0.1.4" };
   return { ...t, ...tab, folders };
@@ -85,6 +95,10 @@ const BLOCKS = [
   "◆ Start",
   "◆ Recent",
   "› gf-sim",
+  "◆ Claude",
+  "✦ Claude Haiku 5.5 launch",
+  "★ Monthly API credits for Max and Team plans",
+  "★ Free reset: weekly (was 63 %)",
   "◆ New models",
   "Claude Haiku 5.5",
   "◆ Claude Code",
@@ -127,7 +141,8 @@ describe("the home screen", () => {
     const r = show(t, { columns: 80, rows: 24 });
     await r.waitFor((s) => s.includes("Message luna"), "the project");
     await r.press(ALT_0);
-    await r.waitFor((s) => BLOCKS.every((b) => s.includes(b)), "every block of home");
+    // The offers are the first rows to go at this size; a launch stays.
+    await r.waitFor((s) => BLOCKS.filter((b) => !b.startsWith("★ Monthly")).every((b) => s.includes(b)), "every block of home");
     expect(r.screen().split("\n")).toHaveLength(24);
 
     await r.press("hello");

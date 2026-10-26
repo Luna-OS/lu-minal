@@ -4,10 +4,15 @@
 //             branch, so the branch has to be pushed.
 // - message:  `claude -p "<text>" --cloud <session-id> --output-format json` -> { ok, session_id, url }
 // - teleport: `claude --teleport <session-id>` - continues the cloud session in this terminal.
+// - browse:   `claude --teleport` - the CLI's own picker of every cloud session of the account.
+// - watch:    `claude --cloud <session-id>` without -p - attaches and shows it live; most accounts
+//             can't yet ("Attaching to an existing cloud session is not enabled for your account.").
 // The CLI has no command that lists cloud sessions, so lu-minal remembers the ones it started.
+// lu-minal never reads Claude Code's tokens or calls claude.ai itself: everything goes through the CLI.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { samePath } from "../platform/paths.js";
 import { findProgram, runProgram } from "../platform/process.js";
 
 export interface CloudSession {
@@ -26,10 +31,15 @@ export interface CloudSession {
 const URL_RE = /https:\/\/claude\.ai\/code\/((?:session|cse)_[A-Za-z0-9_-]+)[^\s"'<>)]*/;
 const ID_RE = /\b((?:session|cse)_[A-Za-z0-9_-]{6,})\b/;
 
+/** Terminal output without its colour and cursor codes. */
+function plain(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*\u0007/g, "");
+}
+
 /** The session a piece of CLI output (or a pasted link) talks about. */
 export function parseCloudSession(text: string): { id: string; url: string } | null {
-  // eslint-disable-next-line no-control-regex
-  const clean = text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007]*\u0007/g, "");
+  const clean = plain(text);
   const url = URL_RE.exec(clean);
   if (url) return { id: url[1], url: `https://claude.ai/code/${url[1]}` };
   const id = ID_RE.exec(clean);
@@ -71,10 +81,15 @@ export function shQuote(arg: string): string {
 
 /** Reads (and deletes) a transcript written by `script`, returning the session it names. */
 export function sessionFromTranscript(transcript: string | null): { id: string; url: string } | null {
+  const text = takeTranscript(transcript);
+  return text === null ? null : parseCloudSession(text);
+}
+
+/** Reads a transcript written by `script` and deletes it (with its private folder); null without one. */
+export function takeTranscript(transcript: string | null): string | null {
   if (!transcript) return null;
   try {
-    const text = fs.readFileSync(transcript, "utf8");
-    return parseCloudSession(text);
+    return fs.readFileSync(transcript, "utf8");
   } catch {
     return null;
   } finally {
@@ -140,8 +155,74 @@ export async function sendToCloud(
   }
 }
 
+/**
+ * The last error Claude Code printed ("Error: Cloud sessions need a claude.ai sign-in. ..."), so a
+ * failed start can say why instead of asking for a link that never came.
+ */
+export function cliError(text: string): string | null {
+  const lines = plain(text)
+    .split(/\r?\n|\r/)
+    .map((l) => l.trim())
+    .filter((l) => /^error:\s*\S/i.test(l));
+  return lines.length ? shortCloudError(lines[lines.length - 1]) : null;
+}
+
+/**
+ * A send error short enough for a list row or a toast:
+ * "Error: failed to send message to cloud session session_x: Session not found: session_x"
+ * -> "Session not found: session_x".
+ */
+export function shortCloudError(error: string): string {
+  const short = error
+    .trim()
+    .replace(/^error:\s*/i, "")
+    .replace(/^failed to send message to cloud session \S+:\s+/i, "")
+    .trim();
+  return short ? short[0].toUpperCase() + short.slice(1) : error.trim();
+}
+
 export function teleportArgs(sessionId: string): string[] {
   return ["--teleport", sessionId];
+}
+
+/** `claude --teleport` without an id: Claude Code's own picker of every cloud session of the account. */
+export function teleportPickerArgs(): string[] {
+  return ["--teleport"];
+}
+
+/** `claude --cloud <id>` without -p: attaches to the session and shows it live (not every account can). */
+export function watchArgs(sessionId: string): string[] {
+  return ["--cloud", sessionId];
+}
+
+/**
+ * A command for the real terminal that waits for enter when the program fails, so Claude Code's
+ * message (a different repository, "Attaching ... is not enabled for your account") can be read
+ * before lu-minal draws over it. `trap : INT` keeps the shell alive while Ctrl+C goes to the
+ * program. Windows has no POSIX shell; there the program runs plainly (`pauses: false`).
+ */
+export function pausingCommand(
+  exe: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+): { exe: string; args: string[]; pauses: boolean } {
+  const sh = platform === "win32" ? null : findProgram("sh");
+  if (!sh) return { exe, args, pauses: false };
+  const script =
+    'trap : INT; "$0" "$@"; c=$?; if [ "$c" -ne 0 ]; then ' +
+    'printf "\\n%s" "Claude Code stopped (exit code $c). Press enter to go back to lu-minal. "; read -r _; fi; exit "$c"';
+  return { exe: sh, args: ["-c", script, exe, ...args], pauses: true };
+}
+
+/**
+ * The session `/cloud msg` writes to: the one last used in /cloud while it is still remembered,
+ * else the newest from this folder, else the newest of all.
+ */
+export function cloudTarget(sessions: CloudSession[], cwd: string | null, pickedId: string | null): CloudSession | null {
+  const picked = pickedId ? sessions.find((s) => s.id === pickedId) : undefined;
+  if (picked) return picked;
+  const newest = (list: CloudSession[]) => list.reduce<CloudSession | null>((a, b) => (!a || b.startedAt > a.startedAt ? b : a), null);
+  return newest(cwd ? sessions.filter((s) => samePath(s.cwd, cwd)) : []) ?? newest(sessions);
 }
 
 /**

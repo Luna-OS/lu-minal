@@ -43,6 +43,8 @@ export interface ListDialogProps {
   empty?: string;
   initialId?: string;
   width?: number;
+  /** Lines of text above the list (keep their number steady, or the list jumps). */
+  notes?: Array<{ text: string; color?: string }>;
 }
 
 export function matches(item: ListItem, query: string): boolean {
@@ -222,10 +224,11 @@ export function ListDialog(props: ListDialogProps) {
   const width = Math.min(props.width ?? 84, size.columns - 2);
   // Rows the list needs: every item plus a heading per group, plus the chrome around it.
   const groups = new Set(filtered.map((i) => i.group).filter(Boolean)).size;
-  const chrome = 4 + (props.filter === false && !props.onQuery ? 0 : 1) + (props.hints ? 1 : 0) + (props.loading || props.error ? 1 : 0);
+  const notes = props.notes ?? [];
+  const chrome = 4 + (props.filter === false && !props.onQuery ? 0 : 1) + (props.hints ? 1 : 0) + (props.loading || props.error ? 1 : 0) + notes.length;
   const height = Math.min(Math.max(10, filtered.length + groups + chrome), Math.max(8, size.rows - 4), 32);
   const innerW = width - 4;
-  const listH = height - 2 - 1 - (props.filter === false && !props.onQuery ? 0 : 1) - (props.hints ? 1 : 0) - 1;
+  const listH = height - 2 - 1 - (props.filter === false && !props.onQuery ? 0 : 1) - (props.hints ? 1 : 0) - 1 - notes.length;
 
   const lines: Line[] = [];
   let lastGroup: string | undefined;
@@ -253,6 +256,11 @@ export function ListDialog(props: ListDialogProps) {
           {`✗ ${props.error}`}
         </Text>
       ) : null}
+      {notes.map((n, i) => (
+        <Text key={`n${i}`} color={n.color ?? c.muted} wrap="truncate">
+          {n.text || " "}
+        </Text>
+      ))}
       {!props.loading && !filtered.length ? <Text color={c.faint}>{props.empty ?? "Nothing here."}</Text> : null}
       {visible.map((line, i) => {
         if (line.kind === "group") {

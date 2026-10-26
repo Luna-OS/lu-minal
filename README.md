@@ -52,8 +52,10 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
   terminal's own paste key (ctrl+v in Windows Terminal, cmd+v in the macOS app), drop files on the
   terminal, or pick them with `/attach`. Models that can see get the picture; text files go into
   the message.
-- **Claude cloud sessions.** `/cloud` starts a task on claude.ai/code, sends it follow-ups,
-  and brings a session back into this terminal (`claude --teleport`).
+- **Claude cloud sessions, in the terminal.** `/cloud` starts a task on claude.ai/code, browses
+  every cloud session of your account in Claude Code's own picker (`claude --teleport`), and per
+  session: enter types a follow-up, t teleports it here, w watches it live (not every account has
+  that yet). `/cloud msg <text>` messages the session used last right from the prompt.
 - **Close and come back.** lu-minal saves the session as you work: quit, start it again, and every
   tab, agent, log and conversation is back where it was.
 - **Tabs per project.** Open a folder, or clone a repository from **GitHub** or any **Forgejo /

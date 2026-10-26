@@ -1,5 +1,6 @@
 // Slash commands. Every shortcut has one, because terminals (VS Code, Windows Terminal, macOS
 // Terminal) each swallow different key combinations.
+import { cloudTarget } from "../cloud/claude-cloud.js";
 import type { Agent } from "../core/agent.js";
 import type { Hub } from "../core/hub.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
@@ -144,7 +145,21 @@ export const COMMANDS: Command[] = [
   },
   { name: "usage", aliases: ["limits"], description: "Plan limits, credits and token use", run: (ctx) => ctx.dialogs.usage() },
   { name: "stats", aliases: ["statistics", "tokens"], description: "Token statistics: today, this week, all time, by model and project", run: (ctx) => ctx.dialogs.stats() },
-  { name: "cloud", aliases: ["web", "remote"], description: "Claude on the web: start, message and teleport cloud sessions", run: (ctx) => ctx.dialogs.cloud() },
+  {
+    name: "cloud",
+    aliases: ["web", "remote"],
+    args: "[msg <text>]",
+    description: "Claude cloud sessions in the terminal: start, message, teleport, watch (msg: to the one used last, else the newest)",
+    run: async (ctx, args) => {
+      const m = /^(?:msg|message|send)(?:\s+([\s\S]*))?$/i.exec(args.trim());
+      if (!m) return ctx.dialogs.cloud();
+      const text = (m[1] ?? "").trim();
+      if (!text) return ctx.hub.toast("Usage: /cloud msg <text> - to the cloud session used last in /cloud, else the newest.", "warning");
+      const session = cloudTarget(ctx.hub.cloudSessions, ctx.project?.cwd ?? null, ctx.hub.pickedCloudId);
+      if (!session) return ctx.hub.toast("No cloud session yet - /cloud starts one or adds one by its link.", "warning");
+      await ctx.hub.messageCloud(session, text);
+    },
+  },
   { name: "roblox", aliases: ["studio"], description: "Connect Roblox Studio", run: (ctx) => ctx.dialogs.roblox() },
   {
     name: "trust",

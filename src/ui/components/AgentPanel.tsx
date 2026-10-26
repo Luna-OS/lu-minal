@@ -165,6 +165,8 @@ export interface AgentPanelProps {
   chips?: readonly string[];
   /** Rows scrolled up from the bottom. */
   scroll: number;
+  /** Told the most the log can scroll (Infinity while its top is further up than what was drawn). */
+  onScrollRange?: (max: number) => void;
   /** Columns to keep free on the right (Axo's corner in the lead panel). */
   reserveRight?: number;
   /** Rows the slash-command menu takes above the prompt. */
@@ -230,9 +232,13 @@ export function AgentPanel(props: AgentPanelProps) {
     expandHint: props.zoomed ? undefined : "ctrl+f to expand",
     pinned: card ? (ask?.entryId ?? undefined) : undefined,
   });
-  const end = Math.max(0, rows.length - props.scroll);
+  // Fewer rows than asked for: that is the whole log, so scrolling stops at its top.
+  const maxScroll = rows.length < logRoom + props.scroll ? Math.max(0, rows.length - logRoom) : Infinity;
+  props.onScrollRange?.(maxScroll);
+  const scroll = Math.min(props.scroll, maxScroll);
+  const end = Math.max(0, rows.length - scroll);
   const visible = rows.slice(Math.max(0, end - logRoom), end);
-  const scrolled = props.scroll > 0 && rows.length > logRoom;
+  const scrolled = scroll > 0 && rows.length > logRoom;
 
   const borderColor =
     agent.status === "waiting" ? c.warning : focused ? c.borderFocus : agent.status === "error" ? c.error : c.border;
@@ -256,7 +262,7 @@ export function AgentPanel(props: AgentPanelProps) {
           bg={bg}
           segs={
             scrolled
-              ? [{ text: `↑ scrolled ${props.scroll} rows · PgDn to follow`, color: c.warning }]
+              ? [{ text: `↑ scrolled ${scroll} rows · PgDn to follow`, color: c.warning }]
               : statusSegs(agent, project, theme, frame, now)
           }
         />

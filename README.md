@@ -168,6 +168,8 @@ and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-
 | ctrl+k | command palette |
 | ctrl+f | zoom |
 | pgup, pgdn | scroll |
+| mouse wheel, click | scroll the panel under the pointer, focus a panel. With **Shift** held (**Option** in iTerm2, **fn** in Terminal.app) the mouse is the terminal's: drag to select text, right-click to paste in Windows Terminal. `/mouse off` leaves it to the terminal for good (the macOS app always does) |
+| `/copy` | copy the focused agent's last reply – its words, not the tool output – to the clipboard |
 | esc | interrupt the focused agent |
 | ctrl+v, alt+v (`/paste`) | paste a screenshot or copied files from the clipboard |
 | ctrl+c twice, ctrl+q | quit |

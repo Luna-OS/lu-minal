@@ -1,7 +1,7 @@
 // The root component: lays out the sky, the tab bar, the agents' panels and the dialogs, and routes
 // every key. State lives in the Hub; what lives here is purely about the screen (prompts, scroll,
 // open dialogs).
-import { Box, Text, useApp, useInput, usePaste, useWindowSize, type Key } from "ink";
+import { Box, Text, useApp, useInput, usePaste, useStdout, useWindowSize, type Key } from "ink";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { Agent } from "../core/agent.js";
 import {
@@ -19,6 +19,8 @@ import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
 import { spawnProgram } from "../platform/process.js";
 import { cardPage, panelRowsFor, pendingAsk, type CardView } from "./ask-card.js";
 import { commandSuggestions, findCommand, runCommandLine, type CommandContext } from "./commands.js";
+import { copyLastReply } from "./copy.js";
+import { useScreenMouse } from "./screen-mouse.js";
 import { AgentPanel } from "./components/AgentPanel.js";
 import { Axo } from "./components/Axo.js";
 import { Footer, Header, TabBar, Toasts } from "./components/Chrome.js";
@@ -73,6 +75,9 @@ function Screen({ onExit }: { onExit: () => void }) {
   const [cardTops, setCardTops] = useState<Record<string, { id: string; top: number }>>({});
   const [dismissedAsks, setDismissedAsks] = useState<Record<string, string>>({});
   const cards = useRef<Record<string, CardView | null>>({});
+  /** How far each panel can scroll, as it last drew (Infinity while the top is further up). */
+  const scrollMax = useRef<Record<string, number>>({});
+  const { stdout } = useStdout();
 
   const project = hub.activeProject;
   const focused = project?.focused;
@@ -212,6 +217,9 @@ function Screen({ onExit }: { onExit: () => void }) {
     paste: () => {
       if (focused) void pasteClipboard(focused);
     },
+    copy: () => {
+      if (focused) void copyLastReply(focused, hub, (data) => stdout.write(data));
+    },
     dialogs: launchers,
   };
   ctxRef.current = ctx;
@@ -267,7 +275,11 @@ function Screen({ onExit }: { onExit: () => void }) {
   };
 
   const scrollBy = (agent: Agent, delta: number) =>
-    setScrolls((s) => ({ ...s, [agent.id]: Math.max(0, (s[agent.id] ?? 0) + delta) }));
+    setScrolls((s) => {
+      // Not past the top: scrolling back down then moves at once.
+      const max = scrollMax.current[agent.id] ?? Infinity;
+      return { ...s, [agent.id]: Math.max(0, Math.min(max, Math.min(max, s[agent.id] ?? 0) + delta)) };
+    });
 
   /** Home: ↑ ↓ pick a recent folder, enter opens it, esc goes back to the tab underneath. */
   const handleHomeKey = (input: string, key: Key) => {
@@ -417,6 +429,8 @@ function Screen({ onExit }: { onExit: () => void }) {
     leadRows: leadAsk ? panelRowsFor(leadAsk, leadWidth, theme) : 0,
   });
   const glass = layout.panels.map((p) => ({ ...p.rect, focused: p.agentId === focused?.id }));
+  const movePick = (step: 1 | -1) => setHomePick(Math.max(0, Math.min(Math.max(0, recent.length - 1), pick + step)));
+  useScreenMouse({ hub, layout, shown, focused, home, movePick, scrollBy, isActive: !dialogOpen });
   // A few ms over the whole catalog: worked out again when it or the Claude account changes, and
   // each minute (for sign-ins elsewhere).
   const minute = Math.floor(now / 60_000);
@@ -489,6 +503,7 @@ function Screen({ onExit }: { onExit: () => void }) {
                 cardTop={cardTops[agent.id]}
                 dismissedAsk={dismissedAsks[agent.id]}
                 onCard={(card) => void (cards.current[agent.id] = card)}
+                onScrollRange={(max) => void (scrollMax.current[agent.id] = max)}
                 reserveRight={reserve}
                 menu={isFocused ? [...chipRows(agent), ...menuRows(agent)] : undefined}
               />

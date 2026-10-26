@@ -4,6 +4,7 @@ import { Text, useInput, useWindowSize } from "ink";
 import React, { useState } from "react";
 import type { Theme } from "../../themes/types.js";
 import { editKey, type EditorState } from "../editor.js";
+import { isWheel, useMouse, WHEEL_STEP } from "../mouse.js";
 import { wrap } from "../text.js";
 import { DialogBox, InputLine } from "./ListDialog.js";
 
@@ -127,6 +128,9 @@ export function MessageDialog(props: {
     if (key.pageUp) return setTop(Math.max(0, first - room));
     if (key.pageDown) return setTop(Math.min(maxTop, first + room));
     if (key.escape || key.return) props.onClose();
+  });
+  useMouse((e) => {
+    if (isWheel(e)) setTop(e.button === "wheelUp" ? Math.max(0, first - WHEEL_STEP) : Math.min(maxTop, first + WHEEL_STEP));
   });
   const hints = props.hints ?? "enter / esc close";
   return (

@@ -12,6 +12,7 @@ import { Hub } from "../../src/core/hub.js";
 import { Project } from "../../src/core/project.js";
 import { AuthStore } from "../../src/providers/auth.js";
 import { ThemeManager } from "../../src/themes/manager.js";
+import { MouseStdin } from "../../src/ui/mouse.js";
 import type { DialogSpec, UiServices } from "../../src/ui/store.js";
 import { stripAnsi } from "./ansi-helpers.js";
 
@@ -94,14 +95,20 @@ class FakeStdin extends EventEmitter {
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Renders `tree` in a `columns` x `rows` terminal. */
-export function renderAt(tree: React.ReactElement, size: { columns: number; rows: number }) {
+/**
+ * Renders `tree` in a `columns` x `rows` terminal. Ink reads the keys through a MouseStdin as in
+ * lu-minal (`mouse: false` for the bare input); `terminal` collects what it tells the terminal
+ * (mouse reporting on and off).
+ */
+export function renderAt(tree: React.ReactElement, size: { columns: number; rows: number }, opts: { mouse?: boolean } = {}) {
   const stdout = new FakeStdout(size.columns, size.rows);
   const stdin = new FakeStdin();
+  const terminal: string[] = [];
+  const input = (opts.mouse ?? true) ? new MouseStdin(stdin as unknown as NodeJS.ReadStream, { write: (s: string) => void terminal.push(s) }) : stdin;
   const instance = render(tree, {
     stdout: stdout as unknown as NodeJS.WriteStream,
     stderr: new FakeStdout(size.columns, size.rows) as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdin: input as unknown as NodeJS.ReadStream,
     debug: true,
     exitOnCtrlC: false,
     patchConsole: false,
@@ -110,6 +117,7 @@ export function renderAt(tree: React.ReactElement, size: { columns: number; rows
   const screen = () => stripAnsi(stdout.frames.at(-1) ?? "");
   return {
     stdout,
+    terminal,
     screen,
     /** Types keys (one write) and gives Ink and React time to render. */
     press: async (keys: string, settleMs = 60) => {

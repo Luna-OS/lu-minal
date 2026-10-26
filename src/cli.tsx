@@ -31,6 +31,7 @@ import { bridgeToken } from "./roblox/token.js";
 import { startThemes, ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
 import { RENDER_OPTIONS } from "./ui/render-options.js";
+import { MouseStdin } from "./ui/mouse.js";
 import { VERSION } from "./version.js";
 
 // React has loaded: the programs lu-minal starts get the environment as it was.
@@ -343,7 +344,11 @@ async function main(): Promise<void> {
     // Let Ink restore the screen first.
     setTimeout(() => process.exit(0), 50);
   };
-  const instance = render(React.createElement(App, { hub, onExit: done }), RENDER_OPTIONS);
+  // Ink reads the keys through this: it takes the mouse reports out (the App turns them on).
+  const input = new MouseStdin(process.stdin, process.stdout);
+  // However lu-minal ends, the shell gets a terminal without mouse reports.
+  process.once("exit", () => input.dispose());
+  const instance = render(React.createElement(App, { hub, onExit: done }), { ...RENDER_OPTIONS, stdin: input as unknown as NodeJS.ReadStream });
   for (const signal of ["SIGTERM", "SIGHUP"] as const) {
     process.on(signal, () => {
       void hub.dispose().finally(() => {

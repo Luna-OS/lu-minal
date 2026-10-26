@@ -7,6 +7,7 @@ import { editKey, emptyEditor, type EditorState } from "../editor.js";
 import type { Seg } from "../log-lines.js";
 import { truncate, width as textWidth } from "../text.js";
 import { Segs, segsWidth } from "../components/RowView.js";
+import { isWheel, useMouse } from "../mouse.js";
 
 export interface ListItem {
   id: string;
@@ -219,6 +220,11 @@ export function ListDialog(props: ListDialogProps) {
       setEditor(r.state);
       setSelected(0);
     }
+  });
+  // The wheel moves the selection (and stops at the ends, where the arrows wrap around).
+  useMouse((e) => {
+    if (!isWheel(e) || !selectable.length) return;
+    setSelected((s) => (e.button === "wheelUp" ? Math.max(0, s - 1) : Math.min(selectable.length - 1, s + 1)));
   });
 
   const width = Math.min(props.width ?? 84, size.columns - 2);

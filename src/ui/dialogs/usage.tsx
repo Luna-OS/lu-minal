@@ -10,6 +10,7 @@ import type { UsageWindow } from "../../core/types.js";
 import type { Theme } from "../../themes/types.js";
 import { formatCost, formatTokens } from "../format.js";
 import type { Row, Seg } from "../log-lines.js";
+import { isWheel, useMouse, WHEEL_STEP } from "../mouse.js";
 import { RowView } from "../components/RowView.js";
 import { DialogBox } from "./ListDialog.js";
 
@@ -241,6 +242,9 @@ export function UsageDialog({ hub, onClose }: { hub: Hub; onClose: () => void })
     if (key.upArrow) setScroll((s) => Math.max(0, s - 1));
     if (key.pageDown) setScroll((s) => Math.min(max, s + room));
     if (key.pageUp) setScroll((s) => Math.max(0, s - room));
+  });
+  useMouse((e) => {
+    if (isWheel(e)) setScroll((s) => (e.button === "wheelUp" ? Math.max(0, Math.min(max, s) - WHEEL_STEP) : Math.min(max, s + WHEEL_STEP)));
   });
   const c = hub.theme.colors;
   return (

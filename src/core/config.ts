@@ -59,6 +59,8 @@ export interface Config {
   /** The animated night sky. */
   sky: { enabled: boolean; fps: number };
   axo: boolean;
+  /** Mouse reports: the wheel scrolls the panel under the pointer, a click focuses one (/mouse). */
+  mouse: boolean;
   github: { owner: string | null };
   forgejo: ForgejoInstance[];
   roblox: { enabled: boolean; port: number };
@@ -92,6 +94,7 @@ export function defaultConfig(): Config {
     permissionMode: "auto-edit",
     sky: { enabled: true, fps: 8 },
     axo: true,
+    mouse: true,
     github: { owner: null },
     forgejo: [{ name: "Codeberg", url: "https://codeberg.org" }],
     roblox: { enabled: true, port: 44766 },
@@ -128,6 +131,7 @@ export function mergeConfig(stored: unknown): Config {
   if (!Array.isArray(out.recent)) out.recent = [];
   if (!Array.isArray(out.untrusted)) out.untrusted = [];
   if (typeof out.theme !== "string" || !out.theme) out.theme = base.theme;
+  if (typeof out.mouse !== "boolean") out.mouse = base.mouse;
   return out;
 }
 

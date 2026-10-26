@@ -27,9 +27,16 @@ import { createLaunchers } from "./dialogs/index.js";
 import { editKey, emptyEditor, insertText, type EditorState } from "./editor.js";
 import { computeLayout, type Layout } from "./layout.js";
 import type { Row } from "./log-lines.js";
+import { addPaste, deleteChipBefore, expandPastes, isLongPaste, keepReferenced, noPastes, type Pastes } from "./paste.js";
 import { HubContext, UiContext, useHub, type DialogSpec, type UiServices } from "./store.js";
 import { truncate } from "./text.js";
 import type { AxoMood } from "./axo/frames.js";
+
+/** A sent prompt, with the texts behind its paste chips so that recalling it brings the chips back. */
+interface HistoryEntry {
+  text: string;
+  pastes: Pastes;
+}
 
 export interface AppProps {
   hub: Hub;
@@ -55,7 +62,8 @@ function Screen({ onExit }: { onExit: () => void }) {
   const [editors, setEditors] = useState<Record<string, EditorState>>({});
   const [scrolls, setScrolls] = useState<Record<string, number>>({});
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
-  const history = useRef<Record<string, { items: string[]; index: number }>>({});
+  const [pastes, setPastes] = useState<Record<string, Pastes>>({});
+  const history = useRef<Record<string, { items: HistoryEntry[]; index: number }>>({});
   const lastCtrlC = useRef(0);
   const lastBusy = useRef<{ busy: boolean; doneAt: number }>({ busy: false, doneAt: 0 });
 
@@ -121,7 +129,18 @@ function Screen({ onExit }: { onExit: () => void }) {
   );
 
   const editorOf = (agent: Agent | undefined): EditorState => (agent ? (editors[agent.id] ?? emptyEditor()) : emptyEditor());
-  const setEditor = (agent: Agent, state: EditorState) => setEditors((e) => ({ ...e, [agent.id]: state }));
+  const pastesOf = (agent: Agent | undefined): Pastes => (agent ? (pastes[agent.id] ?? noPastes()) : noPastes());
+  /** Sets the prompt; `kept` replaces its pasted texts (a new paste, a recalled message). */
+  const setEditor = (agent: Agent, state: EditorState, kept?: Pastes) => {
+    setEditors((e) => ({ ...e, [agent.id]: state }));
+    // A pasted text lives as long as its chip: deleting the chip or clearing the prompt forgets it.
+    setPastes((p) => {
+      const base = kept ?? p[agent.id];
+      if (!base) return p;
+      const next = keepReferenced(base, state.value);
+      return next === p[agent.id] ? p : { ...p, [agent.id]: next };
+    });
+  };
   const setPrompt = (text: string) => {
     if (focused) setEditor(focused, { value: text, cursor: text.length });
   };
@@ -182,8 +201,12 @@ function Screen({ onExit }: { onExit: () => void }) {
     const value = text.trim();
     const files = attachOf(agent);
     if ((!value && !files.length) || !project) return;
+    // Paste chips go out as the texts they stand for.
+    const kept = keepReferenced(pastesOf(agent), value);
+    const full = (s: string) => expandPastes(s, kept);
     const h = (history.current[project.id] ??= { items: [], index: -1 });
-    h.items = [value, ...h.items.filter((x) => x !== value)].slice(0, 100);
+    const sent = full(value);
+    h.items = [{ text: value, pastes: kept }, ...h.items.filter((x) => expandPastes(x.text, x.pastes) !== sent)].slice(0, 100);
     h.index = -1;
     setEditor(agent, emptyEditor());
     setScrolls((s) => ({ ...s, [agent.id]: 0 }));
@@ -192,18 +215,18 @@ function Screen({ onExit }: { onExit: () => void }) {
       const typed = /^\/(\S*)/.exec(value)?.[1] ?? "";
       const matches = commandSuggestions(typed);
       if (!findCommand(typed) && matches.length === 1) {
-        void runCommandLine(ctx, `/${matches[0].name}${value.slice(typed.length + 1)}`);
+        void runCommandLine(ctx, `/${matches[0].name}${full(value.slice(typed.length + 1))}`);
       } else {
-        void runCommandLine(ctx, value);
+        void runCommandLine(ctx, sent);
       }
       return;
     }
     const at = /^@(\S+)\s+([\s\S]+)$/.exec(value);
     if (at) {
-      const got = project.send("you", at[1], at[2], files);
+      const got = project.send("you", at[1], full(at[2]), files);
       if (!got.length) {
-        // A mistyped name: the text and the attachments stay, so it can be fixed and sent again.
-        setEditor(agent, { value, cursor: value.length });
+        // A mistyped name: the text, its chips and the attachments stay, so it can be fixed and sent again.
+        setEditor(agent, { value, cursor: value.length }, kept);
         hub.toast(`Nobody called "${at[1]}" here.`, "warning");
         return;
       }
@@ -211,7 +234,7 @@ function Screen({ onExit }: { onExit: () => void }) {
       return;
     }
     setAttachments((a) => ({ ...a, [agent.id]: [] }));
-    agent.deliver({ from: "you", text: value, attachments: files.length ? files : undefined });
+    agent.deliver({ from: "you", text: sent, attachments: files.length ? files : undefined });
   };
 
   // ---- keys ------------------------------------------------------------------------------------
@@ -302,11 +325,17 @@ function Screen({ onExit }: { onExit: () => void }) {
       const h = (history.current[project.id] ??= { items: [], index: -1 });
       if (!h.items.length) return;
       h.index = key.upArrow ? Math.min(h.items.length - 1, h.index + 1) : Math.max(-1, h.index - 1);
-      const text = h.index < 0 ? "" : h.items[h.index];
-      setEditor(agent, { value: text, cursor: text.length });
+      const entry = h.index < 0 ? undefined : h.items[h.index];
+      const text = entry?.text ?? "";
+      setEditor(agent, { value: text, cursor: text.length }, entry?.pastes ?? noPastes());
       return;
     }
     if (input === "?" && !editor.value) return launchers.help();
+    if (key.backspace || (key.ctrl && input === "w")) {
+      // Right after a paste chip, the whole chip goes at once.
+      const cut = deleteChipBefore(editor, pastesOf(agent), key.ctrl || key.meta);
+      if (cut) return setEditor(agent, cut);
+    }
     const r = editKey(editor, input, key);
     if (r.kind === "submit") return submit(agent, editor.value);
     if (r.kind === "edit") setEditor(agent, r.state);
@@ -323,8 +352,13 @@ function Screen({ onExit }: { onExit: () => void }) {
       if (!text) return void pasteClipboard(focused);
       // Files dropped on the terminal arrive as a paste of their paths.
       const files = droppedFiles(text);
-      if (files) attachPaths(files);
-      else setEditor(focused, insertText(editorOf(focused), text));
+      if (files) return attachPaths(files);
+      // A long paste becomes a chip ("[Pasted text #1 +87 lines]"); its text goes out with the message.
+      if (isLongPaste(text)) {
+        const { pastes: kept, token } = addPaste(pastesOf(focused), text);
+        return setEditor(focused, insertText(editorOf(focused), token), kept);
+      }
+      setEditor(focused, insertText(editorOf(focused), text));
     },
     { isActive: !dialogOpen },
   );
@@ -401,6 +435,7 @@ function Screen({ onExit }: { onExit: () => void }) {
                 frame={frame}
                 now={now}
                 editor={isFocused ? editorOf(agent) : null}
+                chips={isFocused ? pastesOf(agent).items.map((p) => p.token) : undefined}
                 scroll={scrolls[agent.id] ?? 0}
                 reserveRight={reserve}
                 menu={isFocused ? [...chipRows(agent), ...menuRows(agent)] : undefined}

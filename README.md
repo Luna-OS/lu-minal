@@ -130,6 +130,8 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
    Terminal (1.24 or newer) and most Linux terminals, **cmd+v** in the macOS app, **ctrl+v** in Terminal.app and
    iTerm2, **alt+v** anywhere, or `/paste` – drop files on the terminal, or use `/attach`. They show
    as chips above the prompt; backspace on an empty prompt removes the last one.
+   A long pasted text (more than 5 lines or 1000 characters) shows as `[Pasted text #1 +87 lines]`
+   in the prompt, goes out in full when you send, and backspace deletes it in one go.
 
 **Permission modes** (shift+tab): *edits on* (the default – edits run, commands ask), *ask first*,
 *do everything*, *plan only* (read-only). Reading credential stores, writing into `.git` or agent

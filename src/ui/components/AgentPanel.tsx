@@ -9,6 +9,7 @@ import type { EditorState } from "../editor.js";
 import { formatElapsed, formatTokens } from "../format.js";
 import type { Rect } from "../layout.js";
 import { logTail, type Row, type Seg } from "../log-lines.js";
+import { chipRanges } from "../paste.js";
 import { truncate, width as textWidth } from "../text.js";
 import { Frame } from "./Frame.js";
 import { RowView, Segs } from "./RowView.js";
@@ -96,8 +97,11 @@ function firstLine(s: string): string {
   return s.split(/\r?\n/).find((l) => l.trim()) ?? s;
 }
 
-/** The prompt row: "› text" with a block cursor, scrolled so the cursor stays visible. */
-export function promptSegs(editor: EditorState, width: number, theme: Theme, placeholder: string): Seg[] {
+/**
+ * The prompt row: "› text" with a block cursor, scrolled so the cursor stays visible. `chips` are
+ * the paste tokens with a kept text, drawn in the accent colour.
+ */
+export function promptSegs(editor: EditorState, width: number, theme: Theme, placeholder: string, chips: readonly string[] = []): Seg[] {
   const c = theme.colors;
   const prefix: Seg = { text: "› ", color: c.accent, bold: true };
   const room = Math.max(4, width - 2);
@@ -114,17 +118,33 @@ export function promptSegs(editor: EditorState, width: number, theme: Theme, pla
   const lineCount = editor.value.split("\n").length;
   const hint = lineCount > 1 ? ` (${lineCount} lines)` : "";
   const avail = Math.max(4, room - hint.length);
-  let left = line.slice(0, col);
+  // `from`: the first character of the line that still fits left of the cursor.
+  let from = 0;
+  while (textWidth(line.slice(from, col)) + 1 > avail - 1 && from < col) from++;
+  const left = line.slice(from, col);
   const at = line.slice(col, col + 1) || " ";
-  let right = line.slice(col + 1);
-  while (textWidth(left) + 1 > avail - 1 && left.length) left = left.slice(1);
   const rightRoom = Math.max(0, avail - textWidth(left) - 1);
-  right = truncate(right, rightRoom);
+  const right = truncate(line.slice(col + 1), rightRoom);
+  const ranges = chipRanges(line, chips);
+  const inChip = (i: number) => ranges.some(([s, e]) => i >= s && i < e);
+  /** `text` as it stands at `start` in the line, split where chips begin and end. */
+  const paint = (text: string, start: number): Seg[] => {
+    if (!ranges.length) return [{ text, color: c.text }];
+    const out: Seg[] = [];
+    for (let i = 0; i < text.length; ) {
+      const chip = inChip(start + i);
+      let j = i + 1;
+      while (j < text.length && inChip(start + j) === chip) j++;
+      out.push({ text: text.slice(i, j), color: chip ? c.accent : c.text });
+      i = j;
+    }
+    return out;
+  };
   return [
     prefix,
-    { text: left, color: c.text },
-    { text: at, color: c.text, inverse: true },
-    { text: right, color: c.text },
+    ...paint(left, from),
+    { text: at, color: inChip(col) ? c.accent : c.text, inverse: true },
+    ...paint(right, col + 1),
     ...(hint ? [{ text: hint, color: c.faint } as Seg] : []),
   ];
 }
@@ -139,6 +159,8 @@ export interface AgentPanelProps {
   frame: number;
   now: number;
   editor: EditorState | null;
+  /** The prompt's paste chips ("[Pasted text #1 +87 lines]"), drawn in the accent colour. */
+  chips?: readonly string[];
   /** Rows scrolled up from the bottom. */
   scroll: number;
   /** Columns to keep free on the right (Axo's corner in the lead panel). */
@@ -209,7 +231,7 @@ export function AgentPanel(props: AgentPanelProps) {
       </Box>
       {focused && editor ? (
         <Box width={innerW}>
-          <Segs bg={bg} segs={promptSegs(editor, innerW, theme, placeholder)} />
+          <Segs bg={bg} segs={promptSegs(editor, innerW, theme, placeholder, props.chips)} />
         </Box>
       ) : null}
     </Frame>

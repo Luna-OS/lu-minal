@@ -11,6 +11,7 @@ import { installPlugin, robloxPluginsDir } from "../../roblox/install.js";
 import { bridgeToken } from "../../roblox/token.js";
 import { openExternal } from "../../platform/process.js";
 import { tildify } from "../../platform/paths.js";
+import { webPaneKey } from "../../platform/web-pane.js";
 import { resolvePath } from "../../tools/fs.js";
 import { COMMANDS, type CommandContext, type DialogLaunchers } from "../commands.js";
 import { formatCost, formatTokens, sparkline } from "../format.js";
@@ -255,6 +256,8 @@ export function createLaunchers(
         ["ctrl+o", "switch the focused agent's model"],
         ["ctrl+l", "sign in (Claude, OpenRouter, keys, GitHub, Forgejo)"],
         ["ctrl+k", "command palette"],
+        // The window's own key (it never reaches lu-minal); /web does the same anywhere.
+        ...(hub.hasWebPane ? [[webPaneKey(), "show / hide the claude.ai/code website beside the terminal (/web)"] as [string, string]] : []),
         ["ctrl+f", "zoom the focused agent (collapsed tool output and code in full)"],
         ["pgup / pgdn", "scroll the focused log (a long question card first)"],
         ["mouse wheel, click", "scroll the log under the pointer, focus a panel (shift+drag selects text, /mouse off)"],

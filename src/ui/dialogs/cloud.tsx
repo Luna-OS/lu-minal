@@ -1,12 +1,13 @@
 // Claude Code cloud sessions from the terminal: start one for a task, browse every session of the
 // account in Claude Code's own picker, message a session, teleport it into this terminal or watch
-// it live. The browser is only a secondary key (o).
+// it live. The website is only a secondary key (o): in the browser, or beside the terminal in a
+// lu-minal window with a web pane (the macOS app, the Windows window app), which also gets an entry.
 import React from "react";
 import type { Hub } from "../../core/hub.js";
 import type { Project } from "../../core/project.js";
 import { cloudReadiness, CLOUD_HOME, shortCloudError, type CloudSession } from "../../cloud/claude-cloud.js";
 import { samePath } from "../../platform/paths.js";
-import { openExternal } from "../../platform/process.js";
+import { webPaneKey } from "../../platform/web-pane.js";
 import { formatAgo } from "../format.js";
 import type { UiServices } from "../store.js";
 import { InputDialog } from "./InputDialog.js";
@@ -15,16 +16,27 @@ import { ListDialog, type ListItem } from "./ListDialog.js";
 // The two lines above the list (short enough for an 80-column terminal).
 /** Where a cloud session's progress can be followed. */
 export const LIVE_NOTE = "Live progress: claude.ai/code, the Claude app, or teleport it here (t).";
+/** The same in a window with a web pane, where o shows the website beside the terminal. */
+export const PANE_LIVE_NOTE = "Live progress: o opens claude.ai/code beside the terminal; t teleports it here.";
 /** Under it, for a highlighted session. */
 export const WATCH_NOTE = "w watches live - some accounts can't yet; t (teleport) works for everyone.";
+/** Under it, for the website entry. */
+export const PANE_NOTE = 'claude.ai/code beside the terminal: sign in there with "Continue with email".';
 const NOTES: Record<string, string> = {
   new: "Claude Code sets it up in this terminal, then it runs in the cloud.",
   all: "Claude Code's picker of every cloud session you have - pull one in here.",
   paste: "For a session started on the web, in the Claude app or on another computer.",
+  web: PANE_NOTE,
 };
 
+/** The key hints: for a highlighted session, or for the rest. */
+export function cloudHints(session: boolean, pane: boolean): string {
+  if (session) return `enter message · t teleport · w watch · o ${pane ? "open beside" : "browser"} · x forget · esc close`;
+  return `↑↓ move · enter pick · o claude.ai/code ${pane ? "beside the terminal" : "in the browser"} · esc close`;
+}
+
 export interface CloudDialogDeps {
-  /** Opens a link in the browser (tests pass a fake). */
+  /** Opens a link in the browser where the window has no web pane (tests pass a fake). */
   open?: (url: string) => unknown;
   /** Whether the folder is ready for the cloud (tests pass a fake instead of running git). */
   readiness?: (cwd: string) => Promise<string | null>;
@@ -50,7 +62,9 @@ function CloudDialog({ hub, ui, project, close, deps }: { hub: Hub; ui: UiServic
   const [warning, setWarning] = React.useState<string | null>(null);
   const [composing, setComposing] = React.useState<CloudSession | null>(null);
   const [highlighted, setHighlighted] = React.useState<string | undefined>(undefined);
-  const open = deps.open ?? openExternal;
+  const pane = hub.hasWebPane;
+  // The website: beside the terminal where the window has a web pane, else in the browser.
+  const show = (url: string) => hub.showCloudWeb(url, deps.open);
   React.useEffect(() => {
     let live = true;
     void (deps.readiness ?? cloudReadiness)(project.cwd).then((w) => live && setWarning(w));
@@ -102,6 +116,9 @@ function CloudDialog({ hub, ui, project, close, deps }: { hub: Hub; ui: UiServic
     { id: "new", label: "✦ New cloud session…", hint: 'claude --cloud "<task>"', group },
     { id: "all", label: "All my cloud sessions…", hint: "claude --teleport: browse them all, pull one in", group },
     { id: "paste", label: "Add a session by its link…", hint: "to message one started elsewhere", group },
+    ...(pane
+      ? [{ id: "web", label: "Cloud website beside the terminal", hint: `claude.ai/code · ${webPaneKey()} shows and hides it`, group: "In this window" }]
+      : []),
     ...here.map((s) => item(s, `Sessions from ${project.name}`)),
     ...elsewhere.map((s) => item(s, "Other projects")),
   ];
@@ -122,21 +139,17 @@ function CloudDialog({ hub, ui, project, close, deps }: { hub: Hub; ui: UiServic
       width={100}
       initialId={highlighted}
       notes={[
-        { text: LIVE_NOTE, color: c.muted },
+        { text: pane ? PANE_LIVE_NOTE : LIVE_NOTE, color: c.muted },
         { text: current ? WATCH_NOTE : (NOTES[highlighted ?? "new"] ?? ""), color: c.faint },
       ]}
-      hints={
-        current
-          ? "enter message · t teleport · w watch · o browser · x forget · esc close"
-          : "↑↓ move · enter pick · o claude.ai/code in the browser · esc close"
-      }
+      hints={cloudHints(Boolean(current), pane)}
       onHighlight={(picked) => setHighlighted(picked?.id)}
       onCancel={close}
       onKey={(input, _key, picked) => {
         const s = find(picked?.id);
         if (!s) {
           if (input !== "o") return false;
-          void open(CLOUD_HOME);
+          show(CLOUD_HOME);
           return true;
         }
         if (input === "m") setComposing(s);
@@ -144,7 +157,7 @@ function CloudDialog({ hub, ui, project, close, deps }: { hub: Hub; ui: UiServic
         else if (input === "w") terminal(() => hub.watchCloud(project, s, ui.runInTerminal));
         else if (input === "o") {
           hub.pickedCloudId = s.id;
-          void open(s.url);
+          show(s.url);
         } else if (input === "x") hub.forgetCloud(s.id);
         else return false;
         return true;
@@ -153,6 +166,7 @@ function CloudDialog({ hub, ui, project, close, deps }: { hub: Hub; ui: UiServic
         if (picked.id === "new") return askTask(hub, ui, project);
         if (picked.id === "all") return terminal(() => hub.browseCloud(project, ui.runInTerminal));
         if (picked.id === "paste") return askLink(hub, ui, project, "");
+        if (picked.id === "web") return void show(CLOUD_HOME);
         const s = find(picked.id);
         if (s) setComposing(s);
       }}

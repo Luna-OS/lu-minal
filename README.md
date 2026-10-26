@@ -55,7 +55,10 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
 - **Claude cloud sessions, in the terminal.** `/cloud` starts a task on claude.ai/code, browses
   every cloud session of your account in Claude Code's own picker (`claude --teleport`), and per
   session: enter types a follow-up, t teleports it here, w watches it live (not every account has
-  that yet). `/cloud msg <text>` messages the session used last right from the prompt.
+  that yet). `/cloud msg <text>` messages the session used last right from the prompt. In the
+  lu-minal app the real claude.ai/code website opens beside the terminal, in the same window:
+  `/web`, **Cmd+Shift+K** on macOS, **Ctrl+Shift+K** in the Windows window app (see
+  [Claude cloud](#claude-cloud)).
 - **Close and come back.** lu-minal saves the session as you work: quit, start it again, and every
   tab, agent, log and conversation is back where it was.
 - **Tabs per project.** Open a folder, or clone a repository from **GitHub** or any **Forgejo /
@@ -151,6 +154,37 @@ clone; `/trust` changes it). How lu-minal keeps agents in check: [docs/security.
 **Models:** pick one per agent (ctrl+o), for example a Claude Opus lead with `minimax/MiniMax-M3`
 and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-speech`.
 
+## Claude cloud
+
+`/cloud` (or `/remote`) runs Claude Code's cloud sessions from the terminal, through the official
+`claude` CLI:
+
+- **✦ New cloud session…** starts a task on claude.ai/code (`claude --cloud "<task>"`); Claude
+  works on it in a fresh clone of your pushed branch.
+- **All my cloud sessions…** is Claude Code's own picker of every session of your account
+  (`claude --teleport`): pull one into this terminal.
+- On a session: **enter** types a follow-up, **t** teleports it here, **w** watches it live (not
+  every account can yet), **o** opens it on the web, **x** forgets it. `/cloud msg <text>`
+  messages the session used last, right from the prompt.
+
+**The website beside the terminal.** In the lu-minal app the real claude.ai/code website shows in
+a pane next to the terminal, in the same window. The app only displays the page – nothing is
+automated, nothing in it is read.
+
+| | |
+| --- | --- |
+| macOS app | **Cmd+Shift+K**, the View menu or the button in the window – see [macos/README.md](macos/README.md) |
+| Windows window app | **Ctrl+Shift+K** or the button in the window – see `windows-app/README.md` |
+| in lu-minal | `/web` shows or hides the pane, `/web show`, `/web hide`, `/web <claude.ai link>` opens a page there. In `/cloud`, **o** shows a session there, and the list has **Cloud website beside the terminal** |
+
+In any other terminal `/web` and **o** open claude.ai/code in your browser instead.
+
+Sign in once inside the pane with **Continue with email** (Claude sends you a code): Google
+refuses its sign-in inside embedded web views, and the pane says so. The sign-in is kept for the
+next start; links to other sites open in your browser. lu-minal tells the pane what to show with a
+private escape sequence, for claude.ai pages only ([docs/architecture.md](docs/architecture.md#the-web-pane-beside-the-terminal));
+neither lu-minal nor the app reads the page, its cookies or Claude Code's tokens.
+
 ## Keys
 
 | Key | |
@@ -172,6 +206,7 @@ and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-
 | `/copy` | copy the focused agent's last reply – its words, not the tool output – to the clipboard |
 | esc | interrupt the focused agent |
 | ctrl+v, alt+v (`/paste`) | paste a screenshot or copied files from the clipboard |
+| cmd+shift+k (macOS app), ctrl+shift+k (Windows window app), `/web` | show / hide the claude.ai/code website beside the terminal; elsewhere `/web` opens it in the browser |
 | ctrl+c twice, ctrl+q | quit |
 
 For a Claude Code agent, esc asks the CLI to stop the turn. If it hasn't stopped after 3 s (or you

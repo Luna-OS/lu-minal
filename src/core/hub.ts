@@ -32,8 +32,9 @@ import { McpServer } from "../mcp/server.js";
 import { writeFileAtomicSync } from "../platform/files.js";
 import { samePath, stateDir as defaultStateDir } from "../platform/paths.js";
 import { detectInstall } from "../platform/install-info.js";
-import { findProgram, withProgramPath } from "../platform/process.js";
+import { findProgram, openExternal, withProgramPath } from "../platform/process.js";
 import { applyUpdate, checkForUpdate, updatePlan, type UpdateCheck } from "../platform/update.js";
+import { hasWebPane, WEB_PANE_HOME, writeWebPane, type TerminalOut } from "../platform/web-pane.js";
 import { AuthStore, keyFor } from "../providers/auth.js";
 import { fallbackCatalog, loadCatalog, type Catalog } from "../providers/catalog.js";
 import type { ModelRef } from "../providers/models.js";
@@ -78,6 +79,16 @@ export type TerminalRunner = (
   args: string[],
   opts?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ) => Promise<number | null>;
+
+/** How the claude.ai website is shown: in the window's web pane, or in the browser. */
+export interface CloudWebIo {
+  /** The environment the host window set (LU_MINAL_WEB_PANE=1 when it has a pane). */
+  env: NodeJS.ProcessEnv;
+  /** The terminal, which the host reads the pane's OSC 7701 sequences out of. */
+  out: TerminalOut;
+  /** Opens a link in the default browser. */
+  open: (url: string) => unknown;
+}
 
 export interface HubOptions {
   config: Config;
@@ -153,6 +164,8 @@ export class Hub implements ProjectRuntime {
   /** The cloud session last used in /cloud (`/cloud msg` writes to it), and the ones a message is on its way to. */
   pickedCloudId: string | null = null;
   cloudSending = new Set<string>();
+  /** Where the claude.ai website goes (tests replace it with fakes). */
+  web: CloudWebIo = { env: process.env, out: process.stdout, open: openExternal };
   /** A newer lu-minal than this one, from the daily check; null when there is none (or not known). */
   updateAvailable: { version: string; url: string } | null = null;
   /** What /update is doing right now ("Downloading ...: 40%"), or null. */
@@ -647,7 +660,8 @@ export class Hub implements ProjectRuntime {
       lastError: null,
     };
     this.cloudSessions.unshift(session);
-    this.toast(`Cloud session ${found.id} is running on claude.ai/code.`, "success");
+    const see = this.hasWebPane ? " - o in /cloud shows it beside the terminal" : "";
+    this.toast(`Cloud session ${found.id} is running on claude.ai/code${see}.`, "success");
     this.notifier.changed();
     return session;
   }
@@ -727,6 +741,29 @@ export class Hub implements ProjectRuntime {
     this.cloudSessions = this.cloudSessions.filter((s) => s.id !== id);
     if (this.pickedCloudId === id) this.pickedCloudId = null;
     this.notifier.changed();
+  }
+
+  // ---- the cloud website beside the terminal ---------------------------------------------------
+
+  /** Whether lu-minal runs in a window with a web pane beside the terminal (macOS app, Windows window app). */
+  get hasWebPane(): boolean {
+    return hasWebPane(this.web.env);
+  }
+
+  /**
+   * Shows a claude.ai page (claude.ai/code by default): in the web pane beside the terminal where
+   * the window has one, else in the browser (`open`, the default browser unless given). Returns
+   * where it went; a link the pane refuses (not https on claude.ai) goes to the browser.
+   */
+  showCloudWeb(url: string = WEB_PANE_HOME, open: (url: string) => unknown = this.web.open): "pane" | "browser" {
+    if (this.hasWebPane && writeWebPane("open", url, this.web.out, this.web.env)) return "pane";
+    void open(url);
+    return "browser";
+  }
+
+  /** Shows, hides or toggles the web pane; false (nothing sent) in a window without one. */
+  webPane(command: "show" | "hide" | "toggle"): boolean {
+    return writeWebPane(command, undefined, this.web.out, this.web.env);
   }
 
   private promptFor(project: Project, agent: Agent, driverKind: "native" | "claude-code"): string {

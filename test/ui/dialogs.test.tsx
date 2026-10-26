@@ -4,6 +4,7 @@ import { Box } from "ink";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Hub } from "../../src/core/hub.js";
+import { webPaneKey } from "../../src/platform/web-pane.js";
 import type { CommandContext } from "../../src/ui/commands.js";
 import { createLaunchers } from "../../src/ui/dialogs/index.js";
 import { fakeUi, KEYS, renderAt, testHub } from "./ink-helpers.js";
@@ -149,5 +150,24 @@ describe("the sign-in dialog's coding agents", () => {
     for (const row of [gemini, opencode]) expect(row.match(/not installed/g)).toHaveLength(1);
     expect(gemini).toContain("npm install -g @google/gemini-cli");
     expect(opencode).toContain("npm install -g opencode-ai (or: curl -fsSL");
+  });
+});
+
+describe("the help", () => {
+  it("lists /web, and the web pane's own key only in a window that has the pane", async () => {
+    for (const pane of [false, true]) {
+      const t = setup();
+      t.hub.web = { env: pane ? { LU_MINAL_WEB_PANE: "1" } : {}, out: { write: () => undefined }, open: () => undefined };
+      t.launchers.help();
+      const r = show(t.ui, { columns: 140, rows: 36 });
+      await r.waitFor((s) => s.includes("keys and commands"), "the help");
+      await r.press("beside");
+      await r.waitFor((s) => s.includes("/web [show|hide|<claude.ai link>]"), "/web");
+      const screen = r.screen();
+      expect(screen).toContain("The claude.ai/code website beside the terminal");
+      const key = screen.split("\n").find((l) => l.includes("show / hide the claude.ai/code website beside the terminal (/web)"));
+      if (pane) expect(key).toContain(webPaneKey());
+      else expect(key).toBeUndefined();
+    }
   });
 });

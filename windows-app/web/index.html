@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="dark">
+<title>lu-minal</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="vendor/xterm.css">
+<link rel="stylesheet" href="app.css">
+<script type="module" src="terminal.js"></script>
+</head>
+<body>
+<div id="app" class="pane-closed">
+  <main id="terminal-area">
+    <div id="terminal"></div>
+    <div id="toast" role="status" hidden></div>
+  </main>
+  <div id="divider" role="separator" aria-orientation="vertical" title="Show the cloud pane (Ctrl+Shift+K)">
+    <span class="grip" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="10" height="10"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </span>
+  </div>
+  <aside id="pane" aria-label="Claude Code on the web">
+    <header id="pane-bar">
+      <button id="pane-back" class="icon" type="button" title="Back" aria-label="Back" disabled>
+        <svg viewBox="0 0 16 16" width="16" height="16"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="pane-reload" class="icon" type="button" title="Reload" aria-label="Reload">
+        <svg viewBox="0 0 16 16" width="16" height="16"><path d="M13 8a5 5 0 1 1-1.46-3.54M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <span id="pane-url" class="url">claude.ai/code</span>
+      <button id="pane-browser" class="icon" type="button" title="Open in your browser" aria-label="Open in your browser">
+        <svg viewBox="0 0 16 16" width="16" height="16"><path d="M9.5 2.5h4v4M13.5 2.5 7.5 8.5M12 9.5v4h-9.5v-9.5h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="pane-close" class="icon" type="button" title="Close the cloud pane (Ctrl+Shift+K)" aria-label="Close the cloud pane">
+        <svg viewBox="0 0 16 16" width="16" height="16"><path d="m4 4 8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div id="pane-notice" role="status" hidden>
+      <span id="pane-notice-text"></span>
+      <button id="pane-notice-close" class="icon small" type="button" title="Dismiss" aria-label="Dismiss">
+        <svg viewBox="0 0 16 16" width="12" height="12"><path d="m4 4 8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div id="pane-hole"><div class="placeholder">claude.ai</div></div>
+  </aside>
+</div>
+</body>
+</html>

@@ -223,7 +223,14 @@ export function swapExecutable(fresh: string, exe: string, platform: string = pr
   }
 }
 
-/** Removes the copies earlier updates moved aside on Windows (the ones still running stay). */
+/** The copies an update moved aside: lu-minal.old-*.exe, and lu-minal-window.old-*.exe (the setup's window app). */
+const OLD_COPY = /^lu-minal(?:-window)?\.old.*\.exe$/i;
+
+/**
+ * Removes the copies earlier updates moved aside on Windows (the ones still running stay): those
+ * of lu-minal.exe and of the window app next to it, which the setup moves aside the same way when
+ * it updates while lu-minal runs in its window.
+ */
 export function removeOldCopies(exe: string): void {
   const dir = path.dirname(exe);
   let names: string[] = [];
@@ -233,7 +240,7 @@ export function removeOldCopies(exe: string): void {
     return;
   }
   for (const name of names) {
-    if (!/^lu-minal\.old.*\.exe$/i.test(name)) continue;
+    if (!OLD_COPY.test(name)) continue;
     try {
       fs.rmSync(path.join(dir, name), { force: true });
     } catch {

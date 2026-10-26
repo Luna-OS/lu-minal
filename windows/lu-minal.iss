@@ -1,17 +1,21 @@
 ; lu-minal's Windows installer (Inno Setup 6): lu-minal-windows-<arch>-setup.exe.
 ;
 ; It installs for the current user only, without administrator rights, into the folder install.ps1
-; uses (%LOCALAPPDATA%\Programs\lu-minal), so either way of installing updates the other. Tasks:
+; uses (%LOCALAPPDATA%\Programs\lu-minal), so either way of installing updates the other: lu-minal.exe
+; and lu-minal's own window, lu-minal-window.exe (windows-app/: the terminal with the Claude Code
+; website beside it), which the Start menu entry, the desktop shortcut and "Start lu-minal" open. A
+; second Start menu entry opens lu-minal in Windows Terminal (when it is installed) as before. Tasks:
 ; put lu-minal on the user PATH, add the Windows Terminal profile (Moon Dark colours) and a desktop
-; shortcut. The Start menu entry opens lu-minal in Windows Terminal when it is installed. Updating
-; while lu-minal runs works like install.ps1: the running exe is moved aside, the new one takes its
-; place. The uninstaller (Settings > Apps) takes all of that away again (the PATH entry only when
-; this setup added it, or for the default folder) and leaves lu-minal's settings, keys and
-; sessions (%APPDATA%\lu-minal, %LOCALAPPDATA%\lu-minal) where they are.
+; shortcut. Updating while lu-minal runs (also from inside its window) works like install.ps1: the
+; running exes are moved aside, the new ones take their place. The uninstaller (Settings > Apps)
+; takes all of that away again (the PATH entry only when this setup added it, or for the default
+; folder) and leaves lu-minal's settings, keys and sessions (%APPDATA%\lu-minal,
+; %LOCALAPPDATA%\lu-minal, the window's sign-in to claude.ai included) where they are.
 ;
-; Built by the release workflow on Windows, after build-binaries.ts:
+; Built by the release workflow on Windows, after build-binaries.ts and the window app's cargo build:
 ;   iscc /DAppVersion=0.2.0 /DArch=x64 windows\lu-minal.iss
-; Arch is x64 or arm64; the exe comes from dist-bin\lu-minal-windows-<arch>.exe and the icon from
+; Arch is x64 or arm64; the exe comes from dist-bin\lu-minal-windows-<arch>.exe, the window app from
+; dist-window\lu-minal-window-<arch>.exe (it ships only in the setup) and the icon from
 ; dist-bin\lu-minal.ico (scripts/windows-icon.ts). The installer is written to dist-bin.
 ;
 ; Silent install (as CI tests it): lu-minal-windows-x64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES
@@ -32,6 +36,9 @@
 #endif
 #ifndef DistDir
   #define DistDir "..\dist-bin"
+#endif
+#ifndef WindowDir
+  #define WindowDir "..\dist-window"
 #endif
 
 ; Four numbers for the file version (a pre-release part like -rc.1 and build metadata like +5 are
@@ -65,15 +72,16 @@ MinVersion=10.0.17763
 OutputDir={#DistDir}
 OutputBaseFilename=lu-minal-windows-{#Arch}-setup
 SetupIconFile={#DistDir}\lu-minal.ico
-UninstallDisplayIcon={app}\lu-minal.exe
+UninstallDisplayIcon={app}\lu-minal-window.exe
 UninstallDisplayName=lu-minal
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
 ; The user PATH changes: running programs (Explorer) are told to read it again.
 ChangesEnvironment=yes
-; A running lu-minal.exe is not stopped (that would end it without saving its session): it is
-; moved aside instead (MoveRunningExeAside) and the new one takes its place.
+; A running lu-minal.exe or lu-minal-window.exe is not stopped (that would end lu-minal without
+; saving its session): it is moved aside instead (MoveRunningExeAside, MoveRunningWindowAside) and
+; the new one takes its place.
 CloseApplications=no
 
 [Languages]
@@ -91,25 +99,28 @@ Name: "{app}"; Flags: uninsalwaysuninstall
 [InstallDelete]
 ; Copies moved aside by an earlier update (or install.ps1) that are no longer running.
 Type: files; Name: "{app}\lu-minal.old*.exe"
+Type: files; Name: "{app}\lu-minal-window.old*.exe"
 
 [Files]
 Source: "{#DistDir}\lu-minal-windows-{#Arch}.exe"; DestDir: "{app}"; DestName: "lu-minal.exe"; Flags: ignoreversion; BeforeInstall: MoveRunningExeAside
+; lu-minal's window: the terminal and the Claude Code website side by side (WebView2).
+Source: "{#WindowDir}\lu-minal-window-{#Arch}.exe"; DestDir: "{app}"; DestName: "lu-minal-window.exe"; Flags: ignoreversion; BeforeInstall: MoveRunningWindowAside
 ; The Windows Terminal profile's icon (lu-minal setup windows-terminal looks next to the exe).
 Source: "{#DistDir}\lu-minal.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
+; lu-minal in its own window, with the cloud pane (Ctrl+Shift+K).
+Name: "{autoprograms}\lu-minal"; Filename: "{app}\lu-minal-window.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "A team of coding agents under the night sky"
+Name: "{autodesktop}\lu-minal"; Filename: "{app}\lu-minal-window.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "A team of coding agents under the night sky"; Tasks: desktopicon
 ; In Windows Terminal with lu-minal's profile when it is there, else straight (the default console).
 ; The command line goes along: a Windows Terminal that was already open hasn't loaded the new
 ; profile yet and would otherwise open its default shell.
-Name: "{autoprograms}\lu-minal"; Filename: "{code:TerminalExe}"; Parameters: "{code:TerminalArgs}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\lu-minal.exe"; Comment: "A team of coding agents under the night sky"; Check: UseTerminal
-Name: "{autoprograms}\lu-minal"; Filename: "{app}\lu-minal.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "A team of coding agents under the night sky"; Check: not UseTerminal
-Name: "{autodesktop}\lu-minal"; Filename: "{code:TerminalExe}"; Parameters: "{code:TerminalArgs}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\lu-minal.exe"; Tasks: desktopicon; Check: UseTerminal
-Name: "{autodesktop}\lu-minal"; Filename: "{app}\lu-minal.exe"; WorkingDir: "{%USERPROFILE}"; Tasks: desktopicon; Check: not UseTerminal
+Name: "{autoprograms}\lu-minal in Windows Terminal"; Filename: "{code:TerminalExe}"; Parameters: "{code:TerminalArgs}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\lu-minal.exe"; Comment: "lu-minal in Windows Terminal"; Check: UseTerminal
+Name: "{autoprograms}\lu-minal in the console"; Filename: "{app}\lu-minal.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "lu-minal in the console"; Check: not UseTerminal
 
 [Run]
 Filename: "{app}\lu-minal.exe"; Parameters: "setup windows-terminal"; Flags: runhidden waituntilterminated; Tasks: terminal; StatusMsg: "Adding the Windows Terminal profile..."
-Filename: "{code:TerminalExe}"; Parameters: "{code:TerminalArgs}"; Description: "Start lu-minal"; Flags: postinstall nowait skipifsilent; Check: UseTerminal
-Filename: "{app}\lu-minal.exe"; WorkingDir: "{%USERPROFILE}"; Description: "Start lu-minal"; Flags: postinstall nowait skipifsilent; Check: not UseTerminal
+Filename: "{app}\lu-minal-window.exe"; WorkingDir: "{%USERPROFILE}"; Description: "Start lu-minal"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 ; Always, not only after the terminal task: install.ps1 or `lu-minal setup windows-terminal` may
@@ -117,8 +128,9 @@ Filename: "{app}\lu-minal.exe"; WorkingDir: "{%USERPROFILE}"; Description: "Star
 Filename: "{app}\lu-minal.exe"; Parameters: "setup windows-terminal --remove"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "RemoveTerminalProfile"
 
 [UninstallDelete]
-; Old copies install.ps1 leaves behind when it updates a running lu-minal.
+; Old copies install.ps1 or an update leave behind when they replace a running lu-minal or window.
 Type: files; Name: "{app}\lu-minal.old*.exe"
+Type: files; Name: "{app}\lu-minal-window.old*.exe"
 
 [Code]
 const
@@ -214,17 +226,28 @@ begin
   if Found then RegWriteExpandStringValue(HKCU, EnvironmentKey, 'Path', Kept);
 end;
 
-{ Replacing a running lu-minal.exe fails, but renaming it works: it goes on running as
-  lu-minal.old-<time>.exe (removed by the next update or the uninstaller) and the new one takes
-  its place, as install.ps1 does it. }
-procedure MoveRunningExeAside;
+{ Replacing a running exe fails, but renaming it works: it goes on running as
+  Name.old-<time>.exe (removed by the next update, lu-minal's next start or the uninstaller) and
+  the new one takes its place, as install.ps1 does it. }
+procedure MoveAside(Name: String);
 var
   Exe: String;
 begin
-  Exe := ExpandConstant('{app}\lu-minal.exe');
+  Exe := ExpandConstant('{app}\') + Name + '.exe';
   if FileExists(Exe) and not DeleteFile(Exe) then
-    if not RenameFile(Exe, ExpandConstant('{app}\lu-minal.old-') + GetDateTimeString('yyyymmddhhnnsszzz', #0, #0) + '.exe') then
-      Log('Could not move the running lu-minal.exe aside.');
+    if not RenameFile(Exe, ExpandConstant('{app}\') + Name + '.old-' + GetDateTimeString('yyyymmddhhnnsszzz', #0, #0) + '.exe') then
+      Log('Could not move the running ' + Name + '.exe aside.');
+end;
+
+procedure MoveRunningExeAside;
+begin
+  MoveAside('lu-minal');
+end;
+
+{ The window app runs while lu-minal updates itself from inside it (the setup, silently). }
+procedure MoveRunningWindowAside;
+begin
+  MoveAside('lu-minal-window');
 end;
 
 { Whether uninstall should take Dir off the PATH: this setup put it there, or it is the default

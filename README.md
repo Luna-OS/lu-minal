@@ -75,7 +75,7 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
 | | |
 | --- | --- |
 | **macOS / Linux** | `curl -fsSL https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.sh \| sh` |
-| **Windows** (setup) | `lu-minal-windows-x64-setup.exe` (or `-arm64-`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), from 0.1.1 on: no administrator rights; PATH, Start menu and Windows Terminal profile; uninstall in Settings > Apps |
+| **Windows** (setup) | `lu-minal-windows-x64-setup.exe` (or `-arm64-`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), from 0.1.1 on: no administrator rights; PATH, Start menu and Windows Terminal profile; uninstall in Settings > Apps. The Start menu entry opens **lu-minal's own window**, with the Claude Code website beside the terminal ([windows-app](windows-app/README.md)) |
 | **Windows** (PowerShell) | `irm https://raw.githubusercontent.com/Luna-OS/lu-minal/main/install.ps1 \| iex` |
 | **macOS app** | `lu-minal-macos-app.dmg` (or `.zip`) from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest): **LuMinal.app**, a native Swift window running lu-minal |
 | **Standalone binary** | `lu-minal-linux-x64`, `lu-minal-macos-arm64`, `lu-minal-windows-x64.exe`, … from the [releases](https://github.com/Luna-OS/lu-minal/releases/latest), with `SHA256SUMS` (all files: [docs/install.md](docs/install.md)) |
@@ -256,6 +256,8 @@ npm run build        # dist/ (node dist/cli.js; npm link puts it on the PATH)
 npm run build:bin    # standalone binaries for every platform (needs Bun)
 npm run build:app    # macOS only: LuMinal.app in macos/build (needs Xcode)
 ```
+
+The Windows window app (`lu-minal-window.exe`, Rust + WebView2) is in [windows-app](windows-app/README.md).
 
 How it fits together: [docs/architecture.md](docs/architecture.md).
 

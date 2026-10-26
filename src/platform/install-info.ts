@@ -261,6 +261,7 @@ export function launchCommand(opts: DetectOptions = {}): { exe: string; args: st
 /** Terminals lu-minal recognises. */
 export type TerminalName =
   | "lu-minal-app"
+  | "lu-minal-window"
   | "windows-terminal"
   | "conhost"
   | "vscode"
@@ -295,6 +296,8 @@ export function detectTerminal(
   const term = env.TERM ?? "";
   const ok = (name: TerminalName): TerminalInfo => ({ name, truecolor: true, hint: null });
   if (env.LU_MINAL_APP === "1" || program === "lu-minal") return ok("lu-minal-app");
+  // The Windows window app (windows-app/): xterm.js with true colour. It never sets LU_MINAL_APP.
+  if (program === "lu-minal-window") return ok("lu-minal-window");
   if (program === "vscode") return ok("vscode");
   if (program === "iTerm.app" || env.ITERM_SESSION_ID) return ok("iterm2");
   if (program === "ghostty" || term === "xterm-ghostty") return ok("ghostty");

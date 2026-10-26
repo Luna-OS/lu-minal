@@ -1,7 +1,7 @@
 # Release: on a version tag (v0.2.0), or started by hand with the version (Actions tab or API;
 # the release then creates the tag on the commit it built), build the standalone binaries for
-# every platform, the macOS app (zip and disk image), compute SHA256SUMS and publish a GitHub
-# release. Windows
+# every platform, the macOS app (zip and disk image), the Windows setups (with lu-minal's window
+# app inside), compute SHA256SUMS and publish a GitHub release. Windows
 # binaries are built on Windows so they carry version info; macOS ones on macOS so they are
 # signed there (ad-hoc) and can be combined into the app's universal binary.
 name: Release
@@ -110,6 +110,50 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: npm ci
       - run: bun scripts/build-binaries.ts --target=windows --outdir=dist-bin --smoke
+      # lu-minal's window (windows-app/) ships only inside the setups, so it is built into
+      # dist-window/, which the release files (dist-bin/lu-minal-*) leave out.
+      - name: Rust toolchain (x64 and arm64)
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { throw 'rustup could not install the stable toolchain' }
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'rustup could not add the Windows targets' }
+          rustc --version
+      - name: The window app (lu-minal-window.exe for x64 and arm64)
+        shell: pwsh
+        env:
+          LU_MINAL_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          node scripts/windows-app-assets.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'the window app assets could not be prepared' }
+          cargo test --manifest-path windows-app/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'the window app tests failed' }
+          New-Item -ItemType Directory -Force dist-window | Out-Null
+          foreach ($pair in @(@('x64', 'x86_64-pc-windows-msvc'), @('arm64', 'aarch64-pc-windows-msvc'))) {
+            $arch, $triple = $pair
+            cargo build --manifest-path windows-app/Cargo.toml --locked --release --target $triple
+            if ($LASTEXITCODE -ne 0) { throw "cargo build failed for $triple" }
+            Copy-Item "windows-app\target\$triple\release\lu-minal-window.exe" "dist-window\lu-minal-window-$arch.exe"
+          }
+          Get-ChildItem dist-window | Format-Table Name, Length
+      - name: Smoke test the x64 window app
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'lu-minal-window'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item dist-window\lu-minal-window-x64.exe (Join-Path $dir 'lu-minal-window.exe')
+          Copy-Item dist-bin\lu-minal-windows-x64.exe (Join-Path $dir 'lu-minal.exe')
+          $out = Join-Path $env:RUNNER_TEMP 'lu-minal-window-smoke.txt'
+          $p = Start-Process -FilePath (Join-Path $dir 'lu-minal-window.exe') -ArgumentList "--smoke=`"$out`"" -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw 'lu-minal-window.exe --smoke did not end' }
+          $result = if (Test-Path -LiteralPath $out) { (Get-Content -Raw -LiteralPath $out).Trim() } else { '(no result file)' }
+          Write-Host "--smoke -> exit $($p.ExitCode): $result"
+          if ($p.ExitCode -ne 0 -or $result -ne "smoke ok $env:VERSION") { throw "lu-minal-window.exe --smoke failed: $result" }
       - name: Inno Setup
         shell: pwsh
         run: |

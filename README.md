@@ -133,7 +133,9 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
 
 **Permission modes** (shift+tab): *edits on* (the default – edits run, commands ask), *ask first*,
 *do everything*, *plan only* (read-only). Reading credential stores, writing into `.git` or agent
-settings, and fetching local addresses always ask, even with edits on.
+settings, and fetching local addresses always ask, even with edits on. `/yolo` (or `/allow-all`)
+puts every agent in every tab on *do everything*, allows the questions still open and keeps it the
+default for new tabs and the next start; `/yolo off` goes back to *edits on*.
 
 **Trust:** a repository you clone starts untrusted – Claude Code agents there don't load its own
 `.claude` settings, CLAUDE.md or `.mcp.json` servers until you say so (lu-minal asks after the

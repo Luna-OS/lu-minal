@@ -173,6 +173,17 @@ export const COMMANDS: Command[] = [
       ctx.hub.toast(`${mode}: ${PERMISSION_HINTS[mode]}`, mode === "yolo" ? "warning" : "info");
     },
   },
+  {
+    name: "yolo",
+    aliases: ["allow-all", "autoapprove"],
+    args: "[on|off]",
+    description: "Let every agent in every tab run everything without asking, new tabs too (off: back to edits on)",
+    run: (ctx, args) => {
+      const a = args.trim().toLowerCase();
+      const on = a === "on" || a === "yes" ? true : a === "off" || a === "no" ? false : !ctx.hub.allowingEverything;
+      ctx.hub.allowEverything(on);
+    },
+  },
   { name: "zoom", aliases: ["full"], description: "Show the focused agent full screen", keys: "ctrl+f", run: (ctx) => ctx.toggleZoom() },
   {
     name: "clear",

@@ -373,6 +373,54 @@ export class Hub implements ProjectRuntime {
     this.switchTo((this.activeIndex + step + this.projects.length) % this.projects.length);
   }
 
+  // ---- permissions -----------------------------------------------------------------------------
+
+  /** Whether every tab and every agent in it runs everything without asking, new ones too (/yolo). */
+  get allowingEverything(): boolean {
+    return (
+      this.config.permissionMode === "yolo" &&
+      this.projects.every((p) => p.permissionMode === "yolo" && p.agents.every((a) => a.permissionMode === "yolo"))
+    );
+  }
+
+  /**
+   * Puts every open tab and its agents into `mode` and makes it the default for the tabs opened
+   * later (saved with the settings). Claude Code and ACP agents switch at their next message; until
+   * then their questions are decided by the new mode like everyone else's.
+   */
+  setAllPermissionModes(mode: PermissionMode): void {
+    for (const project of this.projects) project.setPermissionMode(mode);
+    if (this.config.permissionMode !== mode) {
+      this.config.permissionMode = mode;
+      this.persistConfig();
+    }
+    this.notifier.changed();
+  }
+
+  /**
+   * /yolo: every agent in every tab runs everything without asking, the questions still open are
+   * allowed, and tabs and agents added later start the same way (`on`); or every tab goes back to
+   * "edits on" (`off`). Returns how many open questions it allowed.
+   */
+  allowEverything(on: boolean): number {
+    this.setAllPermissionModes(on ? "yolo" : "auto-edit");
+    if (!on) {
+      this.toast("Every tab is back to edits on - commands ask first again.", "info");
+      return 0;
+    }
+    let allowed = 0;
+    for (const project of this.projects) {
+      for (const agent of project.agents) {
+        while (agent.pendingApproval) {
+          agent.answerApproval("allow");
+          allowed++;
+        }
+      }
+    }
+    this.toast("Every agent in every tab now runs everything without asking - /yolo off to stop.", "warning");
+    return allowed;
+  }
+
   // ---- ProjectRuntime --------------------------------------------------------------------------
 
   async launch(project: Project, agent: Agent): Promise<void> {
@@ -989,8 +1037,10 @@ export class Hub implements ProjectRuntime {
     for (const p of saved.projects) {
       if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => samePath(x.cwd, p.cwd))) continue;
       const trusted = p.trusted ?? (distrusted(this.config, p.cwd) ? false : undefined);
+      // While /yolo is on, the tabs that come back run everything too.
+      const permissionMode = this.config.permissionMode === "yolo" ? "yolo" : p.permissionMode;
       const project = new Project(
-        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode, trusted },
+        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode, trusted },
         this.notifier,
         this,
       );

@@ -1,7 +1,7 @@
 // The root component: lays out the sky, the tab bar, the agents' panels and the dialogs, and routes
 // every key. State lives in the Hub; what lives here is purely about the screen (prompts, scroll,
 // open dialogs).
-import { Box, Text, useAnimation, useApp, useInput, usePaste, useWindowSize, type Key } from "ink";
+import { Box, Text, useApp, useInput, usePaste, useStdout, useWindowSize, type Key } from "ink";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { Agent } from "../core/agent.js";
 import {
@@ -17,7 +17,10 @@ import type { Hub, TerminalRunner } from "../core/hub.js";
 import { newestModels } from "../core/news.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
 import { spawnProgram } from "../platform/process.js";
+import { cardPage, panelRowsFor, pendingAsk, type CardView } from "./ask-card.js";
 import { commandSuggestions, findCommand, runCommandLine, type CommandContext } from "./commands.js";
+import { copyLastReply } from "./copy.js";
+import { useScreenMouse } from "./screen-mouse.js";
 import { AgentPanel } from "./components/AgentPanel.js";
 import { Axo } from "./components/Axo.js";
 import { Footer, Header, TabBar, Toasts } from "./components/Chrome.js";
@@ -26,6 +29,7 @@ import { MoonGauge } from "./components/MoonGauge.js";
 import { Sky } from "./components/Sky.js";
 import { createLaunchers } from "./dialogs/index.js";
 import { editKey, emptyEditor, insertText, type EditorState } from "./editor.js";
+import { animationClock, BUSY_FRAME_MS, IDLE_FRAME_MS, spinnerFrame, usePulse, useTicking, useUrgentInput } from "./frames.js";
 import { computeLayout, type Layout } from "./layout.js";
 import type { Row } from "./log-lines.js";
 import { addPaste, deleteChipBefore, expandPastes, isLongPaste, keepReferenced, noPastes, type Pastes } from "./paste.js";
@@ -66,6 +70,14 @@ function Screen({ onExit }: { onExit: () => void }) {
   const history = useRef<Record<string, { items: HistoryEntry[]; index: number }>>({});
   const lastCtrlC = useRef(0);
   const lastBusy = useRef<{ busy: boolean; doneAt: number }>({ busy: false, doneAt: 0 });
+  // The question cards: where each is scrolled, the questions put away with esc, and what the
+  // panels last drew (for pgup / pgdn).
+  const [cardTops, setCardTops] = useState<Record<string, { id: string; top: number }>>({});
+  const [dismissedAsks, setDismissedAsks] = useState<Record<string, string>>({});
+  const cards = useRef<Record<string, CardView | null>>({});
+  /** How far each panel can scroll, as it last drew (Infinity while the top is further up). */
+  const scrollMax = useRef<Record<string, number>>({});
+  const { stdout } = useStdout();
 
   const project = hub.activeProject;
   const focused = project?.focused;
@@ -75,10 +87,15 @@ function Screen({ onExit }: { onExit: () => void }) {
   const recent = useMemo(() => (home ? recentFolders(hub) : []), [home, hub, hub.config.recent, hub.projects.length]);
   const pick = Math.min(homePick, Math.max(0, recent.length - 1));
   const anyBusy = hub.projects.some((p) => p.agents.some((a) => a.busy));
-  const { frame } = useAnimation({ interval: 140, isActive: anyBusy });
-  // A slow tick while idle, so the header clock moves on and "Done!" turns back into "Ready".
-  useAnimation({ interval: 1000, isActive: !anyBusy && Boolean(project) });
+  // While agents work, the spinners, the sky and Axo move by the clock with the frames the agents'
+  // text draws anyway, and a pulse fills the gaps (see frames.ts). While idle, the sky and Axo tick
+  // on their own, and a slow tick moves the header clock on and turns "Done!" back into "Ready".
+  usePulse(anyBusy ? BUSY_FRAME_MS : null);
+  useTicking(!anyBusy && project ? IDLE_FRAME_MS : null);
+  useUrgentInput(hub.notifier);
   const now = Date.now();
+  const frame = spinnerFrame();
+  const clock = anyBusy ? animationClock() : undefined;
 
   // ---- UI services ---------------------------------------------------------------------------
 
@@ -200,6 +217,9 @@ function Screen({ onExit }: { onExit: () => void }) {
     paste: () => {
       if (focused) void pasteClipboard(focused);
     },
+    copy: () => {
+      if (focused) void copyLastReply(focused, hub, (data) => stdout.write(data));
+    },
     dialogs: launchers,
   };
   ctxRef.current = ctx;
@@ -255,7 +275,11 @@ function Screen({ onExit }: { onExit: () => void }) {
   };
 
   const scrollBy = (agent: Agent, delta: number) =>
-    setScrolls((s) => ({ ...s, [agent.id]: Math.max(0, (s[agent.id] ?? 0) + delta) }));
+    setScrolls((s) => {
+      // Not past the top: scrolling back down then moves at once.
+      const max = scrollMax.current[agent.id] ?? Infinity;
+      return { ...s, [agent.id]: Math.max(0, Math.min(max, Math.min(max, s[agent.id] ?? 0) + delta)) };
+    });
 
   /** Home: ↑ ↓ pick a recent folder, enter opens it, esc goes back to the tab underneath. */
   const handleHomeKey = (input: string, key: Key) => {
@@ -315,6 +339,8 @@ function Screen({ onExit }: { onExit: () => void }) {
     if (!agent) return;
     if (key.escape) {
       if (editor.value) return setEditor(agent, emptyEditor());
+      const ask = pendingAsk(agent, dismissedAsks[agent.id]);
+      if (ask?.kind === "question") return setDismissedAsks((d) => ({ ...d, [agent.id]: ask.id }));
       if (project.zoomed) return toggleZoom();
       if (agent.busy) agent.interrupt();
       return;
@@ -332,6 +358,12 @@ function Screen({ onExit }: { onExit: () => void }) {
       if (input === "y" || input === "Y") return agent.answerApproval("allow");
       if (input === "a" || input === "A") return agent.answerApproval("always");
       if (input === "n" || input === "N") return agent.answerApproval("deny");
+    }
+    if (key.pageUp || key.pageDown) {
+      // A question card longer than it shows scrolls first; the log goes on from its ends.
+      const card = cards.current[agent.id];
+      const top = cardPage(card, key.pageDown ? 1 : -1, (scrolls[agent.id] ?? 0) > 0);
+      if (card && top !== null) return setCardTops((s) => ({ ...s, [agent.id]: { id: card.id, top } }));
     }
     if (key.pageUp) return scrollBy(agent, 10);
     if (key.pageDown) return scrollBy(agent, -10);
@@ -384,6 +416,9 @@ function Screen({ onExit }: { onExit: () => void }) {
   const showAxo = theme.axo && hub.config.axo;
   // Home draws no panels: the sky has no glass and the moon comes out.
   const shown = home ? undefined : project;
+  // The lead's panel grows while it asks (its width as the layout will make it, Axo's corner off).
+  const leadAsk = shown?.lead && !shown.zoomed ? pendingAsk(shown.lead, dismissedAsks[shown.lead.id]) : null;
+  const leadWidth = columns - (columns >= 60 ? 2 : 0) - 4 - (showAxo && columns >= 98 ? 31 : 0);
   const layout: Layout = computeLayout({
     width: columns,
     height: rows,
@@ -391,8 +426,11 @@ function Screen({ onExit }: { onExit: () => void }) {
     focusedId: focused?.id ?? null,
     zoomed: project?.zoomed ?? false,
     axo: showAxo,
+    leadRows: leadAsk ? panelRowsFor(leadAsk, leadWidth, theme) : 0,
   });
   const glass = layout.panels.map((p) => ({ ...p.rect, focused: p.agentId === focused?.id }));
+  const movePick = (step: 1 | -1) => setHomePick(Math.max(0, Math.min(Math.max(0, recent.length - 1), pick + step)));
+  useScreenMouse({ hub, layout, shown, focused, home, movePick, scrollBy, isActive: !dialogOpen });
   // A few ms over the whole catalog: worked out again when it or the Claude account changes, and
   // each minute (for sign-ins elsewhere).
   const minute = Math.floor(now / 60_000);
@@ -439,7 +477,7 @@ function Screen({ onExit }: { onExit: () => void }) {
   return (
     <UiContext value={ui}>
       <Box width={columns} height={rows}>
-        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} enabled={hub.config.sky.enabled} moonAt={shown ? null : undefined} />
+        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} clock={clock} enabled={hub.config.sky.enabled} moonAt={shown ? null : undefined} />
         <TabBar hub={hub} rect={layout.tabBar} frame={frame} />
         {shown ? <Header hub={hub} project={shown} rect={layout.header} now={now} /> : null}
         {shown ? (
@@ -462,6 +500,10 @@ function Screen({ onExit }: { onExit: () => void }) {
                 editor={isFocused ? editorOf(agent) : null}
                 chips={isFocused ? pastesOf(agent).items.map((p) => p.token) : undefined}
                 scroll={scrolls[agent.id] ?? 0}
+                cardTop={cardTops[agent.id]}
+                dismissedAsk={dismissedAsks[agent.id]}
+                onCard={(card) => void (cards.current[agent.id] = card)}
+                onScrollRange={(max) => void (scrollMax.current[agent.id] = max)}
                 reserveRight={reserve}
                 menu={isFocused ? [...chipRows(agent), ...menuRows(agent)] : undefined}
               />
@@ -487,6 +529,7 @@ function Screen({ onExit }: { onExit: () => void }) {
               caption={leadBusy ? `${(shown.agents.find((a) => a.status === "working")?.activity ?? "Working")}…` : mood === "done" ? "Done!" : "Ready when you are."}
               captionColor={leadBusy ? c.accent2 : c.muted}
               animate={hub.config.sky.enabled}
+              clock={clock}
             />
             {layout.axo.height >= 13 ? (
               <MoonGauge label="session" window={hub.planUsage?.session ?? null} theme={theme} width={layout.axo.width - 2} bg={leadAgent.id === focused?.id ? c.surfaceFocus : c.surface} />

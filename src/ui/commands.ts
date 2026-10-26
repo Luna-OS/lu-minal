@@ -1,11 +1,13 @@
 // Slash commands. Every shortcut has one, because terminals (VS Code, Windows Terminal, macOS
 // Terminal) each swallow different key combinations.
+import { cloudTarget } from "../cloud/claude-cloud.js";
 import type { Agent } from "../core/agent.js";
 import type { Hub } from "../core/hub.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
 import type { Project } from "../core/project.js";
 import { PERMISSION_MODES, type PermissionMode } from "../core/types.js";
 import { parseModelRef } from "../providers/models.js";
+import { mouseReportingUseful, SELECT_HINT } from "./mouse.js";
 import type { UiServices } from "./store.js";
 import { resolvePath } from "../tools/fs.js";
 
@@ -21,6 +23,8 @@ export interface CommandContext {
   attach: (paths: string[]) => void;
   /** Attaches the picture or the copied files on the clipboard to the focused agent's next message. */
   paste: () => void;
+  /** Copies the focused agent's last reply to the clipboard (the App's; absent where there is no terminal). */
+  copy?: () => void;
   /** Opens one of the dialogs (implemented in dialogs/index.tsx). */
   dialogs: DialogLaunchers;
 }
@@ -144,7 +148,21 @@ export const COMMANDS: Command[] = [
   },
   { name: "usage", aliases: ["limits"], description: "Plan limits, credits and token use", run: (ctx) => ctx.dialogs.usage() },
   { name: "stats", aliases: ["statistics", "tokens"], description: "Token statistics: today, this week, all time, by model and project", run: (ctx) => ctx.dialogs.stats() },
-  { name: "cloud", aliases: ["web", "remote"], description: "Claude on the web: start, message and teleport cloud sessions", run: (ctx) => ctx.dialogs.cloud() },
+  {
+    name: "cloud",
+    aliases: ["web", "remote"],
+    args: "[msg <text>]",
+    description: "Claude cloud sessions in the terminal: start, message, teleport, watch (msg: to the one used last, else the newest)",
+    run: async (ctx, args) => {
+      const m = /^(?:msg|message|send)(?:\s+([\s\S]*))?$/i.exec(args.trim());
+      if (!m) return ctx.dialogs.cloud();
+      const text = (m[1] ?? "").trim();
+      if (!text) return ctx.hub.toast("Usage: /cloud msg <text> - to the cloud session used last in /cloud, else the newest.", "warning");
+      const session = cloudTarget(ctx.hub.cloudSessions, ctx.project?.cwd ?? null, ctx.hub.pickedCloudId);
+      if (!session) return ctx.hub.toast("No cloud session yet - /cloud starts one or adds one by its link.", "warning");
+      await ctx.hub.messageCloud(session, text);
+    },
+  },
   { name: "roblox", aliases: ["studio"], description: "Connect Roblox Studio", run: (ctx) => ctx.dialogs.roblox() },
   {
     name: "trust",
@@ -247,6 +265,32 @@ export const COMMANDS: Command[] = [
     description: "Attach the picture or the files copied on the clipboard to the next message",
     keys: "ctrl+v (alt+v)",
     run: (ctx) => ctx.paste(),
+  },
+  {
+    name: "copy",
+    aliases: ["yank"],
+    description: "Copy the focused agent's last reply to the clipboard (its words, not the tool output)",
+    run: (ctx) => {
+      if (!ctx.agent) return ctx.hub.toast("Focus an agent first - /copy copies its last reply.", "info");
+      ctx.copy?.();
+    },
+  },
+  {
+    name: "mouse",
+    args: "[on|off]",
+    description: "The mouse wheel scrolls the panel under it, a click focuses one (off: the terminal's own selection)",
+    run: (ctx, args) => {
+      const a = args.trim().toLowerCase();
+      const on = a === "on" || a === "yes" ? true : a === "off" || a === "no" ? false : !ctx.hub.config.mouse;
+      ctx.hub.config.mouse = on;
+      ctx.hub.persistConfig();
+      ctx.hub.notifier.changed();
+      if (!on) return ctx.hub.toast("Mouse off: a plain drag selects text again; pgup / pgdn scroll.", "info");
+      if (!mouseReportingUseful()) {
+        return ctx.hub.toast("Mouse on - but the macOS app's terminal keeps the wheel for itself, so lu-minal leaves the mouse to it in this window.", "info");
+      }
+      ctx.hub.toast(`Mouse on: the wheel scrolls, a click focuses. ${SELECT_HINT}`, "info");
+    },
   },
   { name: "palette", aliases: ["commands"], description: "All commands", keys: "ctrl+k", run: (ctx) => ctx.dialogs.palette() },
   { name: "update", aliases: ["upgrade"], description: "Install the newest lu-minal", run: (ctx) => void ctx.hub.installUpdate() },

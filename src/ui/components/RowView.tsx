@@ -20,7 +20,11 @@ export function SegText({ seg, bg }: { seg: Seg; bg: string }) {
   );
 }
 
-export function RowView({ row, width, bg }: { row: Row; width: number; bg: string }) {
+/**
+ * Memoized: a log row laid out once keeps its object (log-lines.ts remembers them), so a frame
+ * doesn't render the rows that stayed the same again.
+ */
+export const RowView = React.memo(function RowView({ row, width, bg }: { row: Row; width: number; bg: string }) {
   const used = row.segs.reduce((n, s) => n + textWidth(s.text), 0);
   const pad = row.fill ? Math.max(0, width - used) : 0;
   return (
@@ -31,7 +35,7 @@ export function RowView({ row, width, bg }: { row: Row; width: number; bg: strin
       {pad > 0 ? <Text backgroundColor={row.fill}>{" ".repeat(pad)}</Text> : null}
     </Text>
   );
-}
+});
 
 /** A row from loose segments (headers, footers, dialogs). */
 export function Segs({ segs, bg }: { segs: Seg[]; bg: string }) {

@@ -52,8 +52,10 @@ behind glass panels, the crescent moon, shooting stars, and Axo the pixel axolot
   terminal's own paste key (ctrl+v in Windows Terminal, cmd+v in the macOS app), drop files on the
   terminal, or pick them with `/attach`. Models that can see get the picture; text files go into
   the message.
-- **Claude cloud sessions.** `/cloud` starts a task on claude.ai/code, sends it follow-ups,
-  and brings a session back into this terminal (`claude --teleport`).
+- **Claude cloud sessions, in the terminal.** `/cloud` starts a task on claude.ai/code, browses
+  every cloud session of your account in Claude Code's own picker (`claude --teleport`), and per
+  session: enter types a follow-up, t teleports it here, w watches it live (not every account has
+  that yet). `/cloud msg <text>` messages the session used last right from the prompt.
 - **Close and come back.** lu-minal saves the session as you work: quit, start it again, and every
   tab, agent, log and conversation is back where it was.
 - **Tabs per project.** Open a folder, or clone a repository from **GitHub** or any **Forgejo /
@@ -124,7 +126,10 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
    message anyone with `@vega make the lamp warmer`.
 4. Approve what needs approving with **y** (allow), **a** (always) or **n** (deny). Claude Code's
    multiple-choice questions are asked in the chat instead: lu-minal tells Claude to ask in plain
-   text, and you answer with a message.
+   text, and you answer with a message. Whatever an agent waits on you for – the whole command or
+   edit, or the question its answer ends with – shows in a card above the prompt (pgup / pgdn
+   scroll a long one, esc puts a question away), while tool output and code in the log keep their
+   first lines until you zoom with **ctrl+f**.
 5. Add pictures and files to a message: paste a screenshot (Win+Shift+S, Cmd+Shift+Ctrl+4) or
    files you copied in Explorer / Finder with the terminal's paste key – **ctrl+v** in Windows
    Terminal (1.24 or newer) and most Linux terminals, **cmd+v** in the macOS app, **ctrl+v** in Terminal.app and
@@ -163,6 +168,8 @@ and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-
 | ctrl+k | command palette |
 | ctrl+f | zoom |
 | pgup, pgdn | scroll |
+| mouse wheel, click | scroll the panel under the pointer, focus a panel. With **Shift** held (**Option** in iTerm2, **fn** in Terminal.app) the mouse is the terminal's: drag to select text, right-click to paste in Windows Terminal. `/mouse off` leaves it to the terminal for good (the macOS app always does) |
+| `/copy` | copy the focused agent's last reply – its words, not the tool output – to the clipboard |
 | esc | interrupt the focused agent |
 | ctrl+v, alt+v (`/paste`) | paste a screenshot or copied files from the clipboard |
 | ctrl+c twice, ctrl+q | quit |

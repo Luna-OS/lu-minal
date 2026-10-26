@@ -1,6 +1,6 @@
 {
   "name": "lu-minal",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A multi-agent coding terminal in the Moon night-sky look: tabs per project, teams of agents from any provider (Claude via your subscription, OpenCode Zen free models, OpenRouter, MiniMax, ...) that talk to each other, live plan limits and a Roblox Studio bridge.",
   "type": "module",
   "bin": {

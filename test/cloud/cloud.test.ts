@@ -1,15 +1,25 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  cliError,
   cloudReadiness,
   cloudStartCommand,
+  cloudTarget,
   parseCloudSession,
   parseSendResult,
+  pausingCommand,
   sendToCloud,
   sessionFromTranscript,
+  shortCloudError,
   shQuote,
+  takeTranscript,
+  teleportArgs,
+  teleportPickerArgs,
+  watchArgs,
+  type CloudSession,
 } from "../../src/cloud/claude-cloud.js";
 import type { RunResult } from "../../src/platform/process.js";
 
@@ -112,5 +122,85 @@ describe("cloudReadiness", () => {
     expect(ahead).toContain("1 uncommitted change");
     const noRemote = await cloudReadiness(process.cwd(), fake({ "remote get-url": { code: 2 } }));
     expect(noRemote).toContain("bundle");
+  });
+});
+
+describe("errors", () => {
+  it("picks Claude Code's error out of a recorded start, and shortens send errors", () => {
+    const said =
+      "\u001b[2K\u001b[1G◐ Checking your account…\r\nError: Cloud sessions need a claude.ai sign-in. Run `claude auth login` (or /login in a local session), then try again.\r\n";
+    expect(cliError(said)).toBe("Cloud sessions need a claude.ai sign-in. Run `claude auth login` (or /login in a local session), then try again.");
+    expect(cliError("Setting up…\nView: https://claude.ai/code/session_abc123\n")).toBeNull();
+    expect(
+      shortCloudError("Error: failed to send message to cloud session session_x1: cloud session session_x1 is archived and cannot accept new messages"),
+    ).toBe("Cloud session session_x1 is archived and cannot accept new messages");
+    expect(shortCloudError("Error: failed to send message to cloud session https://claude.ai/code/session_x1: Session not found: session_x1")).toBe(
+      "Session not found: session_x1",
+    );
+    expect(shortCloudError("error: not signed in")).toBe("Not signed in");
+    expect(shortCloudError("Session archived")).toBe("Session archived");
+  });
+
+  it("takes a transcript's text and removes the file", async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lu-cloud-")), "t.log");
+    fs.writeFileSync(file, "Error: Unable to get organization UUID\n");
+    expect(takeTranscript(file)).toContain("organization UUID");
+    await vi.waitFor(() => expect(fs.existsSync(file)).toBe(false));
+    expect(takeTranscript(null)).toBeNull();
+  });
+});
+
+describe("the terminal commands", () => {
+  it("teleports one session, opens the picker of all of them, and watches with --cloud but no -p", () => {
+    expect(teleportArgs("session_a1b2c3")).toEqual(["--teleport", "session_a1b2c3"]);
+    expect(teleportPickerArgs()).toEqual(["--teleport"]);
+    expect(watchArgs("session_a1b2c3")).toEqual(["--cloud", "session_a1b2c3"]);
+  });
+
+  it("runs the program plainly on Windows (no POSIX shell to wait in)", () => {
+    expect(pausingCommand("C:\\claude.exe", ["--teleport"], "win32")).toEqual({ exe: "C:\\claude.exe", args: ["--teleport"], pauses: false });
+  });
+
+  it.runIf(process.platform !== "win32")("waits for enter after a failure and keeps the exit code; a success goes straight back", () => {
+    const fail = pausingCommand(process.execPath, ["-e", "console.log('Attaching to an existing cloud session is not enabled for your account.'); process.exit(3)"]);
+    expect(fail.pauses).toBe(true);
+    const r = spawnSync(fail.exe, fail.args, { input: "\n", encoding: "utf8", timeout: 10_000 });
+    expect(r.status).toBe(3);
+    expect(r.stdout).toContain("is not enabled for your account.");
+    expect(r.stdout).toContain("Claude Code stopped (exit code 3). Press enter to go back to lu-minal.");
+    const ok = pausingCommand(process.execPath, ["-e", "process.exit(0)"]);
+    const r2 = spawnSync(ok.exe, ok.args, { input: "", encoding: "utf8", timeout: 10_000 });
+    expect(r2.status).toBe(0);
+    expect(r2.stdout).not.toContain("Press enter");
+  });
+
+  it.runIf(process.platform !== "win32")("hands the arguments over untouched (quotes, spaces, $)", () => {
+    const args = ["it's", "$HOME", "two words", "--cloud", "session_x"];
+    const cmd = pausingCommand(process.execPath, ["-e", "console.log(JSON.stringify(process.argv.slice(1)))", ...args]);
+    const r = spawnSync(cmd.exe, cmd.args, { input: "", encoding: "utf8", timeout: 10_000 });
+    expect(JSON.parse(r.stdout.trim())).toEqual(args);
+  });
+});
+
+describe("cloudTarget", () => {
+  const s = (id: string, cwd: string, startedAt: number): CloudSession => ({
+    id,
+    url: `https://claude.ai/code/${id}`,
+    task: id,
+    cwd,
+    startedAt,
+    lastMessageAt: null,
+    lastError: null,
+  });
+
+  it("messages the session used last, else the newest from this folder, else the newest", () => {
+    const list = [s("session_oldhere", "/work/a", 1), s("session_newhere", "/work/a", 5), s("session_newest", "/work/b", 9)];
+    expect(cloudTarget(list, "/work/a", null)?.id).toBe("session_newhere");
+    expect(cloudTarget(list, "/work/c", null)?.id).toBe("session_newest");
+    expect(cloudTarget(list, null, null)?.id).toBe("session_newest");
+    expect(cloudTarget(list, "/work/a", "session_newest")?.id).toBe("session_newest");
+    // A forgotten one doesn't count.
+    expect(cloudTarget(list, "/work/a", "session_gone")?.id).toBe("session_newhere");
+    expect(cloudTarget([], "/work/a", null)).toBeNull();
   });
 });

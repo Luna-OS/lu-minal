@@ -10,16 +10,22 @@ import { acpEnv } from "../agents/acp/presets.js";
 import { readClaudeAccount } from "../agents/claude-code/account.js";
 import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
+import type { ClaudeRateLimitEvent } from "../agents/claude-code/events.js";
 import { claudeInstallCommand, claudeLoginArgs, claudeLogoutArgs } from "../agents/claude-code/login.js";
 import { applyRateLimit, detectEarlyResets, fetchPlanUsage, mergeUsage, readSavedUsage, writeSavedUsage, type EarlyReset } from "../agents/claude-code/usage.js";
 import { NativeDriver } from "../agents/native/driver.js";
 import { systemPrompt } from "../agents/prompts.js";
 import {
+  cliError,
   cloudStartCommand,
   parseCloudSession,
+  pausingCommand,
   sendToCloud,
-  sessionFromTranscript,
+  shortCloudError,
+  takeTranscript,
   teleportArgs,
+  teleportPickerArgs,
+  watchArgs,
   type CloudSession,
 } from "../cloud/claude-cloud.js";
 import { McpServer } from "../mcp/server.js";
@@ -51,6 +57,7 @@ import { newId, Notifier } from "./emitter.js";
 import { loadNews, newsStale, NEWS_MAX_AGE_MS, type News } from "./news.js";
 import { Project, type ProjectRuntime } from "./project.js";
 import { StatsStore } from "./stats.js";
+import { UsageSchedule } from "./usage-schedule.js";
 import type { ClaudeAccount, PermissionMode, PlanUsage, ProviderBalance, TaskItem, TeamMessage } from "./types.js";
 
 export type ToastLevel = "info" | "success" | "warning" | "error";
@@ -143,6 +150,9 @@ export class Hub implements ProjectRuntime {
   balances = new Map<string, ProviderBalance>();
   toasts: Toast[] = [];
   cloudSessions: CloudSession[] = [];
+  /** The cloud session last used in /cloud (`/cloud msg` writes to it), and the ones a message is on its way to. */
+  pickedCloudId: string | null = null;
+  cloudSending = new Set<string>();
   /** A newer lu-minal than this one, from the daily check; null when there is none (or not known). */
   updateAvailable: { version: string; url: string } | null = null;
   /** What /update is doing right now ("Downloading ...: 40%"), or null. */
@@ -162,9 +172,12 @@ export class Hub implements ProjectRuntime {
   private readonly opts: HubOptions;
   private timers: NodeJS.Timeout[] = [];
   private usageInFlight = false;
-  /** The next report after agents used the plan (see scheduleUsageRefresh). */
-  private usageRefreshTimer: NodeJS.Timeout | null = null;
-  private lastUsageRefresh = 0;
+  /** When the plan's usage is asked for (`claude -p /usage`): see usage-schedule.ts. */
+  readonly usageSchedule = new UsageSchedule({
+    report: () => void this.refreshUsage(),
+    busy: () => this.projects.some((p) => p.agents.some((a) => a.busy)),
+    pollSeconds: () => this.config.usagePollSeconds,
+  });
   /** The account the numbers on disk belong to. */
   private savedUsageEmail: string | null = null;
   /** Limits Anthropic reset early ("free resets") this run, newest first, for the home screen. */
@@ -279,8 +292,7 @@ export class Hub implements ProjectRuntime {
     void this.refreshUsage();
     void this.refreshBalances();
     void this.refreshNews();
-    const usageSeconds = this.config.usagePollSeconds;
-    if (usageSeconds > 0) every(Math.max(30, usageSeconds) * 1000, () => void this.refreshUsage());
+    this.usageSchedule.start();
     every(5 * 60_000, () => void this.refreshBalances());
     every(10 * 60_000, () => void this.refreshClaude());
     // Fresh news for a home screen that stays up.
@@ -291,13 +303,10 @@ export class Hub implements ProjectRuntime {
       void this.checkForUpdates();
       every(6 * 60 * 60_000, () => void this.checkForUpdates());
     }
-    // The limits' countdowns (and a window that resets) move on while nobody works too.
+    // The limits' countdowns (and a window that resets) move on while nobody works too. (The clock
+    // in the header and the agents' elapsed times move with the UI's own frames: src/ui/frames.ts.)
     every(30_000, () => {
       if (this.planUsage) this.notifier.changed();
-    });
-    // The clock in the header and the agents' elapsed times.
-    every(1000, () => {
-      if (this.projects.some((p) => p.agents.some((a) => a.busy))) this.notifier.changed();
     });
   }
 
@@ -305,7 +314,7 @@ export class Hub implements ProjectRuntime {
     if (this.disposed) return;
     this.disposed = true;
     for (const t of this.timers) clearInterval(t);
-    if (this.usageRefreshTimer) clearTimeout(this.usageRefreshTimer);
+    this.usageSchedule.stop();
     this.saveUsage();
     if (this.saveTimer) clearTimeout(this.saveTimer);
     // Save before the drivers stop, while their conversations are still there.
@@ -502,13 +511,7 @@ export class Hub implements ProjectRuntime {
         mcp: this.mcp,
         env: this.claudeEnv(),
         systemPrompt: () => this.promptFor(project, agent, "claude-code"),
-        onRateLimit: (ev) => {
-          const next = applyRateLimit(this.planUsage, ev);
-          this.noteEarlyResets(detectEarlyResets(this.planUsage, next));
-          this.planUsage = next;
-          this.notifier.changed();
-          this.scheduleUsageRefresh();
-        },
+        onRateLimit: (ev) => this.rateLimitEvent(ev),
       });
     } else if (this.registry.provider(agent.model.provider)?.kind === "acp") {
       const preset = this.registry.acpPreset(agent.model.provider);
@@ -618,8 +621,13 @@ export class Hub implements ProjectRuntime {
     if (!exe) throw new Error("Claude Code is not installed - /login claude installs it.");
     const cmd = cloudStartCommand(exe, task);
     await run(cmd.exe, cmd.args, { cwd: project.cwd, env: this.claudeEnv() });
-    const found = sessionFromTranscript(cmd.transcript);
-    return found ? this.addCloudSession(project, task, found.url) : null;
+    const said = takeTranscript(cmd.transcript);
+    const found = said === null ? null : parseCloudSession(said);
+    if (found) return this.addCloudSession(project, task, found.url);
+    // No link but an error (not signed in, a policy): say why instead of asking for a link.
+    const error = said === null ? null : cliError(said);
+    if (error) throw new Error(`Claude Code: ${error}`);
+    return null;
   }
 
   /** Remembers a cloud session from a pasted link or id. */
@@ -627,6 +635,7 @@ export class Hub implements ProjectRuntime {
     const found = parseCloudSession(link);
     if (!found) return null;
     const existing = this.cloudSessions.find((s) => s.id === found.id);
+    this.pickedCloudId = found.id;
     if (existing) return existing;
     const session: CloudSession = {
       id: found.id,
@@ -659,15 +668,64 @@ export class Hub implements ProjectRuntime {
     return result;
   }
 
+  /** Sends a message typed in /cloud (or with /cloud msg) and says in a toast how it went. */
+  async messageCloud(session: CloudSession, text: string): Promise<boolean> {
+    this.pickedCloudId = session.id;
+    this.cloudSending.add(session.id);
+    this.notifier.changed();
+    try {
+      const r = await this.sendCloud(session, text);
+      const name = session.task.length > 40 ? `${session.task.slice(0, 39)}…` : session.task;
+      if (r.ok) this.toast(`Sent to "${name}" - queued as the cloud session's next message.`, "success");
+      else this.toast(`Cloud: ${shortCloudError(r.error ?? "The cloud session did not take the message.")}`, "error");
+      return r.ok;
+    } finally {
+      this.cloudSending.delete(session.id);
+      this.notifier.changed();
+    }
+  }
+
   /** Continues a cloud session in this terminal (`claude --teleport`), in the project's folder. */
   async teleport(project: Project, session: CloudSession, run: TerminalRunner): Promise<void> {
+    this.pickedCloudId = session.id;
+    await this.claudeInTerminal(project, teleportArgs(session.id), run);
+  }
+
+  /** Claude Code's own picker of every cloud session of the account (`claude --teleport`). */
+  async browseCloud(project: Project, run: TerminalRunner): Promise<void> {
+    await this.claudeInTerminal(project, teleportPickerArgs(), run);
+  }
+
+  /**
+   * Watches a cloud session live in the real terminal (`claude --cloud <id>` without -p). Most
+   * accounts can't attach yet; Claude Code then says so and exits, and the toast points to teleport.
+   */
+  async watchCloud(project: Project, session: CloudSession, run: TerminalRunner): Promise<boolean> {
+    this.pickedCloudId = session.id;
+    const code = await this.claudeInTerminal(project, watchArgs(session.id), run, true);
+    if (code === 0) return true;
+    if (code !== null) {
+      this.toast("Watching live didn't work: not every account can attach to a cloud session yet. t (teleport) works for everyone.", "warning");
+    }
+    return false;
+  }
+
+  /**
+   * Runs `claude <args>` in the real terminal, in the project's folder. A failure waits for enter
+   * where a POSIX shell can, so Claude Code's message can be read; elsewhere a toast gives the code.
+   */
+  private async claudeInTerminal(project: Project, args: string[], run: TerminalRunner, quiet = false): Promise<number | null> {
     const exe = findClaude(this.config.claudePath);
-    if (!exe) throw new Error("Claude Code is not installed.");
-    await run(exe, teleportArgs(session.id), { cwd: project.cwd, env: this.claudeEnv() });
+    if (!exe) throw new Error("Claude Code is not installed - /login claude installs it.");
+    const cmd = pausingCommand(exe, args);
+    const code = await run(cmd.exe, cmd.args, { cwd: project.cwd, env: this.claudeEnv() });
+    if (code && !cmd.pauses && !quiet) this.toast(`Claude Code stopped with exit code ${code}.`, "warning");
+    return code;
   }
 
   forgetCloud(id: string): void {
     this.cloudSessions = this.cloudSessions.filter((s) => s.id !== id);
+    if (this.pickedCloudId === id) this.pickedCloudId = null;
     this.notifier.changed();
   }
 
@@ -758,7 +816,7 @@ export class Hub implements ProjectRuntime {
     const account = this.claudeAccount;
     if (this.usageInFlight || !account?.exe || !account.loggedIn) return;
     this.usageInFlight = true;
-    this.lastUsageRefresh = Date.now();
+    this.usageSchedule.reported();
     try {
       const usage = await fetchPlanUsage(account.exe);
       if (usage) {
@@ -777,17 +835,15 @@ export class Hub implements ProjectRuntime {
   }
 
   /**
-   * A report soon after an agent used the plan, so the limits follow the work live: 5 s after the
-   * first rate-limit event, at most one every 30 s (claude.ai answers the reports, not the model).
+   * A running Claude Code agent's rate_limit_event: the limits move with it, and a report is only
+   * asked for when it carried no numbers (see usage-schedule.ts).
    */
-  private scheduleUsageRefresh(): void {
-    if (this.usageRefreshTimer || this.opts.offline || this.disposed) return;
-    const wait = Math.max(5_000, this.lastUsageRefresh + 30_000 - Date.now());
-    this.usageRefreshTimer = setTimeout(() => {
-      this.usageRefreshTimer = null;
-      void this.refreshUsage();
-    }, wait);
-    this.usageRefreshTimer.unref();
+  rateLimitEvent(ev: ClaudeRateLimitEvent): void {
+    const next = applyRateLimit(this.planUsage, ev);
+    this.noteEarlyResets(detectEarlyResets(this.planUsage, next));
+    this.planUsage = next;
+    this.usageSchedule.rateLimitEvent(Boolean(ev.fiveHour || ev.sevenDay));
+    this.notifier.changed();
   }
 
   /** Says so when a limit went back to nothing before its time: a reset Anthropic gave. */

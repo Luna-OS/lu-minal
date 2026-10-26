@@ -255,10 +255,11 @@ export function createLaunchers(
         ["ctrl+o", "switch the focused agent's model"],
         ["ctrl+l", "sign in (Claude, OpenRouter, keys, GitHub, Forgejo)"],
         ["ctrl+k", "command palette"],
-        ["ctrl+f", "zoom the focused agent"],
-        ["pgup / pgdn", "scroll the focused log"],
+        ["ctrl+f", "zoom the focused agent (collapsed tool output and code in full)"],
+        ["pgup / pgdn", "scroll the focused log (a long question card first)"],
+        ["mouse wheel, click", "scroll the log under the pointer, focus a panel (shift+drag selects text, /mouse off)"],
         ["y / a / n", "allow / always allow / deny a request"],
-        ["esc", "interrupt the focused agent"],
+        ["esc", "put a question card away, or interrupt the focused agent"],
         ["ctrl+c twice, ctrl+q", "quit"],
       ];
       const items: ListItem[] = [

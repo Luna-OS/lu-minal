@@ -117,7 +117,7 @@ runs the official `claude` program:
 ## The web pane beside the terminal
 
 The macOS app ([macos/README.md](../macos/README.md)) and the Windows window app
-(`windows-app/README.md`) can show the real claude.ai/code website in a
+([windows-app/README.md](../windows-app/README.md)) can show the real claude.ai/code website in a
 pane beside the terminal, in the same window. claude.ai sits behind Cloudflare's bot check, and an
 automated browser could put the account at risk, so the hosts only display the page: they never
 inject scripts into it or read its DOM, cookies or storage, and lu-minal never sees them either.

@@ -174,7 +174,7 @@ automated, nothing in it is read.
 | | |
 | --- | --- |
 | macOS app | **Cmd+Shift+K**, the View menu or the button in the window – see [macos/README.md](macos/README.md) |
-| Windows window app | **Ctrl+Shift+K** or the button in the window – see `windows-app/README.md` |
+| Windows window app | **Ctrl+Shift+K** or the button in the window – see [windows-app/README.md](windows-app/README.md) |
 | in lu-minal | `/web` shows or hides the pane, `/web show`, `/web hide`, `/web <claude.ai link>` opens a page there. In `/cloud`, **o** shows a session there, and the list has **Cloud website beside the terminal** |
 
 In any other terminal `/web` and **o** open claude.ai/code in your browser instead.

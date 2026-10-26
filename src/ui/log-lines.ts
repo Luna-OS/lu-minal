@@ -365,12 +365,21 @@ function sameFields(was: Record<string, unknown>, entry: LogEntry): boolean {
 /**
  * entryRows, remembered per entry: a panel draws the same entries frame after frame and only the
  * newest one changes while an agent streams, so the others aren't wrapped again each frame. An entry
- * is laid out again when any of its fields, the width, the options, the theme or the colour of a
- * teammate it names changed.
+ * is laid out again when any of its fields, the width, the options (whether the question card
+ * shows it too), the theme or the colour of a teammate it names changed.
  */
 export function cachedEntryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
   const named = entry.kind === "user" && entry.from !== "you" ? entry.from : entry.kind === "message" ? entry.to : null;
-  const key = `${opts.width}|${opts.maxDiffLines}|${opts.maxTextLines}|${opts.fullReasoning ? 1 : 0}|${named === null ? "" : opts.colorOf(named)}`;
+  const key = [
+    opts.width,
+    opts.maxDiffLines,
+    opts.maxTextLines,
+    opts.fullReasoning ? 1 : 0,
+    opts.maxCodeLines ?? 0,
+    opts.expandHint ?? "",
+    opts.pinned === entry.id ? 1 : 0,
+    named === null ? "" : opts.colorOf(named),
+  ].join("|");
   const hit = laidOut.get(entry);
   if (hit && hit.key === key && hit.theme === opts.theme && sameFields(hit.fields, entry)) return hit.rows;
   const rows = entryRows(entry, opts);

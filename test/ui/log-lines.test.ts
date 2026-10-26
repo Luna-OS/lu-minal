@@ -181,6 +181,21 @@ describe("cachedEntryRows", () => {
     expect(done.map(text).join("\n")).toContain("412 tests passed");
   });
 
+  it("lays an entry out again once the question card no longer shows it, or its code is folded differently", () => {
+    const e = entry({ kind: "text", text: "Should I also update the docs?" });
+    expect(cachedEntryRows(e, { ...opts, pinned: e.id })).toEqual([]);
+    // Another entry on the card leaves this one's rows as they were.
+    const shown = cachedEntryRows(e, opts);
+    expect(text(shown[0])).toContain("update the docs");
+    expect(cachedEntryRows(e, { ...opts, pinned: "other" })).toBe(shown);
+
+    const code = entry({ kind: "text", text: ["```", ...Array.from({ length: 12 }, (_, i) => `line ${i}`), "```"].join("\n") });
+    const folded = cachedEntryRows(code, { ...opts, maxCodeLines: 3, expandHint: "ctrl+f to expand" });
+    expect(folded.map(text).join("\n")).toContain("ctrl+f to expand");
+    expect(cachedEntryRows(code, { ...opts, maxCodeLines: 3 }).map(text).join("\n")).not.toContain("ctrl+f");
+    expect(cachedEntryRows(code, opts).length).toBeGreaterThan(folded.length);
+  });
+
   it("follows a teammate's colour", () => {
     const e = entry({ kind: "user", from: "vega", text: "done" });
     const blue = cachedEntryRows(e, { ...opts, colorOf: () => "#0000ff" });

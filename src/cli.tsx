@@ -32,6 +32,7 @@ import { startThemes, ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
 import { RENDER_OPTIONS } from "./ui/render-options.js";
 import { MouseStdin } from "./ui/mouse.js";
+import { titleSequence } from "./ui/text.js";
 import { VERSION } from "./version.js";
 
 // React has loaded: the programs lu-minal starts get the environment as it was.
@@ -333,7 +334,7 @@ async function main(): Promise<void> {
     checkUpdates: config.updates.check && process.env.LU_MINAL_NO_UPDATE_CHECK !== "1",
   });
 
-  const setTitle = (title: string) => process.stdout.write(`\u001b]0;${title}\u0007`);
+  const setTitle = (title: string) => process.stdout.write(titleSequence(title));
   setTitle("lu-minal");
 
   let exited = false;

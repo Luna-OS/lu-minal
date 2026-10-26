@@ -13,6 +13,7 @@ import {
   webPaneSequence,
   writeWebPane,
 } from "../../src/platform/web-pane.js";
+import { titleSequence } from "../../src/ui/text.js";
 
 const ESC = "\u001b";
 const BEL = "\u0007";
@@ -52,6 +53,32 @@ describe("webPaneSequence", () => {
     expect(webPaneSequence("open", "https://claude.ai:443/code")).toBe(`${ESC}]7701;open;https://claude.ai/code${BEL}`);
     // A non-ASCII path (an accented e) goes out percent-encoded.
     expect(webPaneSequence("open", "https://claude.ai/code/é")).toBe(`${ESC}]7701;open;https://claude.ai/code/%C3%A9${BEL}`);
+  });
+
+  it("sends only the characters RFC 3986 allows, which the macOS app's check takes", () => {
+    // The WHATWG parser keeps these as typed; Foundation's URLComponents (the macOS app) refuses them.
+    expect(cloudUrl("https://claude.ai/code?q={x}")).toBe("https://claude.ai/code?q=%7Bx%7D");
+    expect(cloudUrl("https://claude.ai/a|b^c")).toBe("https://claude.ai/a%7Cb%5Ec");
+    expect(cloudUrl("https://claude.ai/code?k=[1]")).toBe("https://claude.ai/code?k=%5B1%5D");
+    expect(cloudUrl("https://claude.ai/#a#b`c")).toBe("https://claude.ai/#a%23b%60c");
+    // A "%" that starts no escape becomes one; real escapes stay as they are.
+    expect(cloudUrl("https://claude.ai/%zz?x=%&y=%41")).toBe("https://claude.ai/%25zz?x=%25&y=%41");
+    // What claude.ai links hold anyway is left alone.
+    expect(cloudUrl("https://claude.ai/a;b=c?d=e;f&g=(h)#i?j/k@l:m")).toBe("https://claude.ai/a;b=c?d=e;f&g=(h)#i?j/k@l:m");
+    const strict = /^https:\/\/[a-z0-9.-]+\/[A-Za-z0-9\-._~!$&'()*+,;=:@/?%]*(?:#[A-Za-z0-9\-._~!$&'()*+,;=:@/?%]*)?$/;
+    const printable = Array.from({ length: 0x7f - 0x21 }, (_, i) => String.fromCharCode(0x21 + i)).join("");
+    for (const raw of [
+      `https://claude.ai/${printable.replace(/\\/g, "")}`,
+      `https://claude.ai/code?${printable.replace(/\\/g, "")}`,
+      `https://claude.ai/code#${printable.replace(/\\/g, "")}`,
+      // Non-ASCII in the path, the query and the fragment.
+      "https://claude.ai/code/\u00e9?\u00fc=\u00df#\u00f8",
+    ]) {
+      const url = cloudUrl(raw);
+      expect(url, raw).not.toBeNull();
+      expect(url, raw).toMatch(strict);
+      expect(url!.replace(/%[0-9A-F]{2}/gi, ""), raw).not.toContain("%");
+    }
   });
 
   it("refuses open without a claude.ai URL, arguments for the other commands and unknown commands", () => {
@@ -116,6 +143,11 @@ describe("isCloudUrl", () => {
       "https://.claude.ai/",
       "https://claudе.ai/", // a Cyrillic "e"
       "https://claude.ai%2eevil.com/",
+      // Host names the macOS app refuses (and claude.ai has none of).
+      "https://a_b.claude.ai/",
+      "https://a..claude.ai/",
+      "https://xn--e1aybc.claude.ai/",
+      "https://\u0442\u0435\u0441\u0442.claude.ai/", // a Cyrillic subdomain (xn--e1aybc)
       "https://[::1]/",
       "https://127.0.0.1/",
       "",
@@ -161,6 +193,16 @@ describe("writeWebPane", () => {
     expect(writeWebPane("toggle", undefined, out, { LU_MINAL_APP: "1" })).toBe(false);
     expect(writeWebPane("open", "https://claude.ai@evil.com", out, { LU_MINAL_WEB_PANE: "1" })).toBe(false);
     expect(out.written).toEqual([]);
+  });
+});
+
+describe("the window title", () => {
+  it("can't carry a pane command in a project's name (a folder may be called anything)", () => {
+    const name = `proj${BEL}${ESC}]7701;open;https://claude.ai/new${BEL}\u009d7701;toggle${BEL}`;
+    const seq = titleSequence(`lu-minal \u00b7 ${name}`);
+    expect(seq).toBe(`${ESC}]0;lu-minal \u00b7 proj]7701;open;https://claude.ai/new7701;toggle${BEL}`);
+    // Only the frame's own ESC and BEL.
+    expect(seq.slice(2, -1)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
 });
 

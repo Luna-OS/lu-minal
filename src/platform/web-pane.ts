@@ -9,7 +9,7 @@
 // displays the real website: it never scripts the page or reads its cookies, and lu-minal doesn't
 // either. Any program in the terminal could print the sequence, so the URL check (https on
 // claude.ai or a subdomain of it) is the security boundary; the hosts make the same check, and
-// lu-minal sends nothing they would refuse.
+// lu-minal sends nothing they would refuse (the URL goes out in RFC 3986 characters only).
 
 /** The private OSC number the hosts listen for. */
 export const WEB_PANE_OSC = 7701;
@@ -39,10 +39,25 @@ export function webPaneKey(platform: NodeJS.Platform = process.platform): string
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
- * The URL as the pane would load it (normalised: lower-case host, no default port), or null when
- * it is not an https page on claude.ai or one of its subdomains. Refused as well: control
- * characters, spaces and backslashes anywhere (URL parsers disagree on what they mean), a user
- * name or password ("https://claude.ai@evil.com" is a page on evil.com) and any other port.
+ * What RFC 3986 leaves unescaped after the host (unreserved, sub-delims, ":", "@", "/", "?", and
+ * "%" before two hex digits). The WHATWG parser keeps a few more printable characters as typed
+ * ("{", "}", "|", "^", "[", "]", a stray "%", a second "#"); the macOS app's check (Foundation's
+ * URLComponents) refuses a URL with them, so they go out as their %XX escapes, the same page.
+ */
+const NOT_RFC3986 = /%(?![0-9A-Fa-f]{2})|[^A-Za-z0-9\-._~!$&'()*+,;=:@/?%]/g;
+
+function rfc3986(part: string): string {
+  return part.replace(NOT_RFC3986, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+}
+
+/**
+ * The URL as the pane would load it (normalised: lower-case host, no default port, RFC 3986
+ * characters only), or null when it is not an https page on claude.ai or one of its subdomains.
+ * Refused as well: control characters, spaces and backslashes anywhere (URL parsers disagree on
+ * what they mean), a user name or password ("https://claude.ai@evil.com" is a page on evil.com),
+ * any other port, and a host name that is not plain letters, digits and "-" in non-empty labels:
+ * the macOS app refuses "a_b.claude.ai", "a..claude.ai" and an international name (its parser
+ * reads "xn--" labels back as Unicode), and claude.ai has none of them.
  */
 export function cloudUrl(url: string): string | null {
   if (typeof url !== "string" || CONTROL.test(url) || /[\s\\]/.test(url)) return null;
@@ -56,8 +71,12 @@ export function cloudUrl(url: string): string | null {
   if (u.protocol !== "https:" || u.username || u.password || u.port) return null;
   const host = u.hostname;
   if (host !== "claude.ai" && !(host.endsWith(".claude.ai") && host.length > ".claude.ai".length)) return null;
+  if (!host.split(".").every((label) => /^[a-z0-9-]+$/.test(label) && !label.startsWith("xn--"))) return null;
   // The parser percent-encodes what it doesn't keep; nothing outside printable ASCII is left.
-  return /^[\x21-\x7e]+$/.test(u.href) ? u.href : null;
+  if (!/^[\x21-\x7e]+$/.test(u.href)) return null;
+  const query = u.search ? `?${rfc3986(u.search.slice(1))}` : "";
+  const fragment = u.hash ? `#${rfc3986(u.hash.slice(1))}` : "";
+  return `https://${host}${rfc3986(u.pathname)}${query}${fragment}`;
 }
 
 /** Whether lu-minal may send `url` to the pane (and a host would show it). */

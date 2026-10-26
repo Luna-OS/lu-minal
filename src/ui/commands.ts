@@ -64,7 +64,7 @@ function needProject(ctx: CommandContext): Project | undefined {
 }
 
 /** Where /web shows the website when this terminal has no pane for it. */
-const WEB_PANE_WHERE ="in the lu-minal app on macOS and Windows it opens beside the terminal";
+const WEB_PANE_WHERE = "in the lu-minal app on macOS and Windows it opens beside the terminal";
 
 /**
  * /web: the claude.ai website in the web pane beside the terminal where the window has one (a bare

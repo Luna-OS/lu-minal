@@ -171,7 +171,9 @@ All three listen on loopback only (`127.0.0.1`, plus `::1` for the OAuth callbac
   sign the user in to another account, because PKCE ties the code to lu-minal's verifier.
 - In the macOS app and the Windows window app, whatever writes to the terminal itself (lu-minal,
   or Claude Code while it has the terminal for a sign-in, a teleport or a new cloud session) could
-  print the web pane's escape sequence and switch the pane to another page. The hosts and lu-minal
-  take only https pages on claude.ai from it (see
+  print the web pane's escape sequence and switch the pane to another page. What agents write
+  can't: Ink drops escape sequences from what it draws, and the window title (which carries the
+  project's folder name, and a folder may be called anything) leaves out control characters. The
+  hosts and lu-minal take only https pages on claude.ai from it (see
   [architecture.md](architecture.md#the-web-pane-beside-the-terminal)); the pane shows the user's
   own signed-in claude.ai and is never scripted or read.

@@ -1,7 +1,7 @@
 // The root component: lays out the sky, the tab bar, the agents' panels and the dialogs, and routes
 // every key. State lives in the Hub; what lives here is purely about the screen (prompts, scroll,
 // open dialogs).
-import { Box, Text, useAnimation, useApp, useInput, usePaste, useWindowSize, type Key } from "ink";
+import { Box, Text, useApp, useInput, usePaste, useWindowSize, type Key } from "ink";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { Agent } from "../core/agent.js";
 import {
@@ -27,6 +27,7 @@ import { MoonGauge } from "./components/MoonGauge.js";
 import { Sky } from "./components/Sky.js";
 import { createLaunchers } from "./dialogs/index.js";
 import { editKey, emptyEditor, insertText, type EditorState } from "./editor.js";
+import { animationClock, BUSY_FRAME_MS, IDLE_FRAME_MS, spinnerFrame, usePulse, useTicking, useUrgentInput } from "./frames.js";
 import { computeLayout, type Layout } from "./layout.js";
 import type { Row } from "./log-lines.js";
 import { addPaste, deleteChipBefore, expandPastes, isLongPaste, keepReferenced, noPastes, type Pastes } from "./paste.js";
@@ -81,10 +82,15 @@ function Screen({ onExit }: { onExit: () => void }) {
   const recent = useMemo(() => (home ? recentFolders(hub) : []), [home, hub, hub.config.recent, hub.projects.length]);
   const pick = Math.min(homePick, Math.max(0, recent.length - 1));
   const anyBusy = hub.projects.some((p) => p.agents.some((a) => a.busy));
-  const { frame } = useAnimation({ interval: 140, isActive: anyBusy });
-  // A slow tick while idle, so the header clock moves on and "Done!" turns back into "Ready".
-  useAnimation({ interval: 1000, isActive: !anyBusy && Boolean(project) });
+  // While agents work, the spinners, the sky and Axo move by the clock with the frames the agents'
+  // text draws anyway, and a pulse fills the gaps (see frames.ts). While idle, the sky and Axo tick
+  // on their own, and a slow tick moves the header clock on and turns "Done!" back into "Ready".
+  usePulse(anyBusy ? BUSY_FRAME_MS : null);
+  useTicking(!anyBusy && project ? IDLE_FRAME_MS : null);
+  useUrgentInput(hub.notifier);
   const now = Date.now();
+  const frame = spinnerFrame();
+  const clock = anyBusy ? animationClock() : undefined;
 
   // ---- UI services ---------------------------------------------------------------------------
 
@@ -457,7 +463,7 @@ function Screen({ onExit }: { onExit: () => void }) {
   return (
     <UiContext value={ui}>
       <Box width={columns} height={rows}>
-        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} enabled={hub.config.sky.enabled} moonAt={shown ? null : undefined} />
+        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} clock={clock} enabled={hub.config.sky.enabled} moonAt={shown ? null : undefined} />
         <TabBar hub={hub} rect={layout.tabBar} frame={frame} />
         {shown ? <Header hub={hub} project={shown} rect={layout.header} now={now} /> : null}
         {shown ? (
@@ -508,6 +514,7 @@ function Screen({ onExit }: { onExit: () => void }) {
               caption={leadBusy ? `${(shown.agents.find((a) => a.status === "working")?.activity ?? "Working")}…` : mood === "done" ? "Done!" : "Ready when you are."}
               captionColor={leadBusy ? c.accent2 : c.muted}
               animate={hub.config.sky.enabled}
+              clock={clock}
             />
             {layout.axo.height >= 13 ? (
               <MoonGauge label="session" window={hub.planUsage?.session ?? null} theme={theme} width={layout.axo.width - 2} bg={leadAgent.id === focused?.id ? c.surfaceFocus : c.surface} />

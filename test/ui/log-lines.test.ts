@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LogEntry } from "../../src/core/types.js";
 import type { Theme } from "../../src/themes/types.js";
-import { collapse, entryRows, logTail, moreLines, type LogRenderOptions, type Row } from "../../src/ui/log-lines.js";
+import { cachedEntryRows, collapse, entryRows, logTail, moreLines, type LogRenderOptions, type Row } from "../../src/ui/log-lines.js";
 import { width } from "../../src/ui/text.js";
 
 const colors = new Proxy({} as Record<string, unknown>, {
@@ -146,5 +146,46 @@ describe("logTail", () => {
     const rows = logTail(log, 5, opts);
     expect(rows).toHaveLength(5);
     expect(text(rows[4])).toBe("· step 49");
+  });
+});
+
+describe("cachedEntryRows", () => {
+  it("lays an unchanged entry out once, frame after frame", () => {
+    const e = entry({ kind: "text", text: "the moon is waxing tonight and every star keeps its own time" });
+    const first = cachedEntryRows(e, opts);
+    expect(cachedEntryRows(e, { ...opts, colorOf: () => "#abcdef" })).toBe(first);
+    expect(first.map(text)).toEqual(entryRows(e, opts).map(text));
+  });
+
+  it("lays it out again when the agent changed it in place, or the width, options or theme changed", () => {
+    const e = entry({ kind: "text", text: "streaming", streaming: true });
+    const a = cachedEntryRows(e, opts);
+    (e as { text: string }).text += " more words";
+    const b = cachedEntryRows(e, opts);
+    expect(b).not.toBe(a);
+    expect(text(b[0])).toContain("more words");
+    // The final text can be as long as the streamed one.
+    Object.assign(e, { text: "streaming more wordz", streaming: false });
+    expect(text(cachedEntryRows(e, opts)[0])).toContain("wordz");
+    const narrow = cachedEntryRows(e, { ...opts, width: 10 });
+    expect(narrow.length).toBeGreaterThan(1);
+    expect(cachedEntryRows(e, { ...opts, width: 10, maxTextLines: 1 })).not.toBe(narrow);
+    const wide = cachedEntryRows(e, opts);
+    expect(cachedEntryRows(e, { ...opts, theme: { ...theme } as Theme })).not.toBe(wide);
+
+    const tool = entry({ kind: "tool", toolCallId: "t", name: "Bash", verb: "run", target: "npm test", status: "running" });
+    const running = cachedEntryRows(tool, opts);
+    Object.assign(tool, { status: "ok", detail: "412 tests passed" });
+    const done = cachedEntryRows(tool, opts);
+    expect(done).not.toBe(running);
+    expect(done.map(text).join("\n")).toContain("412 tests passed");
+  });
+
+  it("follows a teammate's colour", () => {
+    const e = entry({ kind: "user", from: "vega", text: "done" });
+    const blue = cachedEntryRows(e, { ...opts, colorOf: () => "#0000ff" });
+    const red = cachedEntryRows(e, { ...opts, colorOf: () => "#ff0000" });
+    expect(red).not.toBe(blue);
+    expect(red[0].segs[0].color).toBe("#ff0000");
   });
 });

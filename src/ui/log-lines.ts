@@ -341,6 +341,43 @@ export function entryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
   }
 }
 
+interface CachedRows {
+  /** A shallow copy of the entry as it was laid out (agents change entries in place). */
+  fields: Record<string, unknown>;
+  key: string;
+  theme: Theme;
+  rows: Row[];
+}
+
+/** The rows each entry was last laid out to; an entry that is gone takes its rows with it. */
+const laidOut = new WeakMap<LogEntry, CachedRows>();
+
+function sameFields(was: Record<string, unknown>, entry: LogEntry): boolean {
+  const now = entry as unknown as Record<string, unknown>;
+  let n = 0;
+  for (const k in now) {
+    if (now[k] !== was[k]) return false;
+    n++;
+  }
+  return n === Object.keys(was).length;
+}
+
+/**
+ * entryRows, remembered per entry: a panel draws the same entries frame after frame and only the
+ * newest one changes while an agent streams, so the others aren't wrapped again each frame. An entry
+ * is laid out again when any of its fields, the width, the options, the theme or the colour of a
+ * teammate it names changed.
+ */
+export function cachedEntryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
+  const named = entry.kind === "user" && entry.from !== "you" ? entry.from : entry.kind === "message" ? entry.to : null;
+  const key = `${opts.width}|${opts.maxDiffLines}|${opts.maxTextLines}|${opts.fullReasoning ? 1 : 0}|${named === null ? "" : opts.colorOf(named)}`;
+  const hit = laidOut.get(entry);
+  if (hit && hit.key === key && hit.theme === opts.theme && sameFields(hit.fields, entry)) return hit.rows;
+  const rows = entryRows(entry, opts);
+  laidOut.set(entry, { fields: { ...entry }, key, theme: opts.theme, rows });
+  return rows;
+}
+
 /**
  * The last rows of the log: walks back from the newest entry until `needed` rows are collected, so
  * long logs cost only what is visible.
@@ -349,7 +386,7 @@ export function logTail(log: LogEntry[], needed: number, opts: LogRenderOptions)
   const chunks: Row[][] = [];
   let count = 0;
   for (let i = log.length - 1; i >= 0 && count < needed; i--) {
-    const rows = entryRows(log[i], opts);
+    const rows = cachedEntryRows(log[i], opts);
     chunks.push(rows);
     count += rows.length;
   }

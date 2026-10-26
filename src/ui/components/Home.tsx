@@ -16,6 +16,7 @@ import type { ThemeColors } from "../../themes/types.js";
 import { VERSION } from "../../version.js";
 import { AXO_COLUMNS } from "../axo/render.js";
 import { formatAgo } from "../format.js";
+import { animationClock } from "../frames.js";
 import type { Rect } from "../layout.js";
 import type { Seg } from "../log-lines.js";
 import { truncate, truncateStart, width as textWidth } from "../text.js";
@@ -437,7 +438,7 @@ export function Home({ hub, area, recent, pick, models, now }: HomeProps) {
           {col.axo ? (
             <Box width={col.w} justifyContent="center">
               <Box width={AXO_COLUMNS}>
-                <Axo mood={busy ? "work" : hub.ready ? "idle" : "sleep"} bg={c.bg} caption={caption} captionColor={busy ? c.accent2 : c.muted} animate={hub.config.sky.enabled} />
+                <Axo mood={busy ? "work" : hub.ready ? "idle" : "sleep"} bg={c.bg} caption={caption} captionColor={busy ? c.accent2 : c.muted} animate={hub.config.sky.enabled} clock={busy ? animationClock() : undefined} />
               </Box>
             </Box>
           ) : null}

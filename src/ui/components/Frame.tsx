@@ -49,6 +49,8 @@ export function Frame({ rect, title, right = [], borderColor, bg, padding = 1, c
   const used = 2 + segsWidth(titleSegs) + (rightSegs.length ? segsWidth(rightSegs) + 2 : 0);
   const fill = Math.max(0, w - used - 2);
   const side = Array.from({ length: Math.max(0, h - 2) }, () => "│").join("\n");
+  // The inside clips rows only (overflowY): the rows are cut to the width already (wrap="truncate"),
+  // and a sideways clip makes Ink cut every row again in every frame.
   return (
     <Box position="absolute" left={rect.x} top={rect.y} width={w} height={h} flexDirection="column">
       <Text wrap="truncate">
@@ -73,7 +75,7 @@ export function Frame({ rect, title, right = [], borderColor, bg, padding = 1, c
             {side}
           </Text>
         </Box>
-        <Box width={w - 2} height={h - 2} paddingX={padding} flexDirection="column" overflow="hidden">
+        <Box width={w - 2} height={h - 2} paddingX={padding} flexDirection="column" overflowY="hidden">
           {children}
         </Box>
         <Box width={1} height={h - 2}>

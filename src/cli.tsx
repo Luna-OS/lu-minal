@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // lu-minal's entry point: the terminal UI, plus a few sub-commands that work without it
 // (models, providers, login, roblox, themes, setup).
+// First, before React loads: its production build (see production.ts). No JSX in this file: the
+// compiler puts the JSX runtime's import (React) above every other import.
+import { restoreNodeEnv } from "./production.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,7 +30,11 @@ import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
 import { bridgeToken } from "./roblox/token.js";
 import { startThemes, ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
+import { RENDER_OPTIONS } from "./ui/render-options.js";
 import { VERSION } from "./version.js";
+
+// React has loaded: the programs lu-minal starts get the environment as it was.
+restoreNodeEnv();
 
 // `lu-minal models | head` closes the pipe early: end quietly instead of crashing with EPIPE
 // (Node throws an unhandled 'error' event; the Bun binaries print a stack trace and exit 1).
@@ -336,13 +343,7 @@ async function main(): Promise<void> {
     // Let Ink restore the screen first.
     setTimeout(() => process.exit(0), 50);
   };
-  const instance = render(<App hub={hub} onExit={done} />, {
-    alternateScreen: true,
-    incrementalRendering: true,
-    exitOnCtrlC: false,
-    maxFps: 30,
-    kittyKeyboard: { mode: "auto", flags: ["disambiguateEscapeCodes"] },
-  });
+  const instance = render(React.createElement(App, { hub, onExit: done }), RENDER_OPTIONS);
   for (const signal of ["SIGTERM", "SIGHUP"] as const) {
     process.on(signal, () => {
       void hub.dispose().finally(() => {

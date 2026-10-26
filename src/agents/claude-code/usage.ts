@@ -233,3 +233,27 @@ export function writeSavedUsage(file: string, saved: SavedUsage): void {
     // shown again after the next report
   }
 }
+
+/** A plan window that was reset before its time: which one, and how full it was. */
+export interface EarlyReset {
+  window: "session" | "week";
+  was: number;
+}
+
+/**
+ * The windows a new report shows as reset before their time ("free resets"): the utilization fell
+ * by 10 points or more, from at least 15 %, while the last known reset was still more than 10
+ * minutes away. Claude's limits only go down on their own at the reset, so anything earlier is a
+ * reset Anthropic gave (after an outage, as a promotion).
+ */
+export function detectEarlyResets(prev: PlanUsage | null, next: PlanUsage, now: number = Date.now()): EarlyReset[] {
+  if (!prev?.available || !next.available) return [];
+  const out: EarlyReset[] = [];
+  for (const window of ["session", "week"] as const) {
+    const before = prev[window];
+    const after = next[window];
+    if (!before || !after || before.resetsAt == null || before.resetsAt - now <= 10 * 60_000) continue;
+    if (before.utilization >= 0.15 && after.utilization <= before.utilization - 0.1) out.push({ window, was: before.utilization });
+  }
+  return out;
+}

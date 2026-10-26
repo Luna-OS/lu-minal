@@ -130,10 +130,14 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
    Terminal (1.24 or newer) and most Linux terminals, **cmd+v** in the macOS app, **ctrl+v** in Terminal.app and
    iTerm2, **alt+v** anywhere, or `/paste` – drop files on the terminal, or use `/attach`. They show
    as chips above the prompt; backspace on an empty prompt removes the last one.
+   A long pasted text (more than 5 lines or 1000 characters) shows as `[Pasted text #1 +87 lines]`
+   in the prompt, goes out in full when you send, and backspace deletes it in one go.
 
 **Permission modes** (shift+tab): *edits on* (the default – edits run, commands ask), *ask first*,
 *do everything*, *plan only* (read-only). Reading credential stores, writing into `.git` or agent
-settings, and fetching local addresses always ask, even with edits on.
+settings, and fetching local addresses always ask, even with edits on. `/yolo` (or `/allow-all`)
+puts every agent in every tab on *do everything*, allows the questions still open and keeps it the
+default for new tabs and the next start; `/yolo off` goes back to *edits on*.
 
 **Trust:** a repository you clone starts untrusted – Claude Code agents there don't load its own
 `.claude` settings, CLAUDE.md or `.mcp.json` servers until you say so (lu-minal asks after the
@@ -152,6 +156,7 @@ and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-
 | shift+tab | permission mode |
 | ctrl+t, ctrl+w | new tab, close tab |
 | alt+1…9, alt+← → | switch tabs (also ctrl+pageup / pagedown) |
+| alt+0 (`/home`) | home: recent folders, Claude's news (✦ model launches, ★ offers and free resets of your limits), new models, Claude Code news, Anthropic status (esc goes back) |
 | ctrl+n | add an agent |
 | ctrl+o | change the focused agent's model |
 | ctrl+l | sign in |

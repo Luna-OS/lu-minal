@@ -60,6 +60,13 @@ function needProject(ctx: CommandContext): Project | undefined {
 
 export const COMMANDS: Command[] = [
   { name: "help", aliases: ["?", "keys"], description: "Keys and commands", keys: "?", run: (ctx) => ctx.dialogs.help() },
+  {
+    name: "home",
+    aliases: ["start", "news"],
+    description: "The start screen: recent folders, new models, Claude Code news, Anthropic status",
+    keys: "alt+0",
+    run: (ctx) => ctx.hub.openHome(),
+  },
   { name: "tab", aliases: ["open", "new-tab"], description: "Open a project in a new tab (folder, GitHub, Forgejo)", keys: "ctrl+t", run: (ctx) => ctx.dialogs.newTab() },
   {
     name: "close",
@@ -171,6 +178,17 @@ export const COMMANDS: Command[] = [
       const mode = PERMISSION_MODES.includes(wanted) ? wanted : nextPermissionMode(p.permissionMode);
       p.setPermissionMode(mode);
       ctx.hub.toast(`${mode}: ${PERMISSION_HINTS[mode]}`, mode === "yolo" ? "warning" : "info");
+    },
+  },
+  {
+    name: "yolo",
+    aliases: ["allow-all", "autoapprove"],
+    args: "[on|off]",
+    description: "Let every agent in every tab run everything without asking, new tabs too (off: back to edits on)",
+    run: (ctx, args) => {
+      const a = args.trim().toLowerCase();
+      const on = a === "on" || a === "yes" ? true : a === "off" || a === "no" ? false : !ctx.hub.allowingEverything;
+      ctx.hub.allowEverything(on);
     },
   },
   { name: "zoom", aliases: ["full"], description: "Show the focused agent full screen", keys: "ctrl+f", run: (ctx) => ctx.toggleZoom() },

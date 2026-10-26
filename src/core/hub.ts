@@ -11,7 +11,7 @@ import { readClaudeAccount } from "../agents/claude-code/account.js";
 import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
 import { claudeInstallCommand, claudeLoginArgs, claudeLogoutArgs } from "../agents/claude-code/login.js";
-import { applyRateLimit, fetchPlanUsage, mergeUsage, readSavedUsage, writeSavedUsage } from "../agents/claude-code/usage.js";
+import { applyRateLimit, detectEarlyResets, fetchPlanUsage, mergeUsage, readSavedUsage, writeSavedUsage, type EarlyReset } from "../agents/claude-code/usage.js";
 import { NativeDriver } from "../agents/native/driver.js";
 import { systemPrompt } from "../agents/prompts.js";
 import {
@@ -48,6 +48,7 @@ import { Agent, type SavedAgentState } from "./agent.js";
 import { attachmentsDir, pruneAttachments } from "./attachments.js";
 import { distrusted, rememberRecent, rememberTrust, saveConfig, type Config } from "./config.js";
 import { newId, Notifier } from "./emitter.js";
+import { loadNews, newsStale, NEWS_MAX_AGE_MS, type News } from "./news.js";
 import { Project, type ProjectRuntime } from "./project.js";
 import { StatsStore } from "./stats.js";
 import type { ClaudeAccount, PermissionMode, PlanUsage, ProviderBalance, TaskItem, TeamMessage } from "./types.js";
@@ -150,6 +151,13 @@ export class Hub implements ProjectRuntime {
   updateInstalled: string | null = null;
   catalogSource: Catalog["source"] | null = null;
   ready = false;
+  /**
+   * The home screen (start screen and news) is up over the tabs; switching to a tab clears it.
+   * Without tabs home is all there is (see homeShown).
+   */
+  showHome = false;
+  /** Claude Code's newest version and changelog and Anthropic's status, for the home screen. */
+  news: News | null = null;
 
   private readonly opts: HubOptions;
   private timers: NodeJS.Timeout[] = [];
@@ -159,7 +167,10 @@ export class Hub implements ProjectRuntime {
   private lastUsageRefresh = 0;
   /** The account the numbers on disk belong to. */
   private savedUsageEmail: string | null = null;
+  /** Limits Anthropic reset early ("free resets") this run, newest first, for the home screen. */
+  planEvents: Array<{ at: number; text: string }> = [];
   private saveTimer: NodeJS.Timeout | null = null;
+  private newsInFlight: Promise<void> | null = null;
   private disposed = false;
 
   constructor(opts: HubOptions) {
@@ -267,10 +278,15 @@ export class Hub implements ProjectRuntime {
     };
     void this.refreshUsage();
     void this.refreshBalances();
+    void this.refreshNews();
     const usageSeconds = this.config.usagePollSeconds;
     if (usageSeconds > 0) every(Math.max(30, usageSeconds) * 1000, () => void this.refreshUsage());
     every(5 * 60_000, () => void this.refreshBalances());
     every(10 * 60_000, () => void this.refreshClaude());
+    // Fresh news for a home screen that stays up.
+    every(NEWS_MAX_AGE_MS, () => {
+      if (this.homeShown) void this.refreshNews();
+    });
     if (this.opts.checkUpdates) {
       void this.checkForUpdates();
       every(6 * 60 * 60_000, () => void this.checkForUpdates());
@@ -337,6 +353,7 @@ export class Hub implements ProjectRuntime {
     );
     this.projects.push(project);
     this.activeIndex = this.projects.length - 1;
+    this.showHome = false;
     rememberRecent(this.config, cwd);
     rememberTrust(this.config, cwd, project.trusted);
     this.persistConfig();
@@ -357,6 +374,7 @@ export class Hub implements ProjectRuntime {
     if (i < 0) return;
     this.projects.splice(i, 1);
     if (this.activeIndex >= this.projects.length) this.activeIndex = Math.max(0, this.projects.length - 1);
+    if (!this.projects.length) this.showHome = false;
     this.notifier.changed();
     await project.dispose();
     this.scheduleSave();
@@ -365,12 +383,104 @@ export class Hub implements ProjectRuntime {
   switchTo(index: number): void {
     if (index < 0 || index >= this.projects.length) return;
     this.activeIndex = index;
+    this.showHome = false;
     this.notifier.changed();
   }
 
   cycleTab(step: number): void {
     if (!this.projects.length) return;
+    // Home sits before the first tab, as in the tab bar: alt+→ goes to tab 1, alt+← to the last.
+    if (this.showHome) return this.switchTo(step > 0 ? 0 : this.projects.length - 1);
     this.switchTo((this.activeIndex + step + this.projects.length) % this.projects.length);
+  }
+
+  // ---- permissions -----------------------------------------------------------------------------
+
+  /** Whether every tab and every agent in it runs everything without asking, new ones too (/yolo). */
+  get allowingEverything(): boolean {
+    return (
+      this.config.permissionMode === "yolo" &&
+      this.projects.every((p) => p.permissionMode === "yolo" && p.agents.every((a) => a.permissionMode === "yolo"))
+    );
+  }
+
+  /**
+   * Puts every open tab and its agents into `mode` and makes it the default for the tabs opened
+   * later (saved with the settings). Claude Code and ACP agents switch at their next message; until
+   * then their questions are decided by the new mode like everyone else's.
+   */
+  setAllPermissionModes(mode: PermissionMode): void {
+    for (const project of this.projects) project.setPermissionMode(mode);
+    if (this.config.permissionMode !== mode) {
+      this.config.permissionMode = mode;
+      this.persistConfig();
+    }
+    this.notifier.changed();
+  }
+
+  /**
+   * /yolo: every agent in every tab runs everything without asking, the questions still open are
+   * allowed, and tabs and agents added later start the same way (`on`); or every tab goes back to
+   * "edits on" (`off`). Returns how many open questions it allowed.
+   */
+  allowEverything(on: boolean): number {
+    this.setAllPermissionModes(on ? "yolo" : "auto-edit");
+    if (!on) {
+      this.toast("Every tab is back to edits on - commands ask first again.", "info");
+      return 0;
+    }
+    let allowed = 0;
+    for (const project of this.projects) {
+      for (const agent of project.agents) {
+        while (agent.pendingApproval) {
+          agent.answerApproval("allow");
+          allowed++;
+        }
+      }
+    }
+    this.toast("Every agent in every tab now runs everything without asking - /yolo off to stop.", "warning");
+    return allowed;
+  }
+
+  // ---- home ------------------------------------------------------------------------------------
+
+  /** Whether the home screen is up: asked for (/home, alt+0), or no tab is open. */
+  get homeShown(): boolean {
+    return this.showHome || !this.activeProject;
+  }
+
+  /** Shows the home screen over the tabs, with news an hour old at most. */
+  openHome(): void {
+    this.showHome = true;
+    this.notifier.changed();
+    if (newsStale(this.news, Date.now())) void this.refreshNews();
+  }
+
+  /** Back to the tab that was open (home stays when there is none). */
+  closeHome(): void {
+    if (!this.showHome || !this.activeProject) return;
+    this.showHome = false;
+    this.notifier.changed();
+  }
+
+  /** Whether lu-minal runs without downloads (--offline): no news then. */
+  get offline(): boolean {
+    return Boolean(this.opts.offline);
+  }
+
+  /** Loads the home screen's news in the background (never offline; one load at a time). */
+  refreshNews(force = false): Promise<void> {
+    if (this.opts.offline || this.disposed) return Promise.resolve();
+    this.newsInFlight ??= loadNews({ cacheDir: this.opts.cacheDir, fetchImpl: this.opts.fetchImpl, force })
+      .then((news) => {
+        this.news = news;
+        this.notifier.changed();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.newsInFlight = null;
+      });
+    return this.newsInFlight;
   }
 
   // ---- ProjectRuntime --------------------------------------------------------------------------
@@ -393,7 +503,9 @@ export class Hub implements ProjectRuntime {
         env: this.claudeEnv(),
         systemPrompt: () => this.promptFor(project, agent, "claude-code"),
         onRateLimit: (ev) => {
-          this.planUsage = applyRateLimit(this.planUsage, ev);
+          const next = applyRateLimit(this.planUsage, ev);
+          this.noteEarlyResets(detectEarlyResets(this.planUsage, next));
+          this.planUsage = next;
           this.notifier.changed();
           this.scheduleUsageRefresh();
         },
@@ -651,6 +763,7 @@ export class Hub implements ProjectRuntime {
       const usage = await fetchPlanUsage(account.exe);
       if (usage) {
         // A window the report leaves out keeps its last numbers (from a report or a running agent).
+        this.noteEarlyResets(detectEarlyResets(this.planUsage, usage));
         this.planUsage = mergeUsage(this.planUsage, usage);
         this.usageError = null;
         this.saveUsage();
@@ -675,6 +788,16 @@ export class Hub implements ProjectRuntime {
       void this.refreshUsage();
     }, wait);
     this.usageRefreshTimer.unref();
+  }
+
+  /** Says so when a limit went back to nothing before its time: a reset Anthropic gave. */
+  private noteEarlyResets(resets: EarlyReset[]): void {
+    for (const r of resets) {
+      const limit = r.window === "week" ? "weekly" : "5-hour";
+      const was = Math.round(r.was * 100);
+      this.planEvents = [{ at: Date.now(), text: `Free reset: ${limit} (was ${was} %)` }, ...this.planEvents].slice(0, 3);
+      this.toast(`Free reset: Anthropic reset your ${limit} limit early (it was at ${was} %).`, "success");
+    }
   }
 
   private usageFile(): string {
@@ -989,8 +1112,10 @@ export class Hub implements ProjectRuntime {
     for (const p of saved.projects) {
       if (!p.cwd || !fs.existsSync(p.cwd) || this.projects.some((x) => samePath(x.cwd, p.cwd))) continue;
       const trusted = p.trusted ?? (distrusted(this.config, p.cwd) ? false : undefined);
+      // While /yolo is on, the tabs that come back run everything too.
+      const permissionMode = this.config.permissionMode === "yolo" ? "yolo" : p.permissionMode;
       const project = new Project(
-        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode: p.permissionMode, trusted },
+        { cwd: p.cwd, name: p.name, origin: p.origin, permissionMode, trusted },
         this.notifier,
         this,
       );
@@ -1031,6 +1156,7 @@ export class Hub implements ProjectRuntime {
     }
     if (restored) {
       this.activeIndex = Math.min(Math.max(0, saved.active ?? 0), this.projects.length - 1);
+      this.showHome = false;
       this.persistConfig();
       this.notifier.changed();
     }

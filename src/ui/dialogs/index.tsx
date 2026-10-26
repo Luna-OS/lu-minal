@@ -250,6 +250,7 @@ export function createLaunchers(
         ["/ in the prompt", "slash commands (tab completes)"],
         ["ctrl+t / ctrl+w", "new tab / close tab (empty prompt)"],
         ["alt+1..9, alt+← →", "switch tabs (also ctrl+pageup / pagedown)"],
+        ["alt+0", "home: recent folders and news (esc goes back)"],
         ["ctrl+n", "add an agent (any provider)"],
         ["ctrl+o", "switch the focused agent's model"],
         ["ctrl+l", "sign in (Claude, OpenRouter, keys, GitHub, Forgejo)"],

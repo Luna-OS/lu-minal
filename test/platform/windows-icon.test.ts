@@ -1,5 +1,5 @@
 // The Windows icon (installer, lu-minal.exe, shortcuts): drawn from linux/lu-minal.svg's shapes
-// and packed as an .ico Windows reads (BMP entries, a PNG for 256 px).
+// and gradients and packed as an .ico Windows reads (BMP entries, a PNG for 256 px).
 import zlib from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { buildIco, encodePng, ICON_SIZES, renderIcon } from "../../scripts/windows-icon.js";
@@ -12,24 +12,74 @@ function pixel(rgba: Uint8Array, size: number, x: number, y: number): number[] {
   return [...rgba.subarray(i, i + 4)];
 }
 
+const MINT = [0x7f, 0xe3, 0xc6, 255];
+
 describe("the Windows icon", () => {
-  it("draws the night-sky tile with the moon, a star and the mint prompt", () => {
+  it("draws the night-sky tile: transparent around it, violet at the top-left, night-950 at the bottom-right", () => {
     const icon = renderIcon(256);
-    // Outside the rounded tile: transparent.
-    expect(pixel(icon, 256, 2, 2)[3]).toBe(0);
-    expect(pixel(icon, 256, 12, 12)[3]).toBe(0);
-    // The sky, dark violet and opaque, lighter at the top than at the bottom.
-    const top = pixel(icon, 256, 128, 20);
-    const bottom = pixel(icon, 256, 128, 236);
-    expect(top[3]).toBe(255);
-    expect(top[2]).toBeGreaterThan(bottom[2]);
-    // The crescent's lit part, and its dark inside where the second circle cuts it.
-    expect(pixel(icon, 256, 100, 120)).toEqual([0xf4, 0xf1, 0xff, 255]);
-    expect(pixel(icon, 256, 175, 80).slice(0, 3)).not.toEqual([0xf4, 0xf1, 0xff]);
-    // The gold star and the prompt's chevron and cursor bar.
-    expect(pixel(icon, 256, 196, 150)).toEqual([0xe0, 0xc8, 0x80, 255]);
-    expect(pixel(icon, 256, 84, 192)).toEqual([0x7f, 0xe3, 0xc6, 255]);
-    expect(pixel(icon, 256, 124, 206)).toEqual([0x7f, 0xe3, 0xc6, 255]);
+    for (const [x, y] of [[2, 2], [12, 12], [250, 250], [252, 4]]) expect(pixel(icon, 256, x, y)[3], `${x},${y}`).toBe(0);
+    const topLeft = pixel(icon, 256, 40, 40);
+    const bottomRight = pixel(icon, 256, 230, 230);
+    expect(topLeft[3]).toBe(255);
+    expect(bottomRight[3]).toBe(255);
+    // Violet: more blue than red, more red than green; much brighter than the far corner.
+    expect(topLeft[2]).toBeGreaterThan(topLeft[0]);
+    expect(topLeft[0]).toBeGreaterThan(topLeft[1]);
+    for (let c = 0; c < 3; c++) expect(topLeft[c]).toBeGreaterThan(bottomRight[c] + 20);
+    expect(bottomRight[2]).toBeLessThan(0x30);
+    // The faint highlight along the top edge.
+    expect(pixel(icon, 256, 128, 9)[0]).toBeGreaterThan(pixel(icon, 256, 128, 14)[0] + 20);
+  });
+
+  it("draws a bright crescent in a lavender halo", () => {
+    const icon = renderIcon(256);
+    // The lit part, near white; the shade's side stays sky.
+    for (const c of pixel(icon, 256, 100, 120)) expect(c).toBeGreaterThanOrEqual(245);
+    for (const c of pixel(icon, 256, 175, 80).slice(0, 3)) expect(c).toBeLessThan(100);
+    // Just outside the crescent the halo lights the sky up.
+    const halo = pixel(icon, 256, 74, 100);
+    const sky = pixel(icon, 256, 30, 100);
+    expect(halo[2]).toBeGreaterThan(sky[2] + 15);
+    expect(halo[0]).toBeGreaterThan(sky[0] + 15);
+  });
+
+  it("draws the gold sparkle, the lavender stars and the glowing mint prompt", () => {
+    const icon = renderIcon(256);
+    // The sparkle: white-hot at the centre, gold along the arms.
+    const centre = pixel(icon, 256, 196, 64);
+    expect(centre[0]).toBeGreaterThanOrEqual(250);
+    expect(centre[2]).toBeGreaterThanOrEqual(220);
+    for (const [x, y] of [[196, 46], [214, 64]]) {
+      const [r, g, b] = pixel(icon, 256, x, y);
+      expect(r).toBeGreaterThan(220);
+      expect(r - b).toBeGreaterThan(60);
+      expect(g).toBeGreaterThan(b);
+      expect(g).toBeLessThan(r);
+    }
+    // Between the arms it is sky again.
+    expect(pixel(icon, 256, 212, 48)[0]).toBeLessThan(150);
+    // A lavender-400 star.
+    expect(pixel(icon, 256, 54, 62)).toEqual([0xb9, 0xae, 0xfb, 255]);
+    // The prompt's chevron and cursor bar, and its faint mint glow (green over the violet sky).
+    expect(pixel(icon, 256, 84, 188)).toEqual(MINT);
+    expect(pixel(icon, 256, 124, 210)).toEqual(MINT);
+    const glow = pixel(icon, 256, 130, 222);
+    expect(glow[1]).toBeGreaterThan(glow[0]);
+  });
+
+  it("stays legible from 16 to 48 px", () => {
+    for (const size of [16, 24, 32, 48]) {
+      const icon = renderIcon(size);
+      expect(pixel(icon, size, 0, 0)[3], `corner at ${size} px`).toBe(0);
+      expect(pixel(icon, size, 128, 128)[3], `tile at ${size} px`).toBe(255);
+      for (const c of pixel(icon, size, 100, 120)) expect(c, `moon at ${size} px`).toBeGreaterThanOrEqual(240);
+      expect(pixel(icon, size, 84, 188), `prompt at ${size} px`).toEqual(MINT);
+      const [r, , b] = pixel(icon, size, 196, 64);
+      expect(r, `sparkle at ${size} px`).toBeGreaterThan(200);
+      expect(r - b, `sparkle at ${size} px`).toBeGreaterThan(40);
+    }
+    // Below 32 px the little stars are left out: they would only be noise.
+    expect(pixel(renderIcon(16), 16, 54, 62)[2]).toBeLessThan(0xb0);
   });
 
   it("packs every size as an .ico with BMP entries and a PNG for 256 px", () => {

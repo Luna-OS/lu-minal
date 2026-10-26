@@ -9,7 +9,8 @@ repositories, tool output and teammates' messages. This page lists what lu-minal
 
 Permissions are enforced in code, never by the model. The permission mode (`ask`, `auto-edit`,
 `yolo`, `plan`) and the user's "always" answers are the only things that let an action run without
-a question. No tool, message or file can change them.
+a question. No tool, message or file can change them: only the user does (shift+tab or `/perm` for
+one tab, `/yolo` for every tab at once, which also saves yolo as the default until `/yolo off`).
 
 | Action | ask | auto-edit (default) | plan | yolo |
 | --- | --- | --- | --- | --- |

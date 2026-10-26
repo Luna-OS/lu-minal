@@ -56,6 +56,8 @@ pub enum UserEvent {
     PaneNotice(String),
     PaneLoad(String),
     PaneUrl(String),
+    /// A page in the pane closed it (`window.close()`).
+    PaneClosed,
     Link(LinkTarget),
     Dropped(Vec<PathBuf>),
     SmokeTimeout,
@@ -88,6 +90,9 @@ struct App {
     context: WebContext,
     terminal: WebView,
     pane_view: Option<WebView>,
+    /// Pane web views a page closed. Kept, not dropped, while the window runs: dropping a wry
+    /// (0.57) child web view also unhooks the terminal's web view from the window's resizing.
+    closed_panes: Vec<WebView>,
     pane: Pane,
     /// Where the pane's web view is (logical pixels).
     pane_rect: Rect,
@@ -492,8 +497,9 @@ impl App {
             Err(reason) => (format!("smoke failed: {reason}"), 1),
         };
         win::smoke_output(out.as_deref(), &line);
-        self.smoke = None;
+        // Still a smoke run while quitting: it leaves the user's window.json alone.
         self.quit(code);
+        self.smoke = None;
     }
 
     fn on_user(&mut self, event: UserEvent) {
@@ -515,6 +521,21 @@ impl App {
             UserEvent::PaneUrl(url) => {
                 let back = self.pane_view.as_ref().is_some_and(web::can_go_back);
                 self.call("paneUrl", &[json!(urls::display_url(&url)), json!(back)]);
+            }
+            UserEvent::PaneClosed => {
+                let Some(view) = self.pane_view.take() else { return };
+                let _ = view.set_visible(false);
+                self.closed_panes.push(view);
+                let was_open = self.pane.open;
+                // Not created any more: the next show makes a new web view on claude.ai/code.
+                self.pane = Pane::new();
+                self.pane_focused = false;
+                if was_open {
+                    self.settings.pane_open = false;
+                    self.call("setPane", &[json!(false), json!(self.settings.pane_width)]);
+                    let _ = self.terminal.focus();
+                    self.save_settings();
+                }
             }
             UserEvent::Link(target) => self.on_link(target),
             UserEvent::Dropped(paths) => {
@@ -560,6 +581,11 @@ fn no_webview2(program: &Path, cwd: &Path) -> i32 {
         let mut cmd = std::process::Command::new(program);
         cmd.current_dir(cwd).creation_flags(CREATE_NEW_CONSOLE);
         for key in env::REMOVED_ENV {
+            cmd.env_remove(key);
+        }
+        // A console has no web pane: nothing of the window's contract may come along (when this
+        // window was started from inside another lu-minal window).
+        for (key, _) in env::child_env(VERSION) {
             cmd.env_remove(key);
         }
         if let Err(error) = cmd.spawn() {
@@ -689,6 +715,7 @@ pub fn main() -> i32 {
         context,
         terminal,
         pane_view: None,
+        closed_panes: Vec::new(),
         pane: Pane::new(),
         pane_rect: Rect::new(0.0, layout::HEADER_HEIGHT, 0.0, 0.0),
         dragging: false,

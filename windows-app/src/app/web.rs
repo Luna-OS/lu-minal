@@ -14,6 +14,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
 };
 use webview2_com::{
     take_pwstr, AcceleratorKeyPressedEventHandler, FocusChangedEventHandler, HistoryChangedEventHandler, SourceChangedEventHandler,
+    WindowCloseRequestedEventHandler,
 };
 use windows::core::PWSTR;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
@@ -174,7 +175,22 @@ pub fn build_pane(
         .build_as_child(window)?;
     hook_keys(&webview, View::Pane, proxy.clone());
     watch_address(&webview, load_proxy);
+    watch_close(&webview, proxy.clone());
     Ok(webview)
+}
+
+/// A page in the pane called `window.close()`: wry then destroys the pane's container window
+/// (its own handler, which can't be taken off). The window forgets that web view and makes a new
+/// one the next time the pane opens, instead of showing an empty frame until it restarts.
+fn watch_close(webview: &WebView, proxy: EventLoopProxy<UserEvent>) {
+    let closed = WindowCloseRequestedEventHandler::create(Box::new(move |_, _| {
+        send(&proxy, UserEvent::PaneClosed);
+        Ok(())
+    }));
+    let mut token = 0i64;
+    unsafe {
+        let _ = webview.webview().add_WindowCloseRequested(&closed, &mut token);
+    }
 }
 
 /// The pane's address for its header, also when the page changes it without loading (claude.ai

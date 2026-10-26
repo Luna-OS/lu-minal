@@ -22,7 +22,7 @@ touches its cookies or storage.
 | right click | copy the selection, or paste |
 | **Shift**+drag | select text while lu-minal uses the mouse (wheel scrolling) |
 | **Ctrl+=** / **Ctrl+-** / **Ctrl+0** | bigger / smaller / default font size in the terminal (in the pane they zoom the page) |
-| **Ctrl**+click | open a link printed in the terminal: claude.ai links in the pane, others in your browser |
+| **Ctrl**+click | open a hyperlink a program prints in the terminal (OSC 8): claude.ai links in the pane, others in your browser. Plain text URLs are not links here: copy them |
 
 Drag the divider between the terminal and the pane to change the pane's width. The pane's header
 has back, reload, **open in browser** (the current page in your default browser) and close.

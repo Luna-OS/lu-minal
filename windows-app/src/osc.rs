@@ -2,7 +2,9 @@
 //! (or ST, `ESC \`, as the terminator). The filter takes these sequences out of the PTY output
 //! before xterm.js sees it and hands their commands to the host; every other byte, other OSC
 //! sequences included, goes through untouched and in order. A sequence may be split across reads
-//! at any offset. One whose payload is longer than [`MAX_PAYLOAD`] bytes is swallowed and dropped.
+//! at any offset. One longer than [`MAX_SEQUENCE`] bytes (from its ESC to the end of its
+//! terminator, as the macOS app and lu-minal count) is swallowed and dropped. Other C0 controls
+//! inside a sequence are ignored, as terminals do inside an OSC.
 //!
 //! Commands: `open;<url>` (the URL must pass [`crate::urls::pane_url`]), `show`, `hide`,
 //! `toggle`. Unknown commands, payloads that are not UTF-8 and refused URLs are ignored. Any
@@ -10,8 +12,9 @@
 
 use crate::urls;
 
-/// The longest payload (the bytes between `7701;` and the terminator) that is still read.
-pub const MAX_PAYLOAD: usize = 4096;
+/// The longest sequence, from its ESC to the end of its terminator (BEL, or both bytes of ST),
+/// that is still carried out.
+pub const MAX_SEQUENCE: usize = 4096;
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;
@@ -21,6 +24,8 @@ const SUB: u8 = 0x1a;
 
 /// What the introducer looks like up to its number: `ESC ] 7 7 0 1`.
 const INTRODUCER: &[u8] = b"\x1b]7701";
+/// The introducer and the byte after it (`;`, or a terminator's first byte).
+const HEAD: usize = INTRODUCER.len() + 1;
 
 /// A command for the cloud pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +75,8 @@ enum State {
 pub struct OscFilter {
     state: State,
     payload: Vec<u8>,
+    /// Bytes of the current sequence so far, from its ESC on.
+    length: usize,
 }
 
 impl Default for OscFilter {
@@ -80,7 +87,7 @@ impl Default for OscFilter {
 
 impl OscFilter {
     pub fn new() -> Self {
-        Self { state: State::Ground, payload: Vec::new() }
+        Self { state: State::Ground, payload: Vec::new(), length: 0 }
     }
 
     /// Filters one chunk: appends what the terminal should see to `out` and the complete
@@ -121,17 +128,17 @@ impl OscFilter {
                         // anything else (`ESC ] 77011;...`) is another OSC.
                         match b {
                             b';' => {
-                                self.payload.clear();
+                                self.begin();
                                 self.state = State::Payload;
                                 i += 1;
                             }
                             BEL => {
-                                self.payload.clear();
+                                self.begin();
                                 self.state = State::Ground;
                                 i += 1;
                             }
                             ESC => {
-                                self.payload.clear();
+                                self.begin();
                                 self.state = State::PayloadEsc;
                                 i += 1;
                             }
@@ -147,25 +154,35 @@ impl OscFilter {
                     let rest = &input[i..];
                     let stop = rest.iter().position(|&c| matches!(c, BEL | ESC | CAN | SUB));
                     let take = stop.unwrap_or(rest.len());
-                    if self.payload.len() + take > MAX_PAYLOAD {
+                    // Too long even if a BEL (the shortest terminator) came next: swallowed.
+                    if self.length + take + 1 > MAX_SEQUENCE {
                         self.payload.clear();
                         self.state = State::Discard;
                         continue;
                     }
-                    self.payload.extend_from_slice(&rest[..take]);
+                    self.length += take;
+                    // Other C0 controls count, but are not part of the payload.
+                    self.payload.extend(rest[..take].iter().copied().filter(|&c| c >= 0x20));
                     i += take;
                     let Some(_) = stop else { continue };
                     let end = input[i];
                     i += 1;
                     match end {
-                        BEL => self.finish(commands),
-                        ESC => self.state = State::PayloadEsc,
+                        BEL => {
+                            self.length += 1;
+                            self.finish(commands);
+                        }
+                        ESC => {
+                            self.length += 1;
+                            self.state = State::PayloadEsc;
+                        }
                         _ => self.cancel(),
                     }
                 }
                 State::PayloadEsc => {
                     if b == b'\\' {
                         i += 1;
+                        self.length += 1;
                         self.finish(commands);
                     } else {
                         // ESC starts something new: the sequence is cancelled, and the ESC
@@ -212,9 +229,18 @@ impl OscFilter {
         matches!(self.state, State::Introducer { .. })
     }
 
+    /// A sequence of ours starts: its introducer and the byte after it are in.
+    fn begin(&mut self) {
+        self.payload.clear();
+        self.length = HEAD;
+    }
+
+    /// The terminator is in: carries the command out unless the sequence was too long.
     fn finish(&mut self, commands: &mut Vec<PaneCommand>) {
-        if let Some(command) = parse_command(&self.payload) {
-            commands.push(command);
+        if self.length <= MAX_SEQUENCE {
+            if let Some(command) = parse_command(&self.payload) {
+                commands.push(command);
+            }
         }
         self.cancel();
     }
@@ -296,9 +322,9 @@ mod tests {
     }
 
     #[test]
-    fn drops_a_payload_longer_than_the_limit_and_resumes_after_it() {
+    fn drops_a_sequence_longer_than_the_limit_and_resumes_after_it() {
         let mut long = b"x\x1b]7701;open;https://claude.ai/".to_vec();
-        long.extend(std::iter::repeat_n(b'a', MAX_PAYLOAD));
+        long.extend(std::iter::repeat_n(b'a', MAX_SEQUENCE));
         long.extend_from_slice(b"\x07y\x1b]7701;show\x07z");
         let (out, commands) = run(&[&long]);
         assert_eq!(out, b"xyz");
@@ -308,17 +334,42 @@ mod tests {
         assert_eq!(run(&chunks), (b"xyz".to_vec(), vec![PaneCommand::Show]));
     }
 
-    #[test]
-    fn a_payload_exactly_at_the_limit_is_still_read() {
+    /// `ESC ] 7701 ; open ; <url>` and a terminator, exactly `total` bytes long.
+    fn open_sequence(total: usize, terminator: &str) -> (String, String) {
         let mut url = String::from("https://claude.ai/code?");
-        let prefix = "open;".len();
-        while prefix + url.len() < MAX_PAYLOAD {
+        let fixed = "\x1b]7701;open;".len() + terminator.len();
+        while fixed + url.len() < total {
             url.push('q');
         }
-        let input = format!("\x1b]7701;open;{url}\x07");
-        let (out, commands) = run(&[input.as_bytes()]);
-        assert!(out.is_empty());
-        assert_eq!(commands, vec![PaneCommand::Open(url)]);
+        let sequence = format!("\x1b]7701;open;{url}{terminator}");
+        assert_eq!(sequence.len(), total);
+        (sequence, url)
+    }
+
+    #[test]
+    fn the_limit_counts_the_whole_sequence_terminator_included() {
+        for terminator in ["\x07", "\x1b\\"] {
+            // Exactly the limit, from ESC to the end of the terminator: carried out.
+            let (sequence, url) = open_sequence(MAX_SEQUENCE, terminator);
+            let input = format!("a{sequence}b");
+            let (out, commands) = run(&[input.as_bytes()]);
+            assert_eq!(out, b"ab", "{terminator:?}");
+            assert_eq!(commands, vec![PaneCommand::Open(url)], "{terminator:?}");
+            // One byte more: still taken out, but dropped (as the macOS app and lu-minal count).
+            let (sequence, _) = open_sequence(MAX_SEQUENCE + 1, terminator);
+            let input = format!("a{sequence}b");
+            for chunk in [input.len(), 1, 5, 4093] {
+                let chunks: Vec<&[u8]> = input.as_bytes().chunks(chunk).collect();
+                assert_eq!(run(&chunks), (b"ab".to_vec(), vec![]), "{terminator:?} in chunks of {chunk}");
+            }
+        }
+    }
+
+    #[test]
+    fn ignores_other_controls_inside_a_sequence() {
+        let (out, commands) = every_split(b"a\x1b]7701;sh\r\now\x07b\x1b]7701;open;https://claude.ai/\tcode\x1b\\c");
+        assert_eq!(out, b"abc");
+        assert_eq!(commands, vec![PaneCommand::Show, PaneCommand::Open("https://claude.ai/code".into())]);
     }
 
     #[test]

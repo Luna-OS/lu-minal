@@ -106,6 +106,17 @@ describe("assessRead", () => {
     expect(assessWrite(share, `${share}\\a.ts`, { platform: "win32" }).risk).toBe("edit");
     expect(assessWrite(share, "\\\\attacker.example\\x\\y", { platform: "win32" })).toMatchObject({ risk: "other", reason: "network path" });
   });
+
+  it("treats the Windows window's cloud pane data (the claude.ai sign-in) as a secret store", () => {
+    const win = { platform: "win32" as const, home: "C:\\Users\\ada", env: { LOCALAPPDATA: "C:\\Users\\ada\\AppData\\Local" } };
+    const pane = "C:\\Users\\ada\\AppData\\Local\\lu-minal\\WebView2";
+    expect(assessRead(`${pane}\\EBWebView\\Default\\Network\\Cookies`, win)).toBe("other");
+    expect(assessRead("c:\\users\\ADA\\appdata\\local\\LU-MINAL\\webview2\\EBWebView\\Local State", win)).toBe("other");
+    expect(assessRead("C:\\Users\\ada\\AppData\\Local\\lu-minal", { ...win, recursive: true })).toBe("other");
+    // The window's own settings next to it are not a secret.
+    expect(assessRead("C:\\Users\\ada\\AppData\\Local\\lu-minal\\window.json", win)).toBe("read");
+    expect(assessWrite("C:\\Users\\ada\\code", `${pane}\\EBWebView\\Default\\Preferences`, win)).toMatchObject({ risk: "other" });
+  });
 });
 
 describe("the file tools", () => {

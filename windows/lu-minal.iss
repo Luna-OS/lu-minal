@@ -100,6 +100,10 @@ Name: "{app}"; Flags: uninsalwaysuninstall
 ; Copies moved aside by an earlier update (or install.ps1) that are no longer running.
 Type: files; Name: "{app}\lu-minal.old*.exe"
 Type: files; Name: "{app}\lu-minal-window.old*.exe"
+; The second Start menu entry is named after where it opens lu-minal; the other name (from an
+; earlier install with or without Windows Terminal) goes, so there is only ever one of them.
+Type: files; Name: "{autoprograms}\lu-minal in the console.lnk"; Check: UseTerminal
+Type: files; Name: "{autoprograms}\lu-minal in Windows Terminal.lnk"; Check: not UseTerminal
 
 [Files]
 Source: "{#DistDir}\lu-minal-windows-{#Arch}.exe"; DestDir: "{app}"; DestName: "lu-minal.exe"; Flags: ignoreversion; BeforeInstall: MoveRunningExeAside

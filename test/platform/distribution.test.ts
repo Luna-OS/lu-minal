@@ -377,6 +377,10 @@ describe("the Windows installer (Inno Setup)", () => {
     expect(icons).toContain('Name: "{autoprograms}\\lu-minal in Windows Terminal"; Filename: "{code:TerminalExe}"; Parameters: "{code:TerminalArgs}"');
     expect(icons).toMatch(/^Name: "\{autoprograms\}\\lu-minal in Windows Terminal";.*Check: UseTerminal$/m);
     expect(icons).toMatch(/^Name: "\{autoprograms\}\\lu-minal in the console"; Filename: "\{app\}\\lu-minal\.exe";.*Check: not UseTerminal$/m);
+    // A later install under the other condition takes the other name away: never both entries.
+    const installDelete = iss.slice(iss.indexOf("\n[InstallDelete]\n"), iss.indexOf("\n[Files]\n"));
+    expect(installDelete).toContain('Type: files; Name: "{autoprograms}\\lu-minal in the console.lnk"; Check: UseTerminal');
+    expect(installDelete).toContain('Type: files; Name: "{autoprograms}\\lu-minal in Windows Terminal.lnk"; Check: not UseTerminal');
     // Only the window app's entries are called just "lu-minal".
     for (const line of icons.split("\n").filter((l) => /^Name: "\{auto(programs|desktop)\}\\lu-minal";/.test(l))) {
       expect(line, line).toContain('Filename: "{app}\\lu-minal-window.exe"');
@@ -470,6 +474,13 @@ describe("the Windows window app (windows-app/)", () => {
     const pane = web.slice(web.indexOf("pub fn build_pane"), web.indexOf("fn hook_keys"));
     expect(pane).not.toMatch(/with_ipc_handler|with_initialization_script|with_user_agent|evaluate_script|cookies/);
     expect(read("windows-app", "src", "app", "mod.rs")).not.toMatch(/cookies|initialization_script/);
+  });
+
+  it("keeps the pane's sign-in where lu-minal's own tools treat it as a secret store", () => {
+    // %LOCALAPPDATA%\lu-minal\WebView2 holds the claude.ai cookies: agents ask before reading it.
+    expect(read("windows-app", "src", "app", "win.rs")).toContain('local.join("lu-minal")');
+    expect(read("windows-app", "src", "app", "mod.rs")).toContain('WebContext::new(Some(data.join("WebView2")))');
+    expect(read("src", "tools", "sensitive.ts")).toContain('api.join(local, "lu-minal", "WebView2")');
   });
 
   it("pins its crates and commits the lock file", () => {

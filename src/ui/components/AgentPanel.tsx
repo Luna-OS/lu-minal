@@ -1,10 +1,12 @@
-// One agent's panel: the frame with its name, area label and model, the tail of its log, the status
-// line ("✦ Charting… (23m 9s · ↓ 72.6k)") and, when focused, the prompt.
+// One agent's panel: the frame with its name, area label and model, the tail of its log, the question
+// card while the agent waits on the user, the status line ("✦ Charting… (23m 9s · ↓ 72.6k)") and,
+// when focused, the prompt.
 import { Box, Text } from "ink";
 import React from "react";
 import type { Agent } from "../../core/agent.js";
 import type { Project } from "../../core/project.js";
 import type { Theme } from "../../themes/types.js";
+import { askCard, pendingAsk, type CardView } from "../ask-card.js";
 import type { EditorState } from "../editor.js";
 import { formatElapsed, formatTokens } from "../format.js";
 import type { Rect } from "../layout.js";
@@ -167,6 +169,12 @@ export interface AgentPanelProps {
   reserveRight?: number;
   /** Rows the slash-command menu takes above the prompt. */
   menu?: Row[];
+  /** The question card's first row in view (pgup / pgdn), for the ask it was scrolled on. */
+  cardTop?: { id: string; top: number };
+  /** The question the user put away with esc. */
+  dismissedAsk?: string;
+  /** Told where the question card is scrolled (null: no card), for pgup / pgdn. */
+  onCard?: (card: CardView | null) => void;
 }
 
 export function AgentPanel(props: AgentPanelProps) {
@@ -192,14 +200,35 @@ export function AgentPanel(props: AgentPanelProps) {
 
   const menu = focused ? (props.menu ?? []) : [];
   const footerRows = 1 + (focused && editor ? 1 : 0) + menu.length;
-  const logRoom = Math.max(0, innerH - footerRows);
+  const room = Math.max(0, innerH - footerRows);
+  // What the agent waits on the user for, in full above the prompt; the log scrolls on above it.
+  const ask = pendingAsk(agent, props.dismissedAsk);
+  const card = ask
+    ? askCard(ask, {
+        width: innerW,
+        panelRows: innerH,
+        room,
+        theme,
+        name: agent.name,
+        nameColor: color,
+        focused,
+        top: props.cardTop?.id === ask.id ? props.cardTop.top : undefined,
+      })
+    : null;
+  props.onCard?.(ask && card ? { id: ask.id, top: card.top, maxTop: card.maxTop, page: card.page } : null);
+  const logRoom = Math.max(0, room - (card?.rows.length ?? 0));
+  // Tool output and code keep their first lines until zoomed (ctrl+f).
+  const fold = Math.max(2, Math.min(6, Math.floor(innerH / 3)));
   const rows = logTail(agent.log, logRoom + props.scroll, {
     width: innerW,
     theme,
     colorOf: colorByName(project, theme),
-    maxDiffLines: props.zoomed ? 60 : Math.max(2, Math.min(8, Math.floor(innerH / 3))),
+    maxDiffLines: props.zoomed ? 500 : fold,
     maxTextLines: props.zoomed ? 0 : Math.max(3, Math.floor(innerH / 2)),
     fullReasoning: props.zoomed,
+    maxCodeLines: props.zoomed ? 0 : fold,
+    expandHint: props.zoomed ? undefined : "ctrl+f to expand",
+    pinned: card ? (ask?.entryId ?? undefined) : undefined,
   });
   const end = Math.max(0, rows.length - props.scroll);
   const visible = rows.slice(Math.max(0, end - logRoom), end);
@@ -216,6 +245,9 @@ export function AgentPanel(props: AgentPanelProps) {
           <RowView key={row.key} row={row} width={innerW} bg={bg} />
         ))}
       </Box>
+      {card?.rows.map((row) => (
+        <RowView key={row.key} row={row} width={innerW} bg={bg} />
+      ))}
       {menu.map((row) => (
         <RowView key={row.key} row={row} width={innerW} bg={bg} />
       ))}

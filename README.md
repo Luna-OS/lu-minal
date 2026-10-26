@@ -126,7 +126,10 @@ Keys are stored in `auth.json` in lu-minal's config folder, readable only by you
    message anyone with `@vega make the lamp warmer`.
 4. Approve what needs approving with **y** (allow), **a** (always) or **n** (deny). Claude Code's
    multiple-choice questions are asked in the chat instead: lu-minal tells Claude to ask in plain
-   text, and you answer with a message.
+   text, and you answer with a message. Whatever an agent waits on you for – the whole command or
+   edit, or the question its answer ends with – shows in a card above the prompt (pgup / pgdn
+   scroll a long one, esc puts a question away), while tool output and code in the log keep their
+   first lines until you zoom with **ctrl+f**.
 5. Add pictures and files to a message: paste a screenshot (Win+Shift+S, Cmd+Shift+Ctrl+4) or
    files you copied in Explorer / Finder with the terminal's paste key – **ctrl+v** in Windows
    Terminal (1.24 or newer) and most Linux terminals, **cmd+v** in the macOS app, **ctrl+v** in Terminal.app and

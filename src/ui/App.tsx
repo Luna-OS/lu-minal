@@ -17,6 +17,7 @@ import type { Hub, TerminalRunner } from "../core/hub.js";
 import { newestModels } from "../core/news.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
 import { spawnProgram } from "../platform/process.js";
+import { cardPage, panelRowsFor, pendingAsk, type CardView } from "./ask-card.js";
 import { commandSuggestions, findCommand, runCommandLine, type CommandContext } from "./commands.js";
 import { AgentPanel } from "./components/AgentPanel.js";
 import { Axo } from "./components/Axo.js";
@@ -66,6 +67,11 @@ function Screen({ onExit }: { onExit: () => void }) {
   const history = useRef<Record<string, { items: HistoryEntry[]; index: number }>>({});
   const lastCtrlC = useRef(0);
   const lastBusy = useRef<{ busy: boolean; doneAt: number }>({ busy: false, doneAt: 0 });
+  // The question cards: where each is scrolled, the questions put away with esc, and what the
+  // panels last drew (for pgup / pgdn).
+  const [cardTops, setCardTops] = useState<Record<string, { id: string; top: number }>>({});
+  const [dismissedAsks, setDismissedAsks] = useState<Record<string, string>>({});
+  const cards = useRef<Record<string, CardView | null>>({});
 
   const project = hub.activeProject;
   const focused = project?.focused;
@@ -315,6 +321,8 @@ function Screen({ onExit }: { onExit: () => void }) {
     if (!agent) return;
     if (key.escape) {
       if (editor.value) return setEditor(agent, emptyEditor());
+      const ask = pendingAsk(agent, dismissedAsks[agent.id]);
+      if (ask?.kind === "question") return setDismissedAsks((d) => ({ ...d, [agent.id]: ask.id }));
       if (project.zoomed) return toggleZoom();
       if (agent.busy) agent.interrupt();
       return;
@@ -332,6 +340,12 @@ function Screen({ onExit }: { onExit: () => void }) {
       if (input === "y" || input === "Y") return agent.answerApproval("allow");
       if (input === "a" || input === "A") return agent.answerApproval("always");
       if (input === "n" || input === "N") return agent.answerApproval("deny");
+    }
+    if (key.pageUp || key.pageDown) {
+      // A question card longer than it shows scrolls first; the log goes on from its ends.
+      const card = cards.current[agent.id];
+      const top = cardPage(card, key.pageDown ? 1 : -1, (scrolls[agent.id] ?? 0) > 0);
+      if (card && top !== null) return setCardTops((s) => ({ ...s, [agent.id]: { id: card.id, top } }));
     }
     if (key.pageUp) return scrollBy(agent, 10);
     if (key.pageDown) return scrollBy(agent, -10);
@@ -384,6 +398,9 @@ function Screen({ onExit }: { onExit: () => void }) {
   const showAxo = theme.axo && hub.config.axo;
   // Home draws no panels: the sky has no glass and the moon comes out.
   const shown = home ? undefined : project;
+  // The lead's panel grows while it asks (its width as the layout will make it, Axo's corner off).
+  const leadAsk = shown?.lead && !shown.zoomed ? pendingAsk(shown.lead, dismissedAsks[shown.lead.id]) : null;
+  const leadWidth = columns - (columns >= 60 ? 2 : 0) - 4 - (showAxo && columns >= 98 ? 31 : 0);
   const layout: Layout = computeLayout({
     width: columns,
     height: rows,
@@ -391,6 +408,7 @@ function Screen({ onExit }: { onExit: () => void }) {
     focusedId: focused?.id ?? null,
     zoomed: project?.zoomed ?? false,
     axo: showAxo,
+    leadRows: leadAsk ? panelRowsFor(leadAsk, leadWidth, theme) : 0,
   });
   const glass = layout.panels.map((p) => ({ ...p.rect, focused: p.agentId === focused?.id }));
   // A few ms over the whole catalog: worked out again when it or the Claude account changes, and
@@ -462,6 +480,9 @@ function Screen({ onExit }: { onExit: () => void }) {
                 editor={isFocused ? editorOf(agent) : null}
                 chips={isFocused ? pastesOf(agent).items.map((p) => p.token) : undefined}
                 scroll={scrolls[agent.id] ?? 0}
+                cardTop={cardTops[agent.id]}
+                dismissedAsk={dismissedAsks[agent.id]}
+                onCard={(card) => void (cards.current[agent.id] = card)}
                 reserveRight={reserve}
                 menu={isFocused ? [...chipRows(agent), ...menuRows(agent)] : undefined}
               />

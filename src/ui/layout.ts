@@ -57,6 +57,11 @@ export function computeLayout(opts: {
   focusedId: string | null;
   zoomed: boolean;
   axo: boolean;
+  /**
+   * Inner rows the lead's panel would like (for the question card it shows): it grows toward them
+   * as long as a row of workers still fits.
+   */
+  leadRows?: number;
 }): Layout {
   const width = Math.max(20, opts.width);
   const height = Math.max(8, opts.height);
@@ -97,7 +102,7 @@ export function computeLayout(opts: {
     let leadHeight = content.height;
     if (workers.length) {
       const wanted = Math.round(content.height * 0.36);
-      leadHeight = Math.max(8, Math.min(16, wanted));
+      leadHeight = Math.max(8, Math.min(16, wanted), (opts.leadRows ?? 0) + 2);
       // Leave room for at least one row of workers.
       leadHeight = Math.min(leadHeight, Math.max(5, content.height - MIN_PANEL_HEIGHT - 1));
     }

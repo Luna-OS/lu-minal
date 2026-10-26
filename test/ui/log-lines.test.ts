@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LogEntry } from "../../src/core/types.js";
 import type { Theme } from "../../src/themes/types.js";
-import { entryRows, logTail, type LogRenderOptions, type Row } from "../../src/ui/log-lines.js";
+import { collapse, entryRows, logTail, moreLines, type LogRenderOptions, type Row } from "../../src/ui/log-lines.js";
 import { width } from "../../src/ui/text.js";
 
 const colors = new Proxy({} as Record<string, unknown>, {
@@ -80,6 +80,63 @@ describe("entryRows", () => {
     const e = entry({ kind: "reasoning", text: "first thought\nsecond thought" });
     expect(entryRows(e, opts).map(text)).toEqual(["∴ second thought"]);
     expect(entryRows(e, { ...opts, fullReasoning: true }).length).toBe(2);
+  });
+});
+
+describe("collapsing tool output and code", () => {
+  const compact: LogRenderOptions = { ...opts, width: 60, maxDiffLines: 6, maxTextLines: 9, maxCodeLines: 6, expandHint: "ctrl+f to expand" };
+  const output = Array.from({ length: 126 }, (_, i) => `ok ${i + 1}`).join("\n");
+
+  it("keeps the first lines of a long tool result and says how to see the rest", () => {
+    const rows = entryRows(entry({ kind: "tool", toolCallId: "t", name: "Bash", verb: "run", target: "npm test", status: "ok", detail: output }), compact).map(text);
+    expect(rows).toEqual(["▸ run npm test", "  └ ok 1", "    ok 2", "    ok 3", "    ok 4", "    ok 5", "    ok 6", "    … 120 more lines (ctrl+f to expand)"]);
+    // Zoomed (no limit): every line.
+    const all = entryRows(entry({ kind: "tool", toolCallId: "t", name: "Bash", verb: "run", status: "ok", detail: output }), { ...compact, maxCodeLines: 0 });
+    expect(all).toHaveLength(127);
+    // A one-line result stays one row.
+    const one = entryRows(entry({ kind: "tool", toolCallId: "t", name: "Read", verb: "read", status: "ok", detail: "94 lines" }), compact).map(text);
+    expect(one).toEqual(["▸ read", "  └ 94 lines"]);
+  });
+
+  it("collapses a long diff with the same hint, and never to hide a single line", () => {
+    const diff = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: "add" as const, line: i + 1, text: `line ${i}` }));
+    const long = entryRows(entry({ kind: "tool", toolCallId: "t", name: "write_file", verb: "new", target: "a.ts", status: "ok", diff: diff(126) }), compact);
+    expect(long.filter((r) => r.fill)).toHaveLength(6);
+    expect(text(long[long.length - 1])).toBe("    … 120 more lines (ctrl+f to expand)");
+    const seven = entryRows(entry({ kind: "tool", toolCallId: "t", name: "write_file", verb: "new", target: "a.ts", status: "ok", diff: diff(7) }), compact);
+    expect(seven.filter((r) => r.fill)).toHaveLength(7);
+  });
+
+  it("collapses long code blocks in an answer but never its prose", () => {
+    const code = Array.from({ length: 30 }, (_, i) => `const v${i} = ${i};`).join("\n");
+    const prose = Array.from({ length: 40 }, (_, i) => `Sentence number ${i + 1} of the answer.`).join("\n");
+    const rows = entryRows(entry({ kind: "text", text: `${prose}\n\`\`\`ts\n${code}\n\`\`\`\nShould I also update the docs?` }), compact).map(text);
+    // All 40 lines of prose (maxTextLines doesn't cut the agent's own answer), 6 of code, the question.
+    expect(rows.filter((r) => r.startsWith("Sentence number"))).toHaveLength(40);
+    expect(rows.filter((r) => r.startsWith("const v"))).toEqual(["const v0 = 0;", "const v1 = 1;", "const v2 = 2;", "const v3 = 3;", "const v4 = 4;", "const v5 = 5;"]);
+    expect(rows).toContain("… 24 more lines (ctrl+f to expand)");
+    expect(rows[rows.length - 1]).toBe("Should I also update the docs?");
+    // Short blocks and an answer still streaming its block.
+    expect(entryRows(entry({ kind: "text", text: "```\na\nb\n```" }), compact).map(text)).toEqual(["a", "b"]);
+    const open = entryRows(entry({ kind: "text", text: `Here:\n\`\`\`\n${code}`, streaming: true }), compact).map(text);
+    expect(open).toHaveLength(1 + 6 + 1);
+  });
+
+  it("keeps a pending approval to one row, and leaves out the answer, that the question card shows", () => {
+    const request = { id: "a", agentId: "x", tool: "Bash", risk: "exec", summary: "run npm test", detail: "npm test\n(the suite)", allowKey: "Bash:npm test" };
+    const approval = entry({ kind: "approval", request });
+    expect(entryRows(approval, compact).length).toBeGreaterThan(1);
+    expect(entryRows(approval, { ...compact, pinned: approval.id }).map(text)).toEqual(["▲ run npm test"]);
+    const answer = entry({ kind: "text", text: "Should I also update the docs?" });
+    expect(entryRows(answer, { ...compact, pinned: answer.id })).toEqual([]);
+    expect(entryRows(answer, { ...compact, pinned: "other" }).map(text)).toEqual(["Should I also update the docs?"]);
+  });
+
+  it("collapse() hides nothing when only one item would go", () => {
+    expect(collapse([1, 2, 3], 2)).toEqual({ shown: [1, 2, 3], hidden: 0 });
+    expect(collapse([1, 2, 3, 4], 2)).toEqual({ shown: [1, 2], hidden: 2 });
+    expect(collapse([1, 2, 3, 4], 0)).toEqual({ shown: [1, 2, 3, 4], hidden: 0 });
+    expect(moreLines(1)).toBe("… 1 more line");
   });
 });
 

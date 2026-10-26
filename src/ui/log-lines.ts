@@ -3,6 +3,8 @@
 //     └ 94 lines
 //    54 + moon = 'full'        (a green row)
 //   ✦ Charting… (23m 9s · ↓ 72.6k)
+// Tool output and code (diffs, multi-line results, fenced blocks) collapse to their first lines
+// with "… 120 more lines (ctrl+f to expand)"; the agent's own prose never does.
 // Pure (no React), so it is tested on its own.
 import type { DiffLine, LogEntry } from "../core/types.js";
 import type { Theme } from "../themes/types.js";
@@ -32,10 +34,46 @@ export interface LogRenderOptions {
   colorOf: (name: string) => string;
   /** Diff rows per tool call (more when zoomed). */
   maxDiffLines: number;
-  /** Lines of a long answer to keep per block when compact (0 = all). */
+  /**
+   * Compact mode (non-zero): teammates' messages and notes keep their last lines. The agent's own
+   * answers are never cut.
+   */
   maxTextLines: number;
   /** Show reasoning in full (zoomed) or as one faint line. */
   fullReasoning: boolean;
+  /** Lines a tool's multi-line result or a fenced code block keeps (0 or unset = all). */
+  maxCodeLines?: number;
+  /** How to see what was collapsed, added to the "… N more lines" rows ("ctrl+f to expand"). */
+  expandHint?: string;
+  /**
+   * The entry the panel's question card shows in full: a pending approval keeps only its first
+   * row here, a question (the last answer) is left out.
+   */
+  pinned?: string;
+}
+
+/** "… 120 more lines (ctrl+f to expand)" */
+export function moreLines(n: number, hint?: string): string {
+  return `… ${n} more line${n === 1 ? "" : "s"}${hint ? ` (${hint})` : ""}`;
+}
+
+/**
+ * The first `max` items, or all of them when `max` is 0 or only one would be hidden (a "1 more
+ * line" row saves nothing).
+ */
+export function collapse<T>(items: T[], max: number): { shown: T[]; hidden: number } {
+  if (max <= 0 || items.length <= max + 1) return { shown: items, hidden: 0 };
+  return { shown: items.slice(0, max), hidden: items.length - max };
+}
+
+/** How prose treats fenced code blocks. */
+export interface ProseCode {
+  /** Lines a fenced block keeps (0 = all). */
+  maxLines?: number;
+  /** Wrap long code lines instead of cutting them (the question card). */
+  wrap?: boolean;
+  /** Added to the "… N more lines" row. */
+  hint?: string;
 }
 
 /** Inline markdown-lite: `code` and **bold**. */
@@ -54,8 +92,11 @@ function inline(text: string, base: Seg, theme: Theme): Seg[] {
   return out;
 }
 
-/** Rows for a block of prose with a first-line prefix and an indent for the rest. */
-function prose(
+/**
+ * Rows for a block of prose with a first-line prefix and an indent for the rest. `maxLines` keeps
+ * the last lines of the block; `code` collapses (or wraps) its fenced code blocks.
+ */
+export function prose(
   key: string,
   text: string,
   w: number,
@@ -63,23 +104,39 @@ function prose(
   base: Seg,
   theme: Theme,
   maxLines = 0,
+  code: ProseCode = {},
 ): Row[] {
   const prefixW = prefix.reduce((n, s) => n + width(s.text), 0);
+  const room = Math.max(4, w - prefixW);
   const rows: Row[] = [];
   let inFence = false;
-  const lines: Array<{ text: string; code: boolean }> = [];
+  const lines: Array<{ text: string; code: boolean; more?: number }> = [];
+  // Where the open code block's lines start in `lines`.
+  let blockAt = -1;
+  const closeBlock = () => {
+    if (blockAt < 0) return;
+    const { hidden } = collapse(lines.slice(blockAt), code.maxLines ?? 0);
+    if (hidden) lines.splice(lines.length - hidden, hidden, { text: "", code: false, more: hidden });
+    blockAt = -1;
+  };
   for (const raw of text.replace(/\r\n?/g, "\n").split("\n")) {
     if (/^\s*```/.test(raw)) {
+      if (inFence) closeBlock();
+      else blockAt = lines.length;
       inFence = !inFence;
       continue;
     }
     if (inFence) {
-      lines.push({ text: truncate(raw.replace(/\t/g, "  "), Math.max(4, w - prefixW)), code: true });
+      const line = raw.replace(/\t/g, "  ");
+      if (code.wrap) for (const l of wrap(line, room)) lines.push({ text: l, code: true });
+      else lines.push({ text: truncate(line, room), code: true });
       continue;
     }
-    for (const l of wrap(raw.replace(/^(\s*)[-*] /, "$1• "), Math.max(4, w - prefixW))) lines.push({ text: l, code: false });
+    for (const l of wrap(raw.replace(/^(\s*)[-*] /, "$1• "), room)) lines.push({ text: l, code: false });
   }
-  while (lines.length && !lines[lines.length - 1].text.trim()) lines.pop();
+  // A block still open (the answer is streaming) collapses too.
+  closeBlock();
+  while (lines.length && !lines[lines.length - 1].more && !lines[lines.length - 1].text.trim()) lines.pop();
   let shown = lines;
   let hidden = 0;
   if (maxLines > 0 && lines.length > maxLines) {
@@ -93,7 +150,8 @@ function prose(
     const lead: Seg[] = i === 0 && !hidden ? prefix : [{ text: " ".repeat(prefixW) }];
     const heading = /^#{1,4}\s+/.exec(line.text);
     let segs: Seg[];
-    if (line.code) segs = [{ ...base, text: line.text, color: theme.colors.accent2 }];
+    if (line.more) segs = [{ text: moreLines(line.more, code.hint), color: theme.colors.faint }];
+    else if (line.code) segs = [{ ...base, text: line.text, color: theme.colors.accent2 }];
     else if (heading) segs = [{ ...base, text: line.text.slice(heading[0].length), bold: true, color: theme.colors.accent }];
     else segs = inline(line.text, base, theme);
     rows.push({ key: `${key}:${i}`, segs: [...lead, ...segs] });
@@ -101,12 +159,12 @@ function prose(
   return rows;
 }
 
-function diffRows(key: string, diff: DiffLine[], w: number, theme: Theme, max: number): Row[] {
+function diffRows(key: string, diff: DiffLine[], w: number, theme: Theme, max: number, hint?: string): Row[] {
   const c = theme.colors;
   const rows: Row[] = [];
   const numW = Math.max(2, ...diff.map((d) => String(d.line ?? "").length));
   const visible = diff.filter((d) => d.kind !== "ctx" || diff.length <= max);
-  const shown = visible.slice(0, max);
+  const { shown, hidden } = collapse(visible, max);
   shown.forEach((d, i) => {
     if (d.kind === "gap") {
       rows.push({ key: `${key}:d${i}`, segs: [{ text: `${" ".repeat(numW + 1)}⋯`, color: c.faint }] });
@@ -123,10 +181,10 @@ function diffRows(key: string, diff: DiffLine[], w: number, theme: Theme, max: n
       rows.push({ key: `${key}:d${i}`, segs: [{ text: body, color: fg, bg }], fill: bg });
     }
   });
-  if (visible.length > shown.length) {
+  if (hidden) {
     rows.push({
       key: `${key}:dmore`,
-      segs: [{ text: `${" ".repeat(numW + 1)}… ${visible.length - shown.length} more`, color: c.faint }],
+      segs: [{ text: truncate(`${" ".repeat(numW + 1)}${moreLines(hidden, hint)}`, w), color: c.faint }],
     });
   }
   return rows;
@@ -159,7 +217,9 @@ export function entryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
       return rows;
     }
     case "text":
-      return prose(key, entry.text, w, [], { text: "", color: c.text }, theme, opts.maxTextLines);
+      // The agent's own answer is never cut; the question card shows the one it asks with.
+      if (opts.pinned === key) return [];
+      return prose(key, entry.text, w, [], { text: "", color: c.text }, theme, 0, { maxLines: opts.maxCodeLines, hint: opts.expandHint });
     case "reasoning": {
       if (opts.fullReasoning) {
         return prose(key, entry.text, w, [{ text: "∴ ", color: c.faint }], { text: "", color: c.faint, italic: true }, theme, 12);
@@ -191,18 +251,24 @@ export function entryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
           ],
         },
       ];
-      if (entry.diff?.length) rows.push(...diffRows(key, entry.diff, w, theme, opts.maxDiffLines));
+      if (entry.diff?.length) rows.push(...diffRows(key, entry.diff, w, theme, opts.maxDiffLines, opts.expandHint));
       if (entry.detail) {
-        rows.push({
-          key: `${key}:detail`,
-          segs: [
-            { text: "  └ ", color: c.faint },
-            {
-              text: truncate(entry.detail, Math.max(4, w - 4)),
-              color: entry.status === "error" ? c.error : c.muted,
-            },
-          ],
-        });
+        // A result of several lines: its first lines, the rest collapsed.
+        const lines = entry.detail.replace(/\r\n?/g, "\n").replace(/\n+$/, "").split("\n");
+        const { shown, hidden } = collapse(lines, opts.maxCodeLines ?? 0);
+        const color = entry.status === "error" ? c.error : c.muted;
+        shown.forEach((line, i) =>
+          rows.push({
+            key: i ? `${key}:detail${i}` : `${key}:detail`,
+            segs: [
+              { text: i ? "    " : "  └ ", color: c.faint },
+              { text: truncate(line.replace(/\t/g, "  "), Math.max(4, w - 4)), color },
+            ],
+          }),
+        );
+        if (hidden) {
+          rows.push({ key: `${key}:rmore`, segs: [{ text: truncate(`    ${moreLines(hidden, opts.expandHint)}`, w), color: c.faint }] });
+        }
       }
       return rows;
     }
@@ -218,6 +284,7 @@ export function entryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
         { text: "", color: c.muted },
         theme,
         opts.maxTextLines ? 3 : 0,
+        { maxLines: opts.maxCodeLines, hint: opts.expandHint },
       );
     case "info":
       return prose(key, entry.text, w, [{ text: "· ", color: c.faint }], { text: "", color: c.faint }, theme, 3);
@@ -247,6 +314,8 @@ export function entryRows(entry: LogEntry, opts: LogRenderOptions): Row[] {
           ],
         },
       ];
+      // The question card under the log shows it in full, with the keys.
+      if (opts.pinned === key) return rows;
       if (r.detail && r.detail.trim() !== r.summary.trim()) {
         const detail = r.detail.split(/\r?\n/).slice(0, 4);
         detail.forEach((line, i) =>

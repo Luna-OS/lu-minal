@@ -139,15 +139,27 @@ describe("the Linux desktop entry and icon", () => {
     expect(heredoc(read("install.sh"), "ICON")).toBe(svg);
     expect(svg).toMatch(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 256 256"/);
     expect(svg.trimEnd().endsWith("</svg>")).toBe(true);
-    for (const colour of ["#0b0920", "#1d1742", "#f4f1ff", "#7fe3c6", "#e0c880"]) expect(svg).toContain(colour);
+    for (const colour of ["#0b0920", "#1d1742", "#3a2a80", "#b9aefb", "#f4f1ff", "#7fe3c6", "#e0c880"]) expect(svg).toContain(colour);
   });
 
-  it("draws the same stars as the macOS icon", () => {
+  it("draws the same stars, sparkle and sky as the macOS icon", () => {
     const svg = read("linux", "lu-minal.svg");
     const swift = read("macos", "scripts", "make-icon.swift");
     const stars = [...svg.matchAll(/<circle cx="(\d+)" cy="(\d+)" r="(\d+)" fill="#([0-9a-f]{6})"\/>/g)];
     expect(stars.length).toBe(4);
     for (const [, x, y, r, hex] of stars) expect(swift).toContain(`(${x}, ${y}, ${r}, 0x${hex}),`);
+    // The sparkle's quadratic curves: "Q cx cy x y" in the SVG, addQuadCurve(to:control:) in Swift.
+    const sparkle = /<path d="M(\d+) (\d+)((?:Q\d+ \d+ \d+ \d+)+)Z" fill="url\(#sparkle\)"\/>/.exec(svg);
+    expect(sparkle).not.toBeNull();
+    const curves = [...sparkle![3].matchAll(/Q(\d+) (\d+) (\d+) (\d+)/g)];
+    expect(curves.length).toBe(4);
+    expect(swift).toContain(`sparkle.move(to: CGPoint(x: ${sparkle![1]}, y: ${sparkle![2]}))`);
+    for (const [, cx, cy, x, y] of curves) expect(swift).toContain(`addQuadCurve(to: CGPoint(x: ${x}, y: ${y}), control: CGPoint(x: ${cx}, y: ${cy}))`);
+    // The sky's gradient stops.
+    const sky = /<linearGradient id="sky"[^>]*>([\s\S]*?)<\/linearGradient>/.exec(svg);
+    const stops = [...sky![1].matchAll(/offset="([.\d]+)" stop-color="#([0-9a-f]{6})"/g)].map(([, at, hex]) => `(${Number(at)}, 0x${hex}, 1)`);
+    expect(stops.length).toBe(3);
+    expect(swift).toContain(`gradient([${stops.join(", ")}])`);
   });
 });
 

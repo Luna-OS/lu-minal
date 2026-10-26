@@ -223,24 +223,61 @@ write_icon() {
   cat <<'ICON'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1d1742"/>
+    <linearGradient id="sky" gradientUnits="userSpaceOnUse" x1="8" y1="8" x2="248" y2="248">
+      <stop offset="0" stop-color="#3a2a80"/>
+      <stop offset=".45" stop-color="#1d1742"/>
       <stop offset="1" stop-color="#0b0920"/>
     </linearGradient>
-    <mask id="crescent">
-      <rect width="256" height="256" fill="#000"/>
-      <circle cx="146" cy="104" r="62" fill="#fff"/>
-      <circle cx="172" cy="82" r="54" fill="#000"/>
-    </mask>
+    <linearGradient id="rim" gradientUnits="userSpaceOnUse" x1="0" y1="8" x2="0" y2="120">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" gradientUnits="userSpaceOnUse" cx="132" cy="112" r="124">
+      <stop offset="0" stop-color="#b9aefb" stop-opacity=".34"/>
+      <stop offset=".25" stop-color="#b9aefb" stop-opacity=".2"/>
+      <stop offset=".5" stop-color="#b9aefb" stop-opacity=".09"/>
+      <stop offset=".75" stop-color="#b9aefb" stop-opacity=".025"/>
+      <stop offset="1" stop-color="#b9aefb" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="moonlight" gradientUnits="userSpaceOnUse" x1="104" y1="142" x2="188" y2="58">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".55" stop-color="#f4f1ff"/>
+      <stop offset="1" stop-color="#d6cffd"/>
+    </linearGradient>
+    <radialGradient id="sparkle-glow" gradientUnits="userSpaceOnUse" cx="196" cy="64" r="34">
+      <stop offset="0" stop-color="#e0c880" stop-opacity=".45"/>
+      <stop offset=".4" stop-color="#e0c880" stop-opacity=".14"/>
+      <stop offset="1" stop-color="#e0c880" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sparkle" gradientUnits="userSpaceOnUse" cx="196" cy="64" r="24">
+      <stop offset="0" stop-color="#fffbef"/>
+      <stop offset=".3" stop-color="#f7e2a6"/>
+      <stop offset="1" stop-color="#e0c880"/>
+    </radialGradient>
+    <filter id="halo" filterUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <filter id="phosphor" filterUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
   </defs>
   <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#sky)"/>
-  <circle cx="146" cy="104" r="62" fill="#f4f1ff" mask="url(#crescent)"/>
-  <circle cx="196" cy="150" r="5" fill="#e0c880"/>
-  <circle cx="60" cy="64" r="4" fill="#b9aefb"/>
-  <circle cx="206" cy="58" r="3" fill="#d6cffd"/>
-  <circle cx="40" cy="124" r="3" fill="#b9aefb"/>
-  <path d="M58 172 L84 192 L58 212" fill="none" stroke="#7fe3c6" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="98" y="200" width="52" height="13" rx="6.5" fill="#7fe3c6"/>
+  <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="url(#rim)" stroke-width="2"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#glow)"/>
+  <circle cx="54" cy="62" r="5" fill="#b9aefb"/>
+  <circle cx="100" cy="30" r="3" fill="#d6cffd"/>
+  <circle cx="222" cy="150" r="4" fill="#d6cffd"/>
+  <circle cx="208" cy="210" r="3" fill="#b9aefb"/>
+  <path d="M137.62 32.52A68 68 0 1 0 209.99 122.99A58 58 0 0 1 137.62 32.52Z" fill="#d6cffd" opacity=".55" filter="url(#halo)"/>
+  <path d="M137.62 32.52A68 68 0 1 0 209.99 122.99A58 58 0 0 1 137.62 32.52Z" fill="url(#moonlight)"/>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#sparkle-glow)"/>
+  <path d="M196 40Q200 60 220 64Q200 68 196 88Q192 68 172 64Q192 60 196 40Z" fill="url(#sparkle)"/>
+  <g fill="none" stroke="#7fe3c6" stroke-width="17" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M60 166L88 188L60 210" opacity=".4" filter="url(#phosphor)"/>
+    <path d="M60 166L88 188L60 210"/>
+  </g>
+  <rect x="104" y="201" width="52" height="17" rx="8.5" fill="#7fe3c6" opacity=".4" filter="url(#phosphor)"/>
+  <rect x="104" y="201" width="52" height="17" rx="8.5" fill="#7fe3c6"/>
 </svg>
 ICON
 }

@@ -1,14 +1,16 @@
 // The app: the menu bar, one window per lu-minal session (Cmd+N, File > Open Folder..., folders
 // dropped on the Dock icon or the app, `open -a LuMinal <folder>`), font size and the
-// Option-as-Meta setting, and the login-shell environment every session starts with.
+// Option-as-Meta setting, the cloud pane's shortcut (Cmd+Shift+K) and sign-out, and the
+// login-shell environment every session starts with.
 import AppKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var sessions: [SessionWindowController] = []
     private var waiting: [SessionWindowController] = []
     private var environment: [String: String]?
     private var cascadePoint: NSPoint?
     private var optionAsMetaItem: NSMenuItem?
+    private var cloudPaneShortcut: Any?
 
     static let defaultFontSize: CGFloat = 13
     private static let fontSizeKey = "FontSize"
@@ -41,9 +43,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
         NSApp.mainMenu = buildMainMenu()
+        installCloudPaneShortcut()
         ShellEnvironment.resolve { [weak self] env in
             self?.environmentResolved(env)
         }
+    }
+
+    /// Cmd+Shift+K shows and hides the key window's cloud pane. It is taken before the window
+    /// dispatches the key, so neither lu-minal (the terminal would pass it on) nor the page (which
+    /// could keep it for itself) ever gets it. The View menu shows the same shortcut.
+    private func installCloudPaneShortcut() {
+        cloudPaneShortcut = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard AppDelegate.isCloudPaneShortcut(event), let session = self?.keySession else {
+                return event
+            }
+            if !event.isARepeat {
+                session.toggleCloudPane()
+            }
+            return nil
+        }
+    }
+
+    /// Command-Shift-K, with no other modifier (Caps Lock aside). The key is the one that types
+    /// "k", or the K key's position on layouts that type no Latin letters there.
+    static func isCloudPaneShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock)
+        guard flags == [.command, .shift] else { return false }
+        if let characters = event.charactersIgnoringModifiers, characters.unicodeScalars.allSatisfy({ $0.isASCII }) {
+            return characters.lowercased() == "k"
+        }
+        return event.keyCode == 40 // kVK_ANSI_K
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -211,6 +240,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         optionAsMetaItem?.state = on ? .on : .off
     }
 
+    @objc func toggleCloudPane(_ sender: Any?) {
+        keySession?.toggleCloudPane()
+    }
+
+    /// Removes the cloud pane's cookies and website data, so claude.ai asks to sign in again.
+    @objc func signOutOfCloudPane(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Sign out of the cloud pane?"
+        alert.informativeText = "This removes the cloud pane's cookies and website data from this Mac, so claude.ai asks you to sign in again. Your cloud sessions keep running."
+        alert.addButton(withTitle: "Sign Out")
+        alert.addButton(withTitle: "Cancel")
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            if response == .alertFirstButtonReturn {
+                CloudPaneView.removeWebsiteData()
+            }
+        }
+        if let window = keySession?.window {
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(toggleCloudPane(_:)) {
+            menuItem.state = keySession?.isCloudPaneVisible == true ? .on : .off
+            return keySession != nil
+        }
+        return true
+    }
+
     @objc func openDocs(_ sender: Any?) {
         if let url = URL(string: AppDelegate.docsURL) {
             NSWorkspace.shared.open(url)
@@ -251,7 +311,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         attach(file, to: main)
 
+        // Undo, Redo and Cut are for the cloud pane's text fields; the terminal has none of them,
+        // so there they stay disabled and the keys go to the terminal as before.
         let edit = NSMenu(title: "Edit")
+        edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(NSMenuItem.separator())
+        edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
@@ -265,6 +332,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let meta = addItem(to: view, title: "Use Option as Meta Key", action: #selector(toggleOptionAsMeta(_:)), key: "")
         meta.state = optionAsMeta ? .on : .off
         optionAsMetaItem = meta
+        view.addItem(NSMenuItem.separator())
+        let cloudPane = addItem(to: view, title: "Cloud Pane", action: #selector(toggleCloudPane(_:)), key: "k")
+        cloudPane.keyEquivalentModifierMask = [.command, .shift]
+        addItem(to: view, title: "Sign Out of the Cloud Pane\u{2026}", action: #selector(signOutOfCloudPane(_:)), key: "")
         view.addItem(NSMenuItem.separator())
         let fullScreen = view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]

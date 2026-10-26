@@ -102,6 +102,8 @@ jobs:
           path: macos/.build
           key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}
           restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
+      - name: Test the cloud pane's escape-sequence filter and URL policy
+        run: bash macos/scripts/test-pane.sh
       - name: Build the macOS binaries (arm64 and x64)
         run: |
           bun scripts/build-binaries.ts --target=macos --outdir=dist-bin --smoke

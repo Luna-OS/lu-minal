@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RELEASE_TARGETS, resolveTargets } from "../../src/platform/install-info.js";
 import { MOON_ANSI, moonAnsiPalette } from "../../src/platform/windows-terminal.js";
+import { builtinTheme, MOON_PALETTE } from "../../src/themes/builtin.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 /** Reads a repository file with LF line endings (a Windows checkout may have CRLF). */
@@ -104,6 +105,67 @@ describe("the Swift package and the app bundle", () => {
     expect(launcher).toContain('env["TERM"] = "xterm-256color"');
     expect(launcher).toContain('env["COLORTERM"] = "truecolor"');
     expect(launcher).toContain('"/bin/zsh"');
+  });
+});
+
+describe("the macOS app's cloud pane", () => {
+  const swiftDir = path.join(ROOT, "macos", "Sources", "LuMinal");
+  const sources = fs
+    .readdirSync(swiftDir)
+    .filter((n) => n.endsWith(".swift"))
+    .map((n) => read("macos", "Sources", "LuMinal", n))
+    .join("\n");
+
+  it("is drawn in the Moon family's colours", () => {
+    const swift = read("macos", "Sources", "LuMinal", "MoonPalette.swift");
+    const single = (name: string) => new RegExp(`static let ${name} = "(#[0-9a-f]{6})"`).exec(swift)?.[1];
+    const moon = builtinTheme("moon")!.colors;
+    expect(single("glass")).toBe(MOON_PALETTE.night900);
+    expect(single("raised")).toBe(MOON_PALETTE.night800);
+    expect(single("hairline")).toBe(moon.border);
+    expect(single("lavender")).toBe(MOON_PALETTE.lavender400);
+    expect(single("cream")).toBe(MOON_PALETTE.cream100);
+    expect(single("muted")).toBe(moon.muted);
+    expect(single("faint")).toBe(moon.faint);
+    expect(single("mint")).toBe(MOON_PALETTE.mint400);
+    expect(single("warning")).toBe(MOON_PALETTE.warning400);
+  });
+
+  it("tells lu-minal it runs in the app, beside a web pane", () => {
+    const launcher = read("macos", "Sources", "LuMinal", "Launcher.swift");
+    expect(launcher).toContain('env["LU_MINAL_APP"] = "1"');
+    expect(launcher).toContain('env["LU_MINAL_WEB_PANE"] = "1"');
+    expect(launcher).toContain('env["TERM_PROGRAM"] = "lu-minal"');
+  });
+
+  it("listens for OSC 7701 and keeps to the shared limits and message", () => {
+    const filter = read("macos", "Sources", "LuMinal", "PaneSequenceFilter.swift");
+    expect(filter).toContain("static let introducer: [UInt8] = [0x1b, 0x5d, 0x37, 0x37, 0x30, 0x31]");
+    expect(filter).toContain("static let maxSequenceLength = 4096");
+    const policy = read("macos", "Sources", "LuMinal", "CloudPanePolicy.swift");
+    expect(policy).toContain('static let homeURL = URL(string: "https://claude.ai/code")!');
+    expect(policy).toContain(`"Google sign-in doesn't work inside lu-minal. Use 'Continue with email' (Claude sends you a code)."`);
+    // The filter and the policy are checked by their own Swift tests, which CI runs on macOS.
+    expect(read(".github", "workflows", "ci.yml")).toMatch(/\n {2}macos-app:\n[\s\S]*?run: bash macos\/scripts\/test-pane\.sh\n/);
+  });
+
+  it("only shows the website: no scripts in the page, nothing read from it, WebKit's own user agent", () => {
+    for (const api of [
+      "evaluateJavaScript",
+      "callAsyncJavaScript",
+      "WKUserScript",
+      "userContentController",
+      "WKScriptMessageHandler",
+      "customUserAgent",
+      "applicationNameForUserAgent",
+      "httpCookieStore",
+      "fetchDataRecords",
+      "takeSnapshot",
+      "createWebArchiveData",
+    ]) {
+      expect(sources, api).not.toContain(api);
+    }
+    expect(sources).toContain("WKWebsiteDataStore.default()");
   });
 });
 

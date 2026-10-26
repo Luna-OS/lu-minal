@@ -46,9 +46,12 @@ export function TabBar({ hub, rect, frame }: { hub: Hub; rect: Rect; frame: numb
   const gaugeWidth = rect.width >= 130 ? 24 : 0;
   const rightW = gaugeWidth ? gaugeWidth * 2 + 3 : 0;
 
+  // On the home screen its own segment is the active tab.
+  const home = hub.homeShown;
+  const homeBg = home ? c.tabActiveBg : undefined;
   const left: Seg[] = [
-    { text: " ☾ ", color: c.accent, bold: true },
-    { text: "lu-minal ", color: c.text, bold: true },
+    { text: " ☾ ", color: c.accent, bold: true, bg: homeBg },
+    { text: "lu-minal ", color: home ? c.tabActiveFg : c.text, bold: true, bg: homeBg },
   ];
   if (hub.updateStatus) left.push({ text: `${hub.updateStatus} `, color: c.accent2 });
   else if (hub.updateInstalled) left.push({ text: `✓ ${hub.updateInstalled}: restart `, color: c.success });
@@ -57,7 +60,7 @@ export function TabBar({ hub, rect, frame }: { hub: Hub; rect: Rect; frame: numb
   const tabs = hub.projects;
   const each = Math.max(8, Math.floor(room / Math.max(1, tabs.length)) - 1);
   tabs.forEach((p, i) => {
-    const active = i === hub.activeIndex;
+    const active = !home && i === hub.activeIndex;
     const badge = tabBadge(p, theme, frame);
     const label = truncate(`${i + 1} ${p.name}`, Math.max(4, each - 2 - (badge ? 2 : 0)));
     left.push({ text: " ", color: c.faint });
@@ -119,6 +122,19 @@ export function Footer({ hub, project, rect }: { hub: Hub; project: Project | un
       <Line
         rect={rect}
         left={[{ text: "ctrl+t open a project · ctrl+k commands · ctrl+l sign in · ? help · ctrl+q quit", color: c.faint }]}
+        bg={c.bg}
+      />
+    );
+  }
+  if (hub.homeShown) {
+    return (
+      <Line
+        rect={rect}
+        left={[
+          { text: "esc ", color: c.faint },
+          { text: `back to ${project.name}`, color: c.muted },
+          { text: " · alt+1..9 tabs · ↑↓ enter recent · ctrl+t open · ctrl+k commands · ? help · ctrl+q quit", color: c.faint },
+        ]}
         bg={c.bg}
       />
     );

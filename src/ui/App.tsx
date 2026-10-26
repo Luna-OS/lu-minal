@@ -14,13 +14,14 @@ import {
   type Attachment,
 } from "../core/attachments.js";
 import type { Hub, TerminalRunner } from "../core/hub.js";
-import type { Project } from "../core/project.js";
+import { newestModels } from "../core/news.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
 import { spawnProgram } from "../platform/process.js";
 import { commandSuggestions, findCommand, runCommandLine, type CommandContext } from "./commands.js";
 import { AgentPanel } from "./components/AgentPanel.js";
 import { Axo } from "./components/Axo.js";
 import { Footer, Header, TabBar, Toasts } from "./components/Chrome.js";
+import { Home, openRecent, recentFolders } from "./components/Home.js";
 import { MoonGauge } from "./components/MoonGauge.js";
 import { Sky } from "./components/Sky.js";
 import { createLaunchers } from "./dialogs/index.js";
@@ -29,7 +30,6 @@ import { computeLayout, type Layout } from "./layout.js";
 import type { Row } from "./log-lines.js";
 import { addPaste, deleteChipBefore, expandPastes, isLongPaste, keepReferenced, noPastes, type Pastes } from "./paste.js";
 import { HubContext, UiContext, useHub, type DialogSpec, type UiServices } from "./store.js";
-import { truncate } from "./text.js";
 import type { AxoMood } from "./axo/frames.js";
 
 /** A sent prompt, with the texts behind its paste chips so that recalling it brings the chips back. */
@@ -69,6 +69,11 @@ function Screen({ onExit }: { onExit: () => void }) {
 
   const project = hub.activeProject;
   const focused = project?.focused;
+  // The home screen covers the tabs (and stands in for none); the prompt can't be typed into there.
+  const home = hub.homeShown;
+  const [homePick, setHomePick] = useState(0);
+  const recent = useMemo(() => (home ? recentFolders(hub) : []), [home, hub, hub.config.recent, hub.projects.length]);
+  const pick = Math.min(homePick, Math.max(0, recent.length - 1));
   const anyBusy = hub.projects.some((p) => p.agents.some((a) => a.busy));
   const { frame } = useAnimation({ interval: 140, isActive: anyBusy });
   // A slow tick while idle, so the header clock moves on and "Done!" turns back into "Ready".
@@ -142,7 +147,10 @@ function Screen({ onExit }: { onExit: () => void }) {
     });
   };
   const setPrompt = (text: string) => {
-    if (focused) setEditor(focused, { value: text, cursor: text.length });
+    if (!focused) return;
+    // A command picked on home goes to the prompt of the tab underneath.
+    hub.closeHome();
+    setEditor(focused, { value: text, cursor: text.length });
   };
 
   // ---- attachments -----------------------------------------------------------------------------
@@ -184,7 +192,8 @@ function Screen({ onExit }: { onExit: () => void }) {
     hub,
     ui,
     project,
-    agent: focused,
+    // No focused agent on home: the help runs a command picked there instead of filling a prompt.
+    agent: home ? undefined : focused,
     setPrompt,
     toggleZoom,
     attach: attachPaths,
@@ -248,10 +257,19 @@ function Screen({ onExit }: { onExit: () => void }) {
   const scrollBy = (agent: Agent, delta: number) =>
     setScrolls((s) => ({ ...s, [agent.id]: Math.max(0, (s[agent.id] ?? 0) + delta) }));
 
+  /** Home: ↑ ↓ pick a recent folder, enter opens it, esc goes back to the tab underneath. */
+  const handleHomeKey = (input: string, key: Key) => {
+    if (key.escape) return hub.closeHome();
+    if (key.upArrow) return setHomePick(Math.max(0, pick - 1));
+    if (key.downArrow) return setHomePick(Math.min(Math.max(0, recent.length - 1), pick + 1));
+    if (key.return && recent[pick]) return openRecent(hub, recent[pick]);
+    if (input === "?") return launchers.help();
+  };
+
   const handleKey = (input: string, key: Key) => {
     if (key.ctrl && input === "q") return quit();
     if (key.ctrl && input === "c") {
-      if (focused?.busy) {
+      if (!home && focused?.busy) {
         focused.interrupt();
         return;
       }
@@ -265,16 +283,14 @@ function Screen({ onExit }: { onExit: () => void }) {
     if (key.ctrl && input === "t") return launchers.newTab();
     if (key.ctrl && input === "k") return launchers.palette();
     if (key.ctrl && input === "l") return launchers.login();
-    if (key.ctrl && input === "n") return launchers.newAgent();
-    if (key.ctrl && input === "o" && focused) return launchers.model(focused);
-    if (key.ctrl && input === "f") return toggleZoom();
+    if (key.meta && input === "0") return hub.openHome();
     if (key.meta && /^[1-9]$/.test(input)) return hub.switchTo(Number(input) - 1);
     if ((key.meta && key.leftArrow) || (key.ctrl && key.pageUp)) return hub.cycleTab(-1);
     if ((key.meta && key.rightArrow) || (key.ctrl && key.pageDown)) return hub.cycleTab(1);
-    if (!project) {
-      if (input === "?") return launchers.help();
-      return;
-    }
+    if (home || !project) return handleHomeKey(input, key);
+    if (key.ctrl && input === "n") return launchers.newAgent();
+    if (key.ctrl && input === "o" && focused) return launchers.model(focused);
+    if (key.ctrl && input === "f") return toggleZoom();
     const agent = focused;
     const editor = editorOf(agent);
     if (key.ctrl && input === "w" && !editor.value) return launchers.closeTab(project);
@@ -345,7 +361,7 @@ function Screen({ onExit }: { onExit: () => void }) {
   useInput(handleKey, { isActive: !dialogOpen });
   usePaste(
     (text) => {
-      if (!focused) return;
+      if (!focused || home) return;
       // An empty paste: the terminal's paste key with no text on the clipboard, only a picture or
       // copied files. Windows Terminal (Ctrl+V, from 1.24 on), the macOS app (Cmd+V), GNOME Terminal
       // and others send one so that the program can read the clipboard itself.
@@ -366,15 +382,24 @@ function Screen({ onExit }: { onExit: () => void }) {
   // ---- layout ----------------------------------------------------------------------------------
 
   const showAxo = theme.axo && hub.config.axo;
+  // Home draws no panels: the sky has no glass and the moon comes out.
+  const shown = home ? undefined : project;
   const layout: Layout = computeLayout({
     width: columns,
     height: rows,
-    agents: project?.agents ?? [],
+    agents: shown?.agents ?? [],
     focusedId: focused?.id ?? null,
     zoomed: project?.zoomed ?? false,
     axo: showAxo,
   });
   const glass = layout.panels.map((p) => ({ ...p.rect, focused: p.agentId === focused?.id }));
+  // A few ms over the whole catalog: worked out again when it or the Claude account changes, and
+  // each minute (for sign-ins elsewhere).
+  const minute = Math.floor(now / 60_000);
+  const models = useMemo(
+    () => (home ? newestModels(hub.registry, minute * 60_000) : []),
+    [home, hub, hub.catalogSource, hub.claudeAccount, minute],
+  );
 
   // Axo's mood follows the team.
   const leadBusy = Boolean(project?.agents.some((a) => a.busy));
@@ -414,23 +439,23 @@ function Screen({ onExit }: { onExit: () => void }) {
   return (
     <UiContext value={ui}>
       <Box width={columns} height={rows}>
-        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} enabled={hub.config.sky.enabled} moonAt={project ? null : undefined} />
+        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} enabled={hub.config.sky.enabled} moonAt={shown ? null : undefined} />
         <TabBar hub={hub} rect={layout.tabBar} frame={frame} />
-        {project ? <Header hub={hub} project={project} rect={layout.header} now={now} /> : null}
-        {project ? (
+        {shown ? <Header hub={hub} project={shown} rect={layout.header} now={now} /> : null}
+        {shown ? (
           layout.panels.map((slot) => {
-            const agent = project.agents.find((a) => a.id === slot.agentId);
+            const agent = shown.agents.find((a) => a.id === slot.agentId);
             if (!agent) return null;
             const isFocused = agent.id === focused?.id;
-            const reserve = layout.axo && agent === leadAgent && !project.zoomed ? layout.axo.width + 1 : 0;
+            const reserve = layout.axo && agent === leadAgent && !shown.zoomed ? layout.axo.width + 1 : 0;
             return (
               <AgentPanel
                 key={agent.id}
                 agent={agent}
-                project={project}
+                project={shown}
                 rect={slot.rect}
                 focused={isFocused}
-                zoomed={project.zoomed}
+                zoomed={shown.zoomed}
                 theme={theme}
                 frame={frame}
                 now={now}
@@ -443,9 +468,9 @@ function Screen({ onExit }: { onExit: () => void }) {
             );
           })
         ) : (
-          <Welcome hub={hub} layout={layout} />
+          <Home hub={hub} area={layout.content} recent={recent} pick={pick} models={models} now={now} />
         )}
-        {project && !project.zoomed
+        {shown && !shown.zoomed
           ? layout.connectors.map((line, i) => (
               <Box key={`conn${i}`} position="absolute" left={line.x} top={line.y1} width={1} height={line.y2 - line.y1 + 1}>
                 <Text color={c.border} backgroundColor={c.bg}>
@@ -454,12 +479,12 @@ function Screen({ onExit }: { onExit: () => void }) {
               </Box>
             ))
           : null}
-        {project && layout.axo && leadAgent && !project.zoomed ? (
+        {shown && layout.axo && leadAgent && !shown.zoomed ? (
           <Box position="absolute" left={layout.axo.x} top={layout.axo.y} width={layout.axo.width} height={layout.axo.height} flexDirection="column" alignItems="center">
             <Axo
               mood={mood}
               bg={leadAgent.id === focused?.id ? c.surfaceFocus : c.surface}
-              caption={leadBusy ? `${(project.agents.find((a) => a.status === "working")?.activity ?? "Working")}…` : mood === "done" ? "Done!" : "Ready when you are."}
+              caption={leadBusy ? `${(shown.agents.find((a) => a.status === "working")?.activity ?? "Working")}…` : mood === "done" ? "Done!" : "Ready when you are."}
               captionColor={leadBusy ? c.accent2 : c.muted}
               animate={hub.config.sky.enabled}
             />
@@ -472,7 +497,7 @@ function Screen({ onExit }: { onExit: () => void }) {
           </Box>
         ) : null}
         <Footer hub={hub} project={project} rect={layout.footer} />
-        {layout.hiddenWorkers > 0 && project && !project.zoomed ? (
+        {layout.hiddenWorkers > 0 && shown && !shown.zoomed ? (
           <Box position="absolute" left={Math.max(0, layout.content.x + layout.content.width - 34)} top={Math.max(0, layout.footer.y - 1)} width={34} height={1}>
             <Text color={c.warning} backgroundColor={c.bg} wrap="truncate">
               {` +${layout.hiddenWorkers} more · page ${layout.page + 1}/${layout.pages} · tab `}
@@ -483,49 +508,5 @@ function Screen({ onExit }: { onExit: () => void }) {
         {top ? <React.Fragment key={top.id}>{top.render(ui.closeDialog)}</React.Fragment> : null}
       </Box>
     </UiContext>
-  );
-}
-
-function Welcome({ hub, layout }: { hub: Hub; layout: Layout }) {
-  const c = hub.theme.colors;
-  const acc = hub.claudeAccount;
-  const free = hub.registry.freeModels({ connectedOnly: true }).length;
-  const lines: Array<{ text: string; color: string; bold?: boolean }> = [
-    { text: "lu-minal", color: c.accent, bold: true },
-    { text: "a team of coding agents under the night sky", color: c.muted },
-    { text: "", color: c.muted },
-    { text: "ctrl+t   open a project (folder, GitHub, Forgejo)", color: c.text },
-    { text: "ctrl+l   sign in - Claude with your subscription, OpenRouter, keys", color: c.text },
-    { text: "ctrl+k   all commands        ?   help", color: c.text },
-    { text: "", color: c.muted },
-    {
-      text: acc?.loggedIn
-        ? `✓ Claude: ${acc.email ?? "signed in"}${acc.plan ? ` (${acc.plan})` : ""}`
-        : acc?.installed
-          ? "○ Claude Code is installed - ctrl+l to sign in"
-          : "○ Claude Code not found - ctrl+l installs it",
-      color: acc?.loggedIn ? c.success : c.faint,
-    },
-    { text: `✓ ${free} free models ready (OpenCode Zen - no key needed)`, color: free ? c.success : c.faint },
-  ];
-  const w = Math.min(70, layout.content.width);
-  const left = layout.content.x + Math.max(0, Math.floor((layout.content.width - w) / 2));
-  const showAxo = hub.theme.axo && layout.content.height >= lines.length + 13;
-  const top = layout.content.y + Math.max(0, Math.floor((layout.content.height - lines.length - (showAxo ? 12 : 0)) / 2));
-  return (
-    <Box position="absolute" left={left} top={top} width={w} flexDirection="column" alignItems="center">
-      {showAxo ? <Axo mood={hub.ready ? "idle" : "sleep"} bg={c.bg} caption={hub.ready ? "Ready when you are." : "Waking up…"} captionColor={c.muted} animate={hub.config.sky.enabled} /> : null}
-      {showAxo ? <Box height={1} /> : null}
-      {lines.map((l, i) =>
-        l.text ? (
-          <Text key={i} color={l.color} bold={l.bold} backgroundColor={c.bg} wrap="truncate">
-            {truncate(l.text, w)}
-          </Text>
-        ) : (
-          // An empty row that leaves the sky visible.
-          <Box key={i} height={1} />
-        ),
-      )}
-    </Box>
   );
 }

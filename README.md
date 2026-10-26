@@ -156,6 +156,7 @@ and `opencode/big-pickle` workers: `/new minimax/MiniMax-M3 [voice] add text-to-
 | shift+tab | permission mode |
 | ctrl+t, ctrl+w | new tab, close tab |
 | alt+1…9, alt+← → | switch tabs (also ctrl+pageup / pagedown) |
+| alt+0 (`/home`) | home: recent folders, new models, Claude Code news, Anthropic status (esc goes back) |
 | ctrl+n | add an agent |
 | ctrl+o | change the focused agent's model |
 | ctrl+l | sign in |

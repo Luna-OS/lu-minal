@@ -60,6 +60,13 @@ function needProject(ctx: CommandContext): Project | undefined {
 
 export const COMMANDS: Command[] = [
   { name: "help", aliases: ["?", "keys"], description: "Keys and commands", keys: "?", run: (ctx) => ctx.dialogs.help() },
+  {
+    name: "home",
+    aliases: ["start", "news"],
+    description: "The start screen: recent folders, new models, Claude Code news, Anthropic status",
+    keys: "alt+0",
+    run: (ctx) => ctx.hub.openHome(),
+  },
   { name: "tab", aliases: ["open", "new-tab"], description: "Open a project in a new tab (folder, GitHub, Forgejo)", keys: "ctrl+t", run: (ctx) => ctx.dialogs.newTab() },
   {
     name: "close",

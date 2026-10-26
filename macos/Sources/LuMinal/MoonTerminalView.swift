@@ -27,6 +27,21 @@ final class MoonTerminalView: LocalProcessTerminalView {
         }
     }
 
+    /// Edit > Undo and Redo are there for the cloud pane's text fields, and WebKit keeps the
+    /// page's edits in the window's undo manager. The terminal answers both itself, as
+    /// unavailable, so while it has the focus Cmd+Z and Shift+Cmd+Z come to it as before instead
+    /// of undoing typing in the page behind the user's back.
+    @objc func undo(_ sender: Any?) {}
+
+    @objc func redo(_ sender: Any?) {}
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(undo(_:)) || item.action == #selector(redo(_:)) {
+            return false
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         guard processEnded else {
             super.send(source: source, data: data)

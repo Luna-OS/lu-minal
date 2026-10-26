@@ -3,7 +3,8 @@
 // browser and close. The app only shows the page: it injects no scripts, reads nothing from it and
 // keeps WebKit's own user agent. It decides where the page may go (CloudPanePolicy), opens other
 // links in the default browser, and answers what a browser would: a file picker for uploads,
-// alert / confirm / prompt, downloads to ~/Downloads. Camera and microphone requests are refused.
+// alert / confirm / prompt, downloads to ~/Downloads. Camera and microphone requests are refused,
+// and so are windows a script opens without a click (a popup blocker, as in Safari).
 // The sign-in lives in WebKit's persistent data store for the app, so it survives restarts and is
 // shared by all windows; View > Sign Out of the Cloud Pane removes it.
 import AppKit
@@ -149,6 +150,11 @@ final class CloudPaneView: NSView, WKNavigationDelegate, WKUIDelegate, WKDownloa
         let configuration = WKWebViewConfiguration()
         // The app's persistent store: the sign-in survives restarts.
         configuration.websiteDataStore = WKWebsiteDataStore.default()
+        // A popup blocker, as in Safari: window.open only after a click or a key press. WebKit on
+        // macOS lets scripts open windows on their own by default, and every new window lands in
+        // createWebViewWith, which loads it in the pane or hands it to the default browser, so a
+        // script in any frame of the page could otherwise open browser tabs (or mail) unasked.
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         let web = WKWebView(frame: .zero, configuration: configuration)
         web.navigationDelegate = self
         web.uiDelegate = self

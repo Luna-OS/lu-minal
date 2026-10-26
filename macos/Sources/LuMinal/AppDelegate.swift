@@ -311,8 +311,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         attach(file, to: main)
 
-        // Undo, Redo and Cut are for the cloud pane's text fields; the terminal has none of them,
-        // so there they stay disabled and the keys go to the terminal as before.
+        // Undo, Redo and Cut are for the cloud pane's text fields. While the terminal has the
+        // focus they stay disabled (it has no Cut and turns Undo and Redo down, see
+        // MoonTerminalView) and the keys go to the terminal as before.
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")

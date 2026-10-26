@@ -38,7 +38,9 @@ claude.ai; the app only displays it. It puts no scripts into the page, reads not
   there (Google refuses sign-ins in embedded web views), so the pane stops it and says so.
 - **Links**: pages on claude.ai, `*.anthropic.com` and the Cloudflare check claude.ai shows open
   in the pane. Everything else (GitHub, docs elsewhere, a page you Command-click) opens in your
-  default browser, and so do sign-in pages of other sites (single sign-on, for example).
+  default browser, and so do sign-in pages of other sites (single sign-on, for example). As in
+  Safari, a page can only open a new window (or browser tab) when you click or type, never on its
+  own.
 - **Files**: uploads (the page's file picker) open the standard Open panel; downloads go to your
   Downloads folder. Camera and microphone requests are refused.
 - **Where the sign-in is kept**: in WebKit's data store for this app, in your Library folder under

@@ -54,9 +54,15 @@ enum CloudPanePolicy {
     static func navigation(for url: URL) -> Navigation {
         let scheme = url.scheme?.lowercased() ?? ""
         switch scheme {
-        case "about", "blob":
-            // about:blank and the page's own blob: URLs stay with the page.
+        case "about":
+            // about:blank stays with the page.
             return .allow
+        case "blob":
+            // A blob: URL names the origin that made it ("blob:https://claude.ai/<uuid>"). Only
+            // the pages the pane shows itself may put one in the pane: one made by a frame from
+            // elsewhere (window.open from an embedded page) would show that page's content under
+            // the pane's header, and no other browser could open it either.
+            return blobOriginHost(url).map(isInPlaceHost) == true ? .allow : .ignore
         case "http", "https":
             break
         case "mailto":
@@ -73,6 +79,20 @@ enum CloudPanePolicy {
             return .allow
         }
         return .openInBrowser
+    }
+
+    /// The host of the https origin a blob: URL was made by, or nil (another scheme, an opaque
+    /// "null" origin, a host that is not a plain DNS name).
+    static func blobOriginHost(_ url: URL) -> String? {
+        let text = url.absoluteString
+        guard let colon = text.firstIndex(of: ":") else { return nil }
+        guard let inner = URLComponents(string: String(text[text.index(after: colon)...])),
+              inner.scheme?.lowercased() == "https",
+              inner.user == nil, inner.password == nil,
+              inner.port == nil || inner.port == 443 else {
+            return nil
+        }
+        return dnsName(inner.percentEncodedHost)
     }
 
     /// claude.ai or a subdomain of it.

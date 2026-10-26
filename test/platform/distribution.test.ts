@@ -167,6 +167,14 @@ describe("the macOS app's cloud pane", () => {
     }
     expect(sources).toContain("WKWebsiteDataStore.default()");
   });
+
+  it("has a popup blocker, so no script opens browser tabs or the pane's page unasked", () => {
+    // WebKit on macOS lets scripts open windows without a click by default; every new window
+    // goes to createWebViewWith, which loads it in the pane or opens it in the default browser.
+    expect(read("macos", "Sources", "LuMinal", "CloudPaneView.swift")).toContain(
+      "configuration.preferences.javaScriptCanOpenWindowsAutomatically = false",
+    );
+  });
 });
 
 describe("the Linux desktop entry and icon", () => {

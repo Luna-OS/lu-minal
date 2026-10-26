@@ -25,7 +25,7 @@ refuses them:
 
 - **Secret stores.** Reads of lu-minal's own config and state folders (`auth.json`, the MCP bearer
   tokens, `session.json`), the usual credential files (`~/.ssh`, `~/.aws`, `~/.netrc`,
-  `~/.git-credentials`, `~/.npmrc`, `~/.config/gh`, `~/.claude.json`, browser profiles, shell
+  `~/.git-credentials`, `~/.npmrc`, `~/.config/gh`, `~/.claude.json`, browser profiles, the cloud pane's claude.ai sign-in in the macOS app and the Windows window, shell
   histories, ...) and `/proc/<pid>/` on Linux and in Git Bash. A search (`grep`, `rg`, the grep
   tool, Claude Code's Grep) from a folder that contains one, such as `~`, counts too. Paths are
   checked the way the agent reads them: Claude Code opens `~/.ssh/x` in the home folder and Git

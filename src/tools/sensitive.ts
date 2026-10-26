@@ -79,6 +79,11 @@ const MAC_SECRETS = [
   "Library/Application Support/Firefox",
   "Library/Application Support/BraveSoftware",
   "Library/Application Support/Microsoft Edge",
+  // The macOS app's cloud pane: its sign-in to claude.ai (WebKit's data and cookies for the app's
+  // bundle id, see macos/README.md).
+  "Library/WebKit/os.luna.lu-minal",
+  "Library/HTTPStorages/os.luna.lu-minal",
+  "Library/HTTPStorages/os.luna.lu-minal.binarycookies",
 ];
 
 /** Project folders and files that run on their own (git hooks and config, agents' settings). */

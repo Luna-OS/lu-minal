@@ -1,4 +1,5 @@
-// The terminal of one session: SwiftTerm's LocalProcessTerminalView, plus what happens after
+// The terminal of one session: SwiftTerm's LocalProcessTerminalView, plus the cloud pane's escape
+// sequence (taken out of lu-minal's output before SwiftTerm parses it) and what happens after
 // lu-minal has exited (the next key press closes the window instead of going to a dead process).
 import AppKit
 import SwiftTerm
@@ -8,6 +9,38 @@ final class MoonTerminalView: LocalProcessTerminalView {
     var processEnded = false
     /// Called for the first key press after lu-minal has exited.
     var onKeyAfterExit: (() -> Void)?
+    /// Called with every cloud pane command (OSC 7701) in lu-minal's output.
+    var onPaneCommand: ((PaneCommand) -> Void)?
+
+    private var paneSequences = PaneSequenceFilter()
+
+    /// lu-minal's output, as SwiftTerm 1.10's LocalProcess reads it from the PTY (on the main
+    /// queue). OSC 7701 sequences go to the window, the rest to SwiftTerm unchanged and in order;
+    /// the filter keeps its state between reads, so a sequence may be split anywhere.
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        let filtered = paneSequences.filter(slice)
+        if !filtered.bytes.isEmpty {
+            super.dataReceived(slice: filtered.bytes)
+        }
+        for command in filtered.commands {
+            onPaneCommand?(command)
+        }
+    }
+
+    /// Edit > Undo and Redo are there for the cloud pane's text fields, and WebKit keeps the
+    /// page's edits in the window's undo manager. The terminal answers both itself, as
+    /// unavailable, so while it has the focus Cmd+Z and Shift+Cmd+Z come to it as before instead
+    /// of undoing typing in the page behind the user's back.
+    @objc func undo(_ sender: Any?) {}
+
+    @objc func redo(_ sender: Any?) {}
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(undo(_:)) || item.action == #selector(redo(_:)) {
+            return false
+        }
+        return super.validateUserInterfaceItem(item)
+    }
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
         guard processEnded else {
@@ -46,8 +79,9 @@ final class MoonTerminalView: LocalProcessTerminalView {
     }
 }
 
-/// The window's content view: the night sky colour edge to edge (also under the transparent title
-/// bar) with the terminal laid out below the title bar.
+/// The terminal's side of the window (all of it while the cloud pane is closed): the night sky
+/// colour edge to edge (also under the transparent title bar) with the terminal laid out below
+/// the title bar. It is as tall as the window's content view (SessionContentView).
 final class MoonContainerView: NSView {
     let terminal: NSView
     /// Space around the terminal so text doesn't touch the window edges.

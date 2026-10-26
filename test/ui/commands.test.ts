@@ -93,7 +93,86 @@ describe("/cloud", () => {
     expect(t.hub.toasts.at(-1)).toMatchObject({ level: "success", text: 'Sent to "Fix the login test" - queued as the cloud session\'s next message.' });
     // Teleporting, watching, opening or messaging one in /cloud makes it the one.
     t.hub.pickedCloudId = older.id;
-    await runCommandLine(t.ctx, "/web message and push it");
+    await runCommandLine(t.ctx, "/remote message and push it");
     expect(t.send).toHaveBeenLastCalledWith(older, "and push it");
+  });
+});
+
+describe("/web", () => {
+  const ESC = "\u001b";
+  const BEL = "\u0007";
+  /** A hub in a window with a web pane (pane: true) or in any other terminal, with a fake terminal and browser. */
+  function setup(pane: boolean) {
+    const hub = makeHub();
+    const written: string[] = [];
+    const opened: string[] = [];
+    hub.web = {
+      env: pane ? { LU_MINAL_WEB_PANE: "1" } : {},
+      out: { write: (data: string) => void written.push(data) },
+      open: (url: string) => void opened.push(url),
+    };
+    const ctx = { hub, project: undefined, agent: undefined } as CommandContext;
+    return { hub, written, opened, ctx };
+  }
+
+  it("is its own command now, not /cloud's alias", () => {
+    expect(findCommand("web")).toMatchObject({ name: "web", args: "[show|hide|<claude.ai link>]" });
+    expect(findCommand("website")).toBe(findCommand("web"));
+    expect(findCommand("cloud")?.aliases).not.toContain("web");
+    expect(commandSuggestions("we").map((c) => c.name)).toContain("web");
+  });
+
+  it("toggles, shows and hides the pane beside the terminal and opens claude.ai links there", async () => {
+    const t = setup(true);
+    await runCommandLine(t.ctx, "/web");
+    await runCommandLine(t.ctx, "/web show");
+    await runCommandLine(t.ctx, "/web hide");
+    await runCommandLine(t.ctx, "/web toggle");
+    await runCommandLine(t.ctx, "/web https://claude.ai/code/session_01Abc");
+    await runCommandLine(t.ctx, "/web claude.ai/code/session_01Def");
+    await runCommandLine(t.ctx, "/web session_01Ghijk");
+    expect(t.written).toEqual([
+      `${ESC}]7701;toggle${BEL}`,
+      `${ESC}]7701;show${BEL}`,
+      `${ESC}]7701;hide${BEL}`,
+      `${ESC}]7701;toggle${BEL}`,
+      `${ESC}]7701;open;https://claude.ai/code/session_01Abc${BEL}`,
+      `${ESC}]7701;open;https://claude.ai/code/session_01Def${BEL}`,
+      `${ESC}]7701;open;https://claude.ai/code/session_01Ghijk${BEL}`,
+    ]);
+    expect(t.opened).toEqual([]);
+    expect(t.hub.toasts).toEqual([]);
+  });
+
+  it("opens no other site, there or in the browser", async () => {
+    for (const pane of [true, false]) {
+      const t = setup(pane);
+      for (const bad of ["https://evil.com/", "https://claude.ai.evil.com/", "https://claude.ai@evil.com/", "evil.com/claude.ai", "http://claude.ai/"]) {
+        await runCommandLine(t.ctx, `/web ${bad}`);
+        expect(t.hub.toasts.at(-1)).toMatchObject({ level: "warning" });
+        expect(t.hub.toasts.at(-1)?.text).toContain("only claude.ai pages");
+      }
+      expect(t.written).toEqual([]);
+      expect(t.opened).toEqual([]);
+    }
+  });
+
+  it("opens claude.ai/code in the browser without a pane, saying where it opens beside the terminal", async () => {
+    const t = setup(false);
+    await runCommandLine(t.ctx, "/web");
+    expect(t.opened).toEqual(["https://claude.ai/code"]);
+    expect(t.hub.toasts.at(-1)).toMatchObject({
+      level: "info",
+      text: "Opened claude.ai/code in the browser - in the lu-minal app on macOS and Windows it opens beside the terminal.",
+    });
+    await runCommandLine(t.ctx, "/web show");
+    await runCommandLine(t.ctx, "/web https://claude.ai/code/session_01Abc");
+    expect(t.opened).toEqual(["https://claude.ai/code", "https://claude.ai/code", "https://claude.ai/code/session_01Abc"]);
+    expect(t.hub.toasts.at(-1)?.text).toContain("Opened claude.ai/code/session_01Abc in the browser");
+    // Nothing to hide here; and never a sequence for a terminal that has no pane.
+    await runCommandLine(t.ctx, "/web hide");
+    expect(t.opened).toHaveLength(3);
+    expect(t.hub.toasts.at(-1)?.text).toBe("No web pane in this terminal - in the lu-minal app on macOS and Windows it opens beside the terminal.");
+    expect(t.written).toEqual([]);
   });
 });

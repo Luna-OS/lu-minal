@@ -104,19 +104,24 @@ Running it again updates lu-minal (even while it is running). To uninstall, dele
 From 0.1.1 on, every release has a setup program: `lu-minal-windows-x64-setup.exe`, or
 `lu-minal-windows-arm64-setup.exe` for Windows on Arm. It installs lu-minal for you alone,
 without administrator rights, into `%LOCALAPPDATA%\Programs\lu-minal` (the folder install.ps1
-uses, so either one updates the other). It asks what else to do:
+uses, so either one updates the other). The Start menu entry **lu-minal** opens lu-minal in its
+own window (`lu-minal-window.exe`): the terminal, and beside it the Claude Code website
+(claude.ai/code) in a pane you show and hide with **Ctrl+Shift+K** – see
+[windows-app/README.md](../windows-app/README.md). It asks what else to do:
 
 - **Add lu-minal to my PATH**, so `lu-minal` works in any new terminal;
-- **Add a lu-minal profile to Windows Terminal** (Moon Dark colours); the Start menu entry then
-  opens lu-minal in Windows Terminal (a Windows Terminal that is already open shows the colours
-  after a restart, lu-minal starts either way);
-- **Create a desktop shortcut** (off unless you tick it).
+- **Add a lu-minal profile to Windows Terminal** (Moon Dark colours); the second Start menu entry,
+  **lu-minal in Windows Terminal**, then opens lu-minal there (a Windows Terminal that is already
+  open shows the colours after a restart, lu-minal starts either way; without Windows Terminal
+  the entry is **lu-minal in the console**);
+- **Create a desktop shortcut** to the window (off unless you tick it).
 
-Running a newer setup updates lu-minal in place, also while lu-minal is running: the running copy
-keeps going, and the next start is the new version. Uninstall it in Settings > Apps: that removes
-the program, the shortcuts and the Windows Terminal profile, and the PATH entry when the setup
-added it (a folder that was on your PATH before stays there). Your settings, keys and sessions
-(`%APPDATA%\lu-minal`, `%LOCALAPPDATA%\lu-minal`) are kept.
+Running a newer setup updates lu-minal in place, also while lu-minal is running (in its window or
+anywhere else): the running copies keep going, and the next start is the new version. Uninstall
+it in Settings > Apps: that removes the program, the shortcuts and the Windows Terminal profile,
+and the PATH entry when the setup added it (a folder that was on your PATH before stays there).
+Your settings, keys and sessions (`%APPDATA%\lu-minal`, `%LOCALAPPDATA%\lu-minal`, the window's
+sign-in to claude.ai included) are kept.
 
 On Windows on Arm, use the arm64 setup: the x64 one asks first, because its lu-minal runs
 emulated there.

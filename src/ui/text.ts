@@ -122,6 +122,17 @@ export function wrap(text: string, w: number): string[] {
   return out;
 }
 
+/**
+ * The OSC 0 sequence that names the terminal's window or tab. The title carries the project's
+ * name, which is its folder's and may hold any character: control characters are left out, so a
+ * name can't end the sequence and start another one (a window's web pane takes its commands that
+ * way, src/platform/web-pane.ts).
+ */
+export function titleSequence(title: string): string {
+  // eslint-disable-next-line no-control-regex
+  return `\u001b]0;${title.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")}\u0007`;
+}
+
 /** Removes ANSI escape sequences (tool output, CLI stderr). */
 export function stripAnsi(s: string): string {
   // eslint-disable-next-line no-control-regex

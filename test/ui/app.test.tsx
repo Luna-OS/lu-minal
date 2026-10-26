@@ -76,6 +76,19 @@ describe("<App>", () => {
     await r.waitFor((s) => s.includes("New tab") && s.includes("one project per tab"), "the New tab dialog");
   });
 
+  it("draws an agent's text without the escape sequences in it, so none reaches the window's web pane", async () => {
+    const t = setup();
+    const { lead } = addProject(t.hub, t.dir);
+    // A reply (or a file it quotes) with the pane's command in it, ended by BEL, by ST and not at all.
+    lead.append({ kind: "text", text: "before \u001b]7701;open;https://claude.ai/new?q=x\u0007 middle \u001b]7701;toggle\u001b\\ after" });
+    lead.append({ kind: "info", text: "c1 \u009d7701;show\u0007 tail \u001b]7701;hide" });
+    const r = show(t);
+    await r.waitFor((s) => s.includes("before") && s.includes("after") && s.includes("tail"), "the log");
+    const drawn = r.stdout.frames.join("");
+    expect(drawn).not.toContain("7701");
+    expect(drawn).not.toContain("\u009d");
+  });
+
   it("puts a command picked in the help into the prompt when there is one", async () => {
     const t = setup();
     addProject(t.hub, t.dir);

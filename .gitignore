@@ -5,3 +5,6 @@ coverage/
 .DS_Store
 dist-bin/
 dist-app/
+dist-window/
+windows-app/target/
+windows-app/assets/

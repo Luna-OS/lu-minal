@@ -79,6 +79,11 @@ const MAC_SECRETS = [
   "Library/Application Support/Firefox",
   "Library/Application Support/BraveSoftware",
   "Library/Application Support/Microsoft Edge",
+  // The macOS app's cloud pane: its sign-in to claude.ai (WebKit's data and cookies for the app's
+  // bundle id, see macos/README.md).
+  "Library/WebKit/os.luna.lu-minal",
+  "Library/HTTPStorages/os.luna.lu-minal",
+  "Library/HTTPStorages/os.luna.lu-minal.binarycookies",
 ];
 
 /** Project folders and files that run on their own (git hooks and config, agents' settings). */
@@ -196,6 +201,9 @@ export function secretLocations(opts: SensitiveOptions = {}): string[] {
       api.join(local, "Google", "Chrome", "User Data"),
       api.join(local, "Microsoft", "Edge", "User Data"),
       api.join(local, "BraveSoftware"),
+      // The Windows window app's cloud pane: its sign-in to claude.ai (cookies, storage).
+      // windows-app/src/app/win.rs (data_dir) and src/app/mod.rs keep it here.
+      api.join(local, "lu-minal", "WebView2"),
     );
   }
   raw.push(...(opts.extra ?? []));

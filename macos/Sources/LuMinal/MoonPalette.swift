@@ -15,6 +15,27 @@ enum MoonPalette {
     /// lavender-400 at a third over night-950.
     static let selection = "#454069"
 
+    // The cloud pane's chrome, from the Moon family palette (MOON_PALETTE and the moon theme in
+    // src/themes/builtin.ts; test/platform/distribution.test.ts checks them too).
+    /// night-900, the glass of the pane's header.
+    static let glass = "#141030"
+    /// night-800, the pane's banner.
+    static let raised = "#1d1742"
+    /// The hairlines (Moon's --mc-border: lavender-400 at 18 % over night-900).
+    static let hairline = "#322c55"
+    /// lavender-400, the pane's icons.
+    static let lavender = "#b9aefb"
+    /// cream-100, the pane's text.
+    static let cream = "#fbf7f0"
+    /// Moon's --mc-text-muted (cream at 62 % over night-900): the address in the header.
+    static let muted = "#a39fa7"
+    /// Moon's --mc-text-faint (cream at 40 % over night-900): icons that are off.
+    static let faint = "#706c7d"
+    /// mint-400, for things that went well (a finished download).
+    static let mint = "#7fe3c6"
+    /// warning-400, for notices (Google sign-in, a page that did not load).
+    static let warning = "#f3c766"
+
     /// The 16 ANSI colours: black, red, green, yellow, blue, magenta, cyan, white, then the bright ones.
     static let ansi: [String] = [
         "#1d1742", // black

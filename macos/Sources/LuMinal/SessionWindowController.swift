@@ -1,6 +1,8 @@
 // One lu-minal session: a Moon-styled window (transparent title bar over a full-size night-sky
-// content view) whose terminal runs lu-minal. When lu-minal exits, the window says so and the
-// next key press closes it.
+// content view) whose terminal runs lu-minal, with the cloud pane (claude.ai in a web view) beside
+// it when it is open: Cmd+Shift+K, View > Cloud Pane, the cloud button in the title bar, or
+// lu-minal itself (OSC 7701). When lu-minal exits, the window says so and the next key press
+// closes it.
 import AppKit
 import SwiftTerm
 
@@ -10,6 +12,9 @@ final class SessionWindowController: NSWindowController, NSWindowDelegate, Local
     /// Called when the window has closed, so the app can forget the session.
     var onClose: ((SessionWindowController) -> Void)?
 
+    private let content: SessionContentView
+    private let cloudPane: CloudPaneView
+    private var paneButton: NSButton?
     private var started = false
     private var ended = false
     private var closed = false
@@ -39,6 +44,14 @@ final class SessionWindowController: NSWindowController, NSWindowDelegate, Local
         let frame = NSRect(x: 0, y: 0, width: 1100, height: 720)
         let terminal = MoonTerminalView(frame: frame)
         self.terminalView = terminal
+        let pane = CloudPaneView(frame: .zero)
+        self.cloudPane = pane
+        self.content = SessionContentView(
+            frame: frame,
+            terminalArea: MoonContainerView(frame: frame, terminal: terminal),
+            pane: pane,
+            paneWidth: CloudPaneSettings.width
+        )
         let window = NSWindow(
             contentRect: frame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -80,11 +93,94 @@ final class SessionWindowController: NSWindowController, NSWindowDelegate, Local
         t.onKeyAfterExit = { [weak self] in
             self?.window?.performClose(nil)
         }
+        t.onPaneCommand = { [weak self] command in
+            self?.perform(command)
+        }
 
-        let container = MoonContainerView(frame: NSRect(origin: .zero, size: window.frame.size), terminal: t)
-        window.contentView = container
+        cloudPane.onClose = { [weak self] in
+            self?.setCloudPaneVisible(false)
+        }
+        content.onPaneResized = { width in
+            CloudPaneSettings.width = width
+        }
+        content.frame = NSRect(origin: .zero, size: window.frame.size)
+        window.contentView = content
         window.initialFirstResponder = t
-        container.layoutTerminal()
+        addPaneButton(to: window)
+        content.layoutViews()
+        content.terminalArea.layoutTerminal()
+        // Open as it was left (closed until the user first opens it).
+        if CloudPaneSettings.isOpen {
+            setCloudPaneVisible(true)
+        }
+    }
+
+    /// The cloud button at the right of the title bar, which shows and hides the pane.
+    private func addPaneButton(to window: NSWindow) {
+        let button = CloudPaneHeaderView.iconButton(symbol: "cloud", label: "Cloud Pane")
+        button.toolTip = "Show or hide the cloud pane (\u{21E7}\u{2318}K)"
+        button.target = self
+        button.action = #selector(paneButtonClicked(_:))
+        button.frame = NSRect(x: 4, y: 2, width: 28, height: 24)
+        button.autoresizingMask = [.minYMargin, .maxYMargin]
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 40, height: 28))
+        holder.addSubview(button)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = holder
+        // .right (not .trailing): the accessory attributes AppKit accepts are .bottom, .left and .right.
+        accessory.layoutAttribute = .right
+        window.addTitlebarAccessoryViewController(accessory)
+        paneButton = button
+    }
+
+    @objc private func paneButtonClicked(_ sender: Any?) {
+        toggleCloudPane()
+    }
+
+    // MARK: Cloud pane
+
+    var isCloudPaneVisible: Bool {
+        return content.isPaneVisible
+    }
+
+    func toggleCloudPane() {
+        setCloudPaneVisible(!isCloudPaneVisible)
+    }
+
+    /// Shows the pane (loading `url`, or keeping its page: the home page the first time) or hides
+    /// it, and remembers the choice for the next windows and the next start.
+    func setCloudPaneVisible(_ visible: Bool, loading url: URL? = nil) {
+        if visible {
+            cloudPane.show(url)
+            content.isPaneVisible = true
+        } else if content.isPaneVisible {
+            // The keyboard goes back to the terminal (a hidden page would keep it otherwise).
+            let hadFocus = cloudPane.containsFirstResponder
+            content.isPaneVisible = false
+            if hadFocus {
+                window?.makeFirstResponder(terminalView)
+            }
+        }
+        CloudPaneSettings.isOpen = visible
+        if let image = CloudPaneHeaderView.symbolImage(visible ? "cloud.fill" : "cloud", label: "Cloud Pane") {
+            paneButton?.image = image
+        }
+    }
+
+    /// A command lu-minal sent (OSC 7701). `open` loads only https pages on claude.ai.
+    private func perform(_ command: PaneCommand) {
+        switch command {
+        case .open(let text):
+            if let url = CloudPanePolicy.paneURL(text) {
+                setCloudPaneVisible(true, loading: url)
+            }
+        case .show:
+            setCloudPaneVisible(true)
+        case .hide:
+            setCloudPaneVisible(false)
+        case .toggle:
+            toggleCloudPane()
+        }
     }
 
     /// Shows the window and focuses the terminal.
@@ -182,6 +278,7 @@ final class SessionWindowController: NSWindowController, NSWindowDelegate, Local
     func windowWillClose(_ notification: Notification) {
         closed = true
         stopProcess()
+        cloudPane.tearDown()
         // Forget the session on the next turn of the run loop, not while AppKit is still closing
         // the window (the app holds the last reference to this controller).
         let callback = onClose

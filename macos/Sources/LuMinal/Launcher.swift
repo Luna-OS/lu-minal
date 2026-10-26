@@ -1,6 +1,7 @@
 // What a session runs: the lu-minal binary bundled at Contents/Resources/bin/lu-minal, or, in a
 // build without one, lu-minal from the login shell's PATH (Homebrew, npm, ~/.local/bin) through
-// `/bin/zsh -lc`. Either way with TERM=xterm-256color, COLORTERM=truecolor and a UTF-8 locale.
+// `/bin/zsh -lc`. Either way with TERM=xterm-256color, COLORTERM=truecolor, a UTF-8 locale,
+// LU_MINAL_APP=1 and LU_MINAL_WEB_PANE=1 (the window has a cloud pane).
 import Foundation
 
 struct LaunchCommand {
@@ -56,6 +57,8 @@ enum Launcher {
         env["TERM_PROGRAM"] = "lu-minal"
         env["TERM_PROGRAM_VERSION"] = appVersion
         env["LU_MINAL_APP"] = "1"
+        // The window has a cloud pane: lu-minal may show claude.ai pages in it (OSC 7701).
+        env["LU_MINAL_WEB_PANE"] = "1"
         if (env["LANG"] ?? "").isEmpty {
             env["LANG"] = "en_US.UTF-8"
         }

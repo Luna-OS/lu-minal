@@ -6,7 +6,8 @@ import React, { useSyncExternalStore } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLOUD_HOME, type CloudSession } from "../../src/cloud/claude-cloud.js";
 import type { Hub } from "../../src/core/hub.js";
-import { LIVE_NOTE, linkPromptLines, openCloudDialog, sessionDetails, WATCH_NOTE } from "../../src/ui/dialogs/cloud.js";
+import { webPaneKey } from "../../src/platform/web-pane.js";
+import { LIVE_NOTE, linkPromptLines, openCloudDialog, PANE_LIVE_NOTE, PANE_NOTE, sessionDetails, WATCH_NOTE } from "../../src/ui/dialogs/cloud.js";
 import { addProject, fakeUi, KEYS, renderAt, testHub } from "./ink-helpers.js";
 
 const cleanups: Array<() => void> = [];
@@ -25,11 +26,20 @@ function Live({ hub, render }: { hub: Hub; render: () => React.ReactNode }) {
 
 const SIZE = { columns: 120, rows: 36 };
 
-function setup() {
+function setup(opts: { pane?: boolean } = {}) {
   const t = testHub();
   cleanups.push(t.cleanup);
   // Never started: the terminal below is fake.
   t.hub.config.claudePath = process.execPath;
+  // A window with a web pane beside the terminal (pane: true) or any other terminal; what lu-minal
+  // writes to it, and what the hub would open in the browser (nothing: the dialog's opener wins).
+  const written: string[] = [];
+  const hubOpened: string[] = [];
+  t.hub.web = {
+    env: opts.pane ? { LU_MINAL_WEB_PANE: "1" } : {},
+    out: { write: (data: string) => void written.push(data) },
+    open: (url: string) => void hubOpened.push(url),
+  };
   const { project } = addProject(t.hub, t.dir);
   const calls: Array<{ exe: string; args: string[]; cwd?: string }> = [];
   const ui = {
@@ -66,8 +76,10 @@ function setup() {
     cleanups.push(r.unmount);
     return r;
   };
-  return { ...t, project, ui, calls, opened, claudeArgs, remember, open, showTop };
+  return { ...t, project, ui, calls, opened, hubOpened, written, claudeArgs, remember, open, showTop };
 }
+
+const pane = (url: string) => `\u001b]7701;open;${url}\u0007`;
 
 describe("the /cloud dialog", () => {
   it("offers terminal actions only, says where live progress is, and shows each session's task, age, last message and error", async () => {
@@ -88,6 +100,9 @@ describe("the /cloud dialog", () => {
     // No browser in the list; "o" is only a key.
     expect(screen).not.toMatch(/Open claude\.ai\/code|Open in the browser/);
     expect(screen).toContain("o claude.ai/code in the browser");
+    // No pane in this terminal: no website entry, nothing said about one.
+    expect(screen).not.toContain("Cloud website beside the terminal");
+    expect(screen).not.toContain("beside the terminal");
     const rows = screen.split("\n");
     const login = rows.find((l) => l.includes("Fix the flaky login test"))!;
     expect(login).toContain("started 2h ago · messaged 5m ago · ✗ Cloud session is archived");
@@ -130,6 +145,9 @@ describe("the /cloud dialog", () => {
     expect(t.opened).toEqual([]);
     await r.press("o");
     expect(t.opened).toEqual([s.url]);
+    // In the browser: never a pane sequence in a terminal without a pane.
+    expect(t.written).toEqual([]);
+    expect(t.hub.pickedCloudId).toBe(s.id);
     await r.press("x");
     expect(t.hub.cloudSessions).toEqual([]);
     await r.waitFor((x) => !x.includes("Fix the flaky login test"), "the session to go");
@@ -141,6 +159,66 @@ describe("the /cloud dialog", () => {
     await r.waitFor((s) => s.includes("Claude cloud"), "the dialog");
     await r.press("o");
     expect(t.opened).toEqual([CLOUD_HOME]);
+    expect(t.written).toEqual([]);
+    expect(t.hubOpened).toEqual([]);
+  });
+
+  describe("in a window with a web pane beside the terminal", () => {
+    it("lists the cloud website, says how to sign in there and shows it beside the terminal on enter", async () => {
+      const t = setup({ pane: true });
+      const r = t.open();
+      await r.waitFor((s) => s.includes("Cloud website beside the terminal"), "the website entry");
+      let screen = r.screen();
+      expect(screen).toContain(PANE_LIVE_NOTE);
+      expect(screen).not.toContain(LIVE_NOTE);
+      expect(screen).toContain(`claude.ai/code · ${webPaneKey()} shows and hides it`);
+      expect(screen).toContain("↑↓ move · enter pick · o claude.ai/code beside the terminal · esc close");
+      expect(screen).not.toContain("in the browser");
+      for (let i = 0; i < 3; i++) await r.press(KEYS.down);
+      screen = r.screen();
+      expect(screen).toContain(PANE_NOTE);
+      expect(screen).toContain('sign in there with "Continue with email"');
+      await r.press(KEYS.enter);
+      expect(t.written).toEqual([pane(CLOUD_HOME)]);
+      expect(t.opened).toEqual([]);
+      expect(t.hubOpened).toEqual([]);
+      // The list stays, for o on a session next.
+      expect(t.ui.dialogs).toHaveLength(1);
+      await r.press("o");
+      expect(t.written).toEqual([pane(CLOUD_HOME), pane(CLOUD_HOME)]);
+    });
+
+    it("opens a session beside the terminal on o instead of the browser", async () => {
+      const t = setup({ pane: true });
+      const s = t.remember("Fix the flaky login test", "session_01Login");
+      expect(t.hub.toasts.at(-1)?.text).toBe("Cloud session session_01Login is running on claude.ai/code - o in /cloud shows it beside the terminal.");
+      const r = t.open();
+      await r.waitFor((x) => x.includes("Fix the flaky login test"), "the session");
+      // new, all, paste, the website, then the session.
+      for (let i = 0; i < 4; i++) await r.press(KEYS.down);
+      const screen = r.screen();
+      expect(screen).toContain(WATCH_NOTE);
+      expect(screen).toContain("enter message · t teleport · w watch · o open beside · x forget · esc close");
+      t.hub.pickedCloudId = null;
+      await r.press("o");
+      expect(t.written).toEqual([pane("https://claude.ai/code/session_01Login")]);
+      expect(t.opened).toEqual([]);
+      expect(t.hubOpened).toEqual([]);
+      expect(t.hub.pickedCloudId).toBe(s.id);
+    });
+
+    it("sends a session to the browser only when its link is not one the pane takes", async () => {
+      const t = setup({ pane: true });
+      const s = t.remember("Fix the flaky login test", "session_01Login");
+      // A link remembered from an older lu-minal, or edited by hand: never into the pane.
+      s.url = "https://claude.ai@evil.com/code/session_01Login";
+      const r = t.open();
+      await r.waitFor((x) => x.includes("Fix the flaky login test"), "the session");
+      for (let i = 0; i < 4; i++) await r.press(KEYS.down);
+      await r.press("o");
+      expect(t.written).toEqual([]);
+      expect(t.opened).toEqual([s.url]);
+    });
   });
 
   it("types a message right in the dialog on enter (or m), sends it with -p --cloud and toasts the result", async () => {

@@ -102,6 +102,8 @@ jobs:
           path: macos/.build
           key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-${{ hashFiles('macos/Package.swift', 'macos/Package.resolved') }}
           restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.swift }}-
+      - name: Test the cloud pane's escape-sequence filter and URL policy
+        run: bash macos/scripts/test-pane.sh
       - name: Build the macOS binaries (arm64 and x64)
         run: |
           bun scripts/build-binaries.ts --target=macos --outdir=dist-bin --smoke
@@ -150,6 +152,54 @@ jobs:
           & "$env:RUNNER_TEMP\lu-minal.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "lu-minal.exe --version failed" }
           (Get-Item "$env:RUNNER_TEMP\lu-minal.exe").VersionInfo | Format-List ProductName, FileVersion, CompanyName
+      - name: Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { throw 'rustup could not install the stable toolchain' }
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+          rustc --version
+          cargo --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows-app
+      - name: Build the window app (lu-minal-window.exe)
+        shell: pwsh
+        run: |
+          node scripts/windows-app-assets.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'the window app assets could not be prepared' }
+          cargo test --manifest-path windows-app/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'the window app tests failed' }
+          cargo build --manifest-path windows-app/Cargo.toml --locked --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'cargo build failed for the window app' }
+          New-Item -ItemType Directory -Force dist-window | Out-Null
+          Copy-Item windows-app\target\x86_64-pc-windows-msvc\release\lu-minal-window.exe dist-window\lu-minal-window-x64.exe
+          Get-Item dist-window\lu-minal-window-x64.exe | Format-List Name, Length
+          (Get-Item dist-window\lu-minal-window-x64.exe).VersionInfo | Format-List ProductName, ProductVersion, FileVersion
+      - name: Smoke test the window app (both web views, ConPTY, OSC 7701)
+        shell: pwsh
+        run: |
+          # The app next to the freshly built lu-minal.exe, as the setup installs them.
+          $dir = Join-Path $env:RUNNER_TEMP 'lu-minal-window'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item dist-window\lu-minal-window-x64.exe (Join-Path $dir 'lu-minal-window.exe')
+          Copy-Item dist-bin\lu-minal-windows-x64.exe (Join-Path $dir 'lu-minal.exe')
+          $version = node -p "require('./package.json').version"
+          # --smoke: lu-minal.exe --version must reach xterm.js; --smoke-osc: node prints OSC 7701
+          # sequences, ConPTY passes them on, the window takes them out and refuses the bad URL.
+          $expected = @{ 'smoke' = "smoke ok $version"; 'smoke-osc' = 'smoke ok osc' }
+          foreach ($kind in 'smoke', 'smoke-osc') {
+            $out = Join-Path $env:RUNNER_TEMP "lu-minal-window-$kind.txt"
+            Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
+            # A GUI program: PowerShell would not wait for it, so it writes its result to a file.
+            $p = Start-Process -FilePath (Join-Path $dir 'lu-minal-window.exe') -ArgumentList "--$kind=`"$out`"" -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "lu-minal-window.exe --$kind did not end" }
+            $result = if (Test-Path -LiteralPath $out) { (Get-Content -Raw -LiteralPath $out).Trim() } else { '(no result file)' }
+            Write-Host "--$kind -> exit $($p.ExitCode): $result"
+            if ($p.ExitCode -ne 0 -or $result -ne $expected[$kind]) { throw "lu-minal-window.exe --$kind failed: $result" }
+          }
       - name: install.ps1 in Windows PowerShell 5.1 (irm | iex style)
         shell: powershell
         env:
@@ -217,12 +267,48 @@ jobs:
           $fragment = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\lu-minal\lu-minal.json'
           $profileLine = (Get-Content -Raw -LiteralPath $fragment | ConvertFrom-Json).profiles[0].commandline
           if ($profileLine -notlike "*$dir*") { throw "the Windows Terminal profile doesn't start the installed exe: $profileLine" }
-          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'lu-minal.lnk'
+          $window = Join-Path $dir 'lu-minal-window.exe'
+          if (-not (Test-Path -LiteralPath $window)) { throw "setup did not install $window" }
+          (Get-Item -LiteralPath $window).VersionInfo | Format-List ProductName, ProductVersion, FileVersion
+          $shell = New-Object -ComObject WScript.Shell
+          $programs = [Environment]::GetFolderPath('Programs')
+          $shortcut = Join-Path $programs 'lu-minal.lnk'
           if (-not (Test-Path -LiteralPath $shortcut)) { throw "no Start menu shortcut at $shortcut" }
+          $target = $shell.CreateShortcut($shortcut).TargetPath
+          if ($target -ine $window) { throw "the Start menu shortcut opens $target, not the window app" }
+          # The second entry: Windows Terminal with lu-minal's profile when it is installed, else the console.
+          $second = @('lu-minal in Windows Terminal.lnk', 'lu-minal in the console.lnk') | ForEach-Object { Join-Path $programs $_ } | Where-Object { Test-Path -LiteralPath $_ }
+          if (@($second).Count -ne 1) { throw "expected one 'lu-minal in Windows Terminal' or 'lu-minal in the console' entry, found $(@($second).Count)" }
+          $secondTarget = $shell.CreateShortcut(@($second)[0]).TargetPath
+          if ($secondTarget -notlike '*\wt.exe' -and $secondTarget -ine $exe) { throw "the second Start menu entry opens $secondTarget" }
+          Write-Host "Start menu: $shortcut -> $target; $(@($second)[0]) -> $secondTarget"
           $apps = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
           $entry = Get-ChildItem $apps | Where-Object { $_.GetValue('DisplayName') -eq 'lu-minal' }
           if (-not $entry) { throw 'no lu-minal entry in Settings > Apps' }
           Write-Host "Installed: $($entry.GetValue('DisplayVersion')) in $($entry.GetValue('InstallLocation'))"
+
+          # An update while the window app (and lu-minal in it) runs, as lu-minal's own updater
+          # does it: the setup moves the running exes aside and puts the new ones in their place.
+          $env:LU_MINAL_NO_UPDATE_CHECK = '1'
+          $running = Start-Process -FilePath $window -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          $null = $running.Handle
+          Start-Sleep -Seconds 10
+          if ($running.HasExited) { throw "lu-minal-window.exe ended by itself (exit $($running.ExitCode))" }
+          $setup = Start-Process -FilePath dist-bin\lu-minal-windows-x64-setup.exe -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$dir`"", "/LOG=`"$log`""
+          )
+          if ($setup.ExitCode -ne 0) { Get-Content -LiteralPath $log -Tail 60; throw "the update over the running window exited with $($setup.ExitCode)" }
+          $aside = @(Get-ChildItem -LiteralPath $dir -Filter 'lu-minal-window.old*.exe')
+          Write-Host "After the update: $((Get-ChildItem -LiteralPath $dir -Name) -join ', ')"
+          if ($aside.Count -ne 1) { throw 'the running lu-minal-window.exe was not moved aside' }
+          if (-not (Test-Path -LiteralPath $window)) { throw 'the update left no lu-minal-window.exe' }
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw 'lu-minal.exe does not start after the update' }
+          if ($running.HasExited) { throw 'the update stopped the running window' }
+          # Close the window and lu-minal (running from the moved copies) before uninstalling.
+          Stop-Process -Id $running.Id -Force -ErrorAction SilentlyContinue
+          Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
 
           # The uninstaller copies itself to a temp folder and goes on from there: wait for the files.
           $uninstall = Start-Process -FilePath (Join-Path $dir 'unins000.exe') -Wait -PassThru -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
@@ -232,6 +318,9 @@ jobs:
             Start-Sleep -Milliseconds 500
           }
           if (Test-Path -LiteralPath $exe) { throw 'the uninstaller left lu-minal.exe behind' }
+          if (Test-Path -LiteralPath $window) { throw 'the uninstaller left lu-minal-window.exe behind' }
+          if (Get-ChildItem -LiteralPath $dir -Filter '*.old*.exe' -ErrorAction SilentlyContinue) { throw 'the uninstaller left moved-aside copies behind' }
+          if ($second | Where-Object { Test-Path -LiteralPath $_ }) { throw 'the uninstaller left the second Start menu entry behind' }
           if (& $onPath) { throw "the uninstaller left $dir on the user PATH" }
           if (Test-Path -LiteralPath $fragment) { throw 'the uninstaller left the Windows Terminal profile behind' }
           if (Test-Path -LiteralPath $shortcut) { throw 'the uninstaller left the Start menu shortcut behind' }

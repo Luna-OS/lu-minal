@@ -6,6 +6,7 @@ import type { Hub } from "../core/hub.js";
 import { nextPermissionMode, PERMISSION_HINTS } from "../core/permissions.js";
 import type { Project } from "../core/project.js";
 import { PERMISSION_MODES, type PermissionMode } from "../core/types.js";
+import { cloudUrlFromInput, WEB_PANE_HOME } from "../platform/web-pane.js";
 import { parseModelRef } from "../providers/models.js";
 import { mouseReportingUseful, SELECT_HINT } from "./mouse.js";
 import type { UiServices } from "./store.js";
@@ -60,6 +61,33 @@ export interface Command {
 function needProject(ctx: CommandContext): Project | undefined {
   if (!ctx.project) ctx.hub.toast("Open a project first (ctrl+t or /tab).", "warning");
   return ctx.project;
+}
+
+/** Where /web shows the website when this terminal has no pane for it. */
+const WEB_PANE_WHERE = "in the lu-minal app on macOS and Windows it opens beside the terminal";
+
+/**
+ * /web: the claude.ai website in the web pane beside the terminal where the window has one (a bare
+ * /web toggles it, show / hide, a claude.ai link opens there), else in the browser.
+ */
+function webCommand(hub: Hub, args: string): void {
+  const a = args.trim();
+  const word = a.toLowerCase();
+  const verb = !a || word === "toggle" ? "toggle" : word === "show" || word === "open" ? "show" : word === "hide" || word === "close" ? "hide" : null;
+  const url = verb ? null : cloudUrlFromInput(a.replace(/^open\s+/i, ""));
+  if (!verb && !url) {
+    return hub.toast("Usage: /web [show|hide|<link>] - only claude.ai pages (https://claude.ai/…) open there.", "warning");
+  }
+  if (hub.hasWebPane) {
+    if (!url) return void hub.webPane(verb!);
+    // Only a link too long for the pane ends up in the browser.
+    if (hub.showCloudWeb(url) === "browser") hub.toast("That link is too long for the pane - it opened in the browser.", "info");
+    return;
+  }
+  if (verb === "hide") return hub.toast(`No web pane in this terminal - ${WEB_PANE_WHERE}.`, "info");
+  const page = url ?? WEB_PANE_HOME;
+  hub.showCloudWeb(page);
+  hub.toast(`Opened ${page.replace(/^https:\/\//, "")} in the browser - ${WEB_PANE_WHERE}.`, "info");
 }
 
 export const COMMANDS: Command[] = [
@@ -150,7 +178,7 @@ export const COMMANDS: Command[] = [
   { name: "stats", aliases: ["statistics", "tokens"], description: "Token statistics: today, this week, all time, by model and project", run: (ctx) => ctx.dialogs.stats() },
   {
     name: "cloud",
-    aliases: ["web", "remote"],
+    aliases: ["remote"],
     args: "[msg <text>]",
     description: "Claude cloud sessions in the terminal: start, message, teleport, watch (msg: to the one used last, else the newest)",
     run: async (ctx, args) => {
@@ -162,6 +190,13 @@ export const COMMANDS: Command[] = [
       if (!session) return ctx.hub.toast("No cloud session yet - /cloud starts one or adds one by its link.", "warning");
       await ctx.hub.messageCloud(session, text);
     },
+  },
+  {
+    name: "web",
+    aliases: ["website"],
+    args: "[show|hide|<claude.ai link>]",
+    description: "The claude.ai/code website beside the terminal (the lu-minal app on macOS and Windows), else in the browser",
+    run: (ctx, args) => webCommand(ctx.hub, args),
   },
   { name: "roblox", aliases: ["studio"], description: "Connect Roblox Studio", run: (ctx) => ctx.dialogs.roblox() },
   {

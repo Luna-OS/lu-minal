@@ -10,7 +10,8 @@ the app's theme, and can drive Roblox Studio through a small bridge.
 It runs the same on **Windows, macOS and Linux**: as a standalone binary per platform
 (Bun-compiled, see `scripts/build-binaries.ts`), built from source with Node (`npm run build`,
 `dist/cli.js`), and on macOS also as a native Swift app (`macos/`) that hosts the terminal in a
-Moon-styled window.
+Moon-styled window. The macOS app and the Windows window app (`windows-app/`) can show the
+claude.ai/code website beside the terminal ([the web pane](#the-web-pane-beside-the-terminal)).
 
 ## Module map
 
@@ -18,7 +19,7 @@ Moon-styled window.
 | --- | --- |
 | `src/cli.tsx` | Entry: arguments, sub-commands (`models`, `login`, `roblox install`, ...), starts the UI. |
 | `src/core/` | State: `Hub` (the app), `Project` (a tab), `Agent` (one agent and its log), config, permissions, statistics, attachments (dropped files, clipboard pictures). |
-| `src/platform/` | Paths per OS, finding / spawning programs (Windows `.cmd` shims), opening URLs. |
+| `src/platform/` | Paths per OS, finding / spawning programs (Windows `.cmd` shims), opening URLs, the web pane's escape sequence (`web-pane.ts`). |
 | `src/providers/` | Catalog (models.dev), auth store, provider registry, OpenRouter OAuth, the wire clients. |
 | `src/providers/wire/` | OpenAI chat completions, OpenAI Responses, Anthropic Messages – streaming + tool calls. |
 | `src/agents/native/` | The agent loop for API models (stream → tool calls → results → repeat). |
@@ -112,6 +113,25 @@ runs the official `claude` program:
 | Interrupt | a stream-json `control_request {subtype:"interrupt"}`. Claude Code answers at once with `{still_queued: []}` and ends the turn with an error_during_execution result (terminal_reason "aborted_tools"). If the turn doesn't end within 3 s, the CLI refuses, or esc is pressed again: SIGINT on macOS / Linux, then the process is stopped; the next message resumes with `--resume` |
 | MCP config | one http entry per agent with a bearer token and `"timeout": 86400000` (HTTP servers otherwise get 60 s per request), plus MCP_TOOL_TIMEOUT in the environment |
 | Pictures | image content blocks in the stream-json user message (base64); other files are listed by path, small text files inlined |
+
+## The web pane beside the terminal
+
+The macOS app ([macos/README.md](../macos/README.md)) and the Windows window app
+([windows-app/README.md](../windows-app/README.md)) can show the real claude.ai/code website in a
+pane beside the terminal, in the same window. claude.ai sits behind Cloudflare's bot check, and an
+automated browser could put the account at risk, so the hosts only display the page: they never
+inject scripts into it or read its DOM, cookies or storage, and lu-minal never sees them either.
+The user signs in once inside the pane ("Continue with email"; Google refuses its sign-in in
+embedded web views, which the pane says).
+
+| | |
+| --- | --- |
+| Discovery | A host with a pane sets `LU_MINAL_WEB_PANE=1` for the lu-minal it runs (`hasWebPane`). The macOS app also sets `LU_MINAL_APP=1`; the Windows window app sets `TERM_PROGRAM=lu-minal-window` and not `LU_MINAL_APP`, which means "the macOS app" (`install-info.ts`, `mouse.ts`) |
+| Commands | `ESC ] 7701 ; <command> [; <argument>] BEL` written to stdout (hosts also take `ESC \` as the end): `open;<url>` shows the pane on a page, `show` (its page, claude.ai/code the first time), `hide`, `toggle`. lu-minal writes it straight to the terminal, never through Ink: it moves no cursor, and the host takes it out of the stream before its terminal sees it |
+| The check | Any program in the terminal could print the sequence, so the URL check is the security boundary: https only, host `claude.ai` or a subdomain, no user name or password, no other port, no control characters, spaces or backslashes, at most 4096 bytes in all. lu-minal sends the URL normalised (`cloudUrl`: lower-case host of plain letters, digits and `-`, RFC 3986 characters only, so `{`, `|` or `[` go out as `%7B`, `%7C`, `%5B`) and sends nothing the hosts would refuse; the hosts check the same and ignore unknown commands |
+| Keys | The host's own: Cmd+Shift+K (macOS) and Ctrl+Shift+K (Windows) show and hide the pane and never reach lu-minal. `/web` does the same from lu-minal |
+| Navigation | In the pane: claude.ai, `*.anthropic.com` and `challenges.cloudflare.com` (the Cloudflare check). Google's sign-in is stopped with a short message, every other link opens in the default browser |
+| In lu-minal | `/web` (toggle, `show`, `hide`, a claude.ai link) and `/cloud` (o on a session, the "Cloud website beside the terminal" entry) go to the pane through `Hub.showCloudWeb` / `Hub.webPane`; without a pane they open the browser (`openExternal`) |
 
 ## Cross-platform rules
 

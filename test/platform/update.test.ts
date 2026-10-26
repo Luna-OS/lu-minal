@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { InstallInfo } from "../../src/platform/install-info.js";
+import { detectInstall, type InstallInfo } from "../../src/platform/install-info.js";
 import {
   applyUpdate,
   checkForUpdate,
@@ -114,6 +114,23 @@ describe("updatePlan", () => {
     expect(updatePlan(app, "darwin")).toEqual({ kind: "macos-app", asset: "lu-minal-macos-app.zip", app: "/Applications/LuMinal.app" });
   });
 
+  it("updates through the setup when lu-minal runs in the window app (which is not the macOS app)", () => {
+    const winExe = "C:\\Users\\ada\\AppData\\Local\\Programs\\lu-minal\\lu-minal.exe";
+    const inWindow = detectInstall({
+      argv: [winExe, "B:\\~BUN\\root\\lu-minal.exe"],
+      execPath: winExe,
+      env: { LU_MINAL_WEB_PANE: "1", TERM_PROGRAM: "lu-minal-window", TERM: "xterm-256color", COLORTERM: "truecolor" },
+      platform: "win32",
+      arch: "x64",
+    });
+    expect(inWindow.kind).toBe("binary");
+    expect(updatePlan(inWindow, "win32", (f) => f.endsWith("unins000.exe"))).toEqual({
+      kind: "windows-setup",
+      asset: "lu-minal-windows-x64-setup.exe",
+      exe: winExe,
+    });
+  });
+
   it("only names the commands for a checkout", () => {
     const plan = updatePlan(info({ kind: "source", exe: "/usr/bin/node", args: [path.join(dir, "lu minal", "dist", "cli.js")], asset: "lu-minal-linux-x64" }), process.platform);
     expect(plan).toEqual({ kind: "manual", commands: [`cd "${path.join(dir, "lu minal")}"`, "git pull", "npm ci", "npm run build"] });
@@ -159,6 +176,24 @@ describe("swapping the binary", () => {
     expect(fs.readFileSync(path.join(dir, aside[0]), "utf8")).toBe("old");
     removeOldCopies(exe);
     expect(fs.readdirSync(dir).sort()).toEqual(["lu-minal.exe", "notes.txt"]);
+  });
+
+  it("also removes the window app's copies the setup moved aside, and nothing else", () => {
+    const exe = path.join(dir, "lu-minal.exe");
+    for (const name of [
+      "lu-minal.exe",
+      "lu-minal-window.exe",
+      "lu-minal-window.old-20260101120000123.exe",
+      "LU-MINAL-WINDOW.OLD-x.EXE",
+      "lu-minal.old-20260101120000123.exe",
+      "lu-minal-windows.old-1.exe",
+      "lu-minal-window.old.txt",
+      "other.old-1.exe",
+    ]) {
+      fs.writeFileSync(path.join(dir, name), "x");
+    }
+    removeOldCopies(exe);
+    expect(fs.readdirSync(dir).sort()).toEqual(["lu-minal-window.exe", "lu-minal-window.old.txt", "lu-minal-windows.old-1.exe", "lu-minal.exe", "other.old-1.exe"]);
   });
 });
 

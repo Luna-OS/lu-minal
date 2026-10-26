@@ -25,7 +25,7 @@ refuses them:
 
 - **Secret stores.** Reads of lu-minal's own config and state folders (`auth.json`, the MCP bearer
   tokens, `session.json`), the usual credential files (`~/.ssh`, `~/.aws`, `~/.netrc`,
-  `~/.git-credentials`, `~/.npmrc`, `~/.config/gh`, `~/.claude.json`, browser profiles, shell
+  `~/.git-credentials`, `~/.npmrc`, `~/.config/gh`, `~/.claude.json`, browser profiles, the cloud pane's claude.ai sign-in in the macOS app and the Windows window, shell
   histories, ...) and `/proc/<pid>/` on Linux and in Git Bash. A search (`grep`, `rg`, the grep
   tool, Claude Code's Grep) from a folder that contains one, such as `~`, counts too. Paths are
   checked the way the agent reads them: Claude Code opens `~/.ssh/x` in the home folder and Git
@@ -169,3 +169,11 @@ All three listen on loopback only (`127.0.0.1`, plus `::1` for the OAuth callbac
   and the connection (fast DNS rebinding) is not caught.
 - A web page can make the browser call the OpenRouter callback and end a sign-in early. It can't
   sign the user in to another account, because PKCE ties the code to lu-minal's verifier.
+- In the macOS app and the Windows window app, whatever writes to the terminal itself (lu-minal,
+  or Claude Code while it has the terminal for a sign-in, a teleport or a new cloud session) could
+  print the web pane's escape sequence and switch the pane to another page. What agents write
+  can't: Ink drops escape sequences from what it draws, and the window title (which carries the
+  project's folder name, and a folder may be called anything) leaves out control characters. The
+  hosts and lu-minal take only https pages on claude.ai from it (see
+  [architecture.md](architecture.md#the-web-pane-beside-the-terminal)); the pane shows the user's
+  own signed-in claude.ai and is never scripted or read.

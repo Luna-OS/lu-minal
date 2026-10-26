@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RELEASE_TARGETS, resolveTargets } from "../../src/platform/install-info.js";
 import { MOON_ANSI, moonAnsiPalette } from "../../src/platform/windows-terminal.js";
+import { builtinTheme, MOON_PALETTE } from "../../src/themes/builtin.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 /** Reads a repository file with LF line endings (a Windows checkout may have CRLF). */
@@ -104,6 +105,75 @@ describe("the Swift package and the app bundle", () => {
     expect(launcher).toContain('env["TERM"] = "xterm-256color"');
     expect(launcher).toContain('env["COLORTERM"] = "truecolor"');
     expect(launcher).toContain('"/bin/zsh"');
+  });
+});
+
+describe("the macOS app's cloud pane", () => {
+  const swiftDir = path.join(ROOT, "macos", "Sources", "LuMinal");
+  const sources = fs
+    .readdirSync(swiftDir)
+    .filter((n) => n.endsWith(".swift"))
+    .map((n) => read("macos", "Sources", "LuMinal", n))
+    .join("\n");
+
+  it("is drawn in the Moon family's colours", () => {
+    const swift = read("macos", "Sources", "LuMinal", "MoonPalette.swift");
+    const single = (name: string) => new RegExp(`static let ${name} = "(#[0-9a-f]{6})"`).exec(swift)?.[1];
+    const moon = builtinTheme("moon")!.colors;
+    expect(single("glass")).toBe(MOON_PALETTE.night900);
+    expect(single("raised")).toBe(MOON_PALETTE.night800);
+    expect(single("hairline")).toBe(moon.border);
+    expect(single("lavender")).toBe(MOON_PALETTE.lavender400);
+    expect(single("cream")).toBe(MOON_PALETTE.cream100);
+    expect(single("muted")).toBe(moon.muted);
+    expect(single("faint")).toBe(moon.faint);
+    expect(single("mint")).toBe(MOON_PALETTE.mint400);
+    expect(single("warning")).toBe(MOON_PALETTE.warning400);
+  });
+
+  it("tells lu-minal it runs in the app, beside a web pane", () => {
+    const launcher = read("macos", "Sources", "LuMinal", "Launcher.swift");
+    expect(launcher).toContain('env["LU_MINAL_APP"] = "1"');
+    expect(launcher).toContain('env["LU_MINAL_WEB_PANE"] = "1"');
+    expect(launcher).toContain('env["TERM_PROGRAM"] = "lu-minal"');
+  });
+
+  it("listens for OSC 7701 and keeps to the shared limits and message", () => {
+    const filter = read("macos", "Sources", "LuMinal", "PaneSequenceFilter.swift");
+    expect(filter).toContain("static let introducer: [UInt8] = [0x1b, 0x5d, 0x37, 0x37, 0x30, 0x31]");
+    expect(filter).toContain("static let maxSequenceLength = 4096");
+    const policy = read("macos", "Sources", "LuMinal", "CloudPanePolicy.swift");
+    expect(policy).toContain('static let homeURL = URL(string: "https://claude.ai/code")!');
+    expect(policy).toContain(`"Google sign-in doesn't work inside lu-minal. Use 'Continue with email' (Claude sends you a code)."`);
+    // The filter and the policy are checked by their own Swift tests, which CI runs on macOS.
+    expect(read(".github", "workflows", "ci.yml")).toMatch(/\n {2}macos-app:\n[\s\S]*?run: bash macos\/scripts\/test-pane\.sh\n/);
+  });
+
+  it("only shows the website: no scripts in the page, nothing read from it, WebKit's own user agent", () => {
+    for (const api of [
+      "evaluateJavaScript",
+      "callAsyncJavaScript",
+      "WKUserScript",
+      "userContentController",
+      "WKScriptMessageHandler",
+      "customUserAgent",
+      "applicationNameForUserAgent",
+      "httpCookieStore",
+      "fetchDataRecords",
+      "takeSnapshot",
+      "createWebArchiveData",
+    ]) {
+      expect(sources, api).not.toContain(api);
+    }
+    expect(sources).toContain("WKWebsiteDataStore.default()");
+  });
+
+  it("has a popup blocker, so no script opens browser tabs or the pane's page unasked", () => {
+    // WebKit on macOS lets scripts open windows without a click by default; every new window
+    // goes to createWebViewWith, which loads it in the pane or opens it in the default browser.
+    expect(read("macos", "Sources", "LuMinal", "CloudPaneView.swift")).toContain(
+      "configuration.preferences.javaScriptCanOpenWindowsAutomatically = false",
+    );
   });
 });
 
@@ -283,9 +353,164 @@ describe("the Windows installer (Inno Setup)", () => {
   it("is installed, checked and uninstalled on a real Windows machine in CI", () => {
     expect(ci).toContain("'/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=\"path,terminal\"'");
     expect(ci).toContain("(Join-Path $dir 'unins000.exe')");
-    for (const left of ["lu-minal.exe behind", "on the user PATH", "Windows Terminal profile behind", "Start menu shortcut behind", "Settings > Apps entry is still there"]) {
+    for (const left of [
+      "lu-minal.exe behind",
+      "lu-minal-window.exe behind",
+      "moved-aside copies behind",
+      "on the user PATH",
+      "Windows Terminal profile behind",
+      "Start menu shortcut behind",
+      "second Start menu entry behind",
+      "Settings > Apps entry is still there",
+    ]) {
       expect(ci).toContain(left);
     }
+  });
+
+  it("installs the window app, which the Start menu, the desktop and 'Start lu-minal' open", () => {
+    expect(iss).toMatch(/^#ifndef WindowDir\n {2}#define WindowDir "\.\.\\dist-window"\n#endif$/m);
+    expect(iss).toContain('Source: "{#WindowDir}\\lu-minal-window-{#Arch}.exe"; DestDir: "{app}"; DestName: "lu-minal-window.exe"; Flags: ignoreversion; BeforeInstall: MoveRunningWindowAside');
+    const icons = iss.slice(iss.indexOf("\n[Icons]\n"), iss.indexOf("\n[Run]\n"));
+    expect(icons).toContain('Name: "{autoprograms}\\lu-minal"; Filename: "{app}\\lu-minal-window.exe"; WorkingDir: "{%USERPROFILE}"');
+    expect(icons).toMatch(/^Name: "\{autodesktop\}\\lu-minal"; Filename: "\{app\}\\lu-minal-window\.exe";.*Tasks: desktopicon$/m);
+    // The way it opened before, as a second entry.
+    expect(icons).toContain('Name: "{autoprograms}\\lu-minal in Windows Terminal"; Filename: "{code:TerminalExe}"; Parameters: "{code:TerminalArgs}"');
+    expect(icons).toMatch(/^Name: "\{autoprograms\}\\lu-minal in Windows Terminal";.*Check: UseTerminal$/m);
+    expect(icons).toMatch(/^Name: "\{autoprograms\}\\lu-minal in the console"; Filename: "\{app\}\\lu-minal\.exe";.*Check: not UseTerminal$/m);
+    // A later install under the other condition takes the other name away: never both entries.
+    const installDelete = iss.slice(iss.indexOf("\n[InstallDelete]\n"), iss.indexOf("\n[Files]\n"));
+    expect(installDelete).toContain('Type: files; Name: "{autoprograms}\\lu-minal in the console.lnk"; Check: UseTerminal');
+    expect(installDelete).toContain('Type: files; Name: "{autoprograms}\\lu-minal in Windows Terminal.lnk"; Check: not UseTerminal');
+    // Only the window app's entries are called just "lu-minal".
+    for (const line of icons.split("\n").filter((l) => /^Name: "\{auto(programs|desktop)\}\\lu-minal";/.test(l))) {
+      expect(line, line).toContain('Filename: "{app}\\lu-minal-window.exe"');
+    }
+    const run = iss.slice(iss.indexOf("\n[Run]\n"), iss.indexOf("\n[UninstallRun]\n"));
+    const postinstall = run.split("\n").filter((l) => l.includes("postinstall"));
+    expect(postinstall).toEqual(['Filename: "{app}\\lu-minal-window.exe"; WorkingDir: "{%USERPROFILE}"; Description: "Start lu-minal"; Flags: postinstall nowait skipifsilent']);
+    expect(iss).toMatch(/^UninstallDisplayIcon=\{app\}\\lu-minal-window\.exe$/m);
+  });
+
+  it("moves a running window app aside on an update and cleans up its old copies", () => {
+    expect(iss).toMatch(/\[InstallDelete\]\n[^[]*Name: "\{app\}\\lu-minal-window\.old\*\.exe"/);
+    expect(iss).toMatch(/\[UninstallDelete\]\n[^[]*Name: "\{app\}\\lu-minal-window\.old\*\.exe"/);
+    expect(iss).toMatch(/procedure MoveRunningWindowAside;\nbegin\n {2}MoveAside\('lu-minal-window'\);\nend;/);
+    expect(iss).toMatch(/procedure MoveRunningExeAside;\nbegin\n {2}MoveAside\('lu-minal'\);\nend;/);
+    expect(iss).toContain("RenameFile(Exe, ExpandConstant('{app}\\') + Name + '.old-' + GetDateTimeString('yyyymmddhhnnsszzz', #0, #0) + '.exe')");
+    // lu-minal's own start-up cleanup takes the window app's copies too (src/platform/update.ts).
+    expect(read("src", "platform", "update.ts")).toContain("const OLD_COPY = /^lu-minal(?:-window)?\\.old.*\\.exe$/i;");
+    // CI updates over a running window and checks that it was moved aside.
+    expect(ci).toContain("Get-ChildItem -LiteralPath $dir -Filter 'lu-minal-window.old*.exe'");
+  });
+});
+
+describe("the Windows window app (windows-app/)", () => {
+  const ci = read(".github", "workflows", "ci.yml");
+  const release = read(".github", "workflows", "release.yml");
+  const cargo = read("windows-app", "Cargo.toml");
+  const js = read("windows-app", "web", "terminal.js");
+  const env = read("windows-app", "src", "env.rs");
+  const web = read("windows-app", "src", "app", "web.rs");
+  const build = read("windows-app", "build.rs");
+
+  it("draws the terminal in the Moon palette", () => {
+    const theme = /export const MOON_THEME = \{([\s\S]*?)\};/.exec(js)?.[1] ?? "";
+    const value = (key: string) => new RegExp(`\\n {2}${key}: "(#[0-9a-f]{6})",`).exec(theme)?.[1];
+    expect(value("background")).toBe(MOON_ANSI.background);
+    expect(value("foreground")).toBe(MOON_ANSI.foreground);
+    expect(value("cursor")).toBe(MOON_ANSI.cursor);
+    expect(value("cursorAccent")).toBe(MOON_ANSI.cursorText);
+    expect(value("selectionBackground")).toBe(MOON_ANSI.selection);
+    for (const key of ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const) {
+      expect(value(key), key).toBe(MOON_ANSI[key]);
+      const bright = `bright${key[0].toUpperCase()}${key.slice(1)}` as keyof typeof MOON_ANSI;
+      expect(value(bright), bright).toBe(MOON_ANSI[bright]);
+    }
+    expect(js).toContain(`const FONT_FAMILY = '"Cascadia Mono", "Cascadia Code", Consolas, monospace';`);
+    expect(js).toContain('term.unicode.activeVersion = "11";');
+  });
+
+  it("runs lu-minal with the web pane contract, never as the macOS app", () => {
+    expect(env).toContain('("LU_MINAL_WEB_PANE", "1")');
+    expect(env).toContain('("TERM_PROGRAM", "lu-minal-window")');
+    expect(env).toContain('("TERM", "xterm-256color")');
+    expect(env).toContain('("COLORTERM", "truecolor")');
+    const set = /pub fn child_env[\s\S]*?\n\}\n/.exec(env)?.[0] ?? "";
+    expect(set).toContain("LU_MINAL_WEB_PANE");
+    expect(set).not.toContain("LU_MINAL_APP");
+    expect(/pub const REMOVED_ENV: &\[&str\] = &\[([\s\S]*?)\];/.exec(env)?.[1]).toContain('"LU_MINAL_APP"');
+    // The terminals the macOS app's launcher forgets, this one forgets too.
+    const mac = /foreignTerminalVariables = \[([\s\S]*?)\]/.exec(read("macos", "Sources", "LuMinal", "Launcher.swift"))?.[1] ?? "";
+    for (const [, name] of mac.matchAll(/"([A-Z_]+)"/g)) expect(env, name).toContain(`"${name}"`);
+  });
+
+  it("embeds exactly the assets build.rs checks and the npm script copies, pinned in package.json", () => {
+    const pkg = JSON.parse(read("package.json")) as { devDependencies: Record<string, string> };
+    for (const name of ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-unicode11", "@xterm/addon-webgl"]) {
+      expect(pkg.devDependencies[name], name).toMatch(/^\d+\.\d+\.\d+$/);
+    }
+    expect(pkg.devDependencies["@xterm/xterm"]).toBe("6.0.0");
+    const embedded = [...web.matchAll(/asset!\("assets", "([^"]+)"\)/g)].map((m) => m[1]).sort();
+    const checked = [...(/const ASSETS: &\[&str\] = &\[([^\]]*)\]/.exec(build)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    const copied = [...read("scripts", "windows-app-assets.mjs").matchAll(/\["@xterm\/[^"]+", "[^"]+", "([^"]+)"\]/g)].map((m) => m[1]);
+    for (const file of embedded) {
+      expect(checked, file).toContain(file);
+      expect(copied, file).toContain(file);
+    }
+    expect(checked).toContain("lu-minal.ico");
+    const pages = [...web.matchAll(/asset!\("web", "([^"]+)"\)/g)].map((m) => m[1]).sort();
+    expect(pages).toEqual(["app.css", "index.html", "terminal.js"]);
+    for (const page of pages) expect(fs.existsSync(path.join(ROOT, "windows-app", "web", page)), page).toBe(true);
+    expect(read(".gitignore").split("\n")).toEqual(expect.arrayContaining(["windows-app/assets/", "windows-app/target/", "dist-window/"]));
+  });
+
+  it("keeps the page under a strict CSP and gives the cloud pane no IPC and no scripts", () => {
+    const csp = /pub const CSP: &str = "([^"]+)";/.exec(web)?.[1] ?? "";
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("connect-src 'none'");
+    const meta = /<meta http-equiv="Content-Security-Policy" content="([^"]+)">/.exec(read("windows-app", "web", "index.html"))?.[1] ?? "";
+    expect(meta.replace(/; /g, ";").split(";").sort()).toEqual(csp.replace("; frame-ancestors 'none'", "").replace(/; /g, ";").split(";").sort());
+    const pane = web.slice(web.indexOf("pub fn build_pane"), web.indexOf("fn hook_keys"));
+    expect(pane).not.toMatch(/with_ipc_handler|with_initialization_script|with_user_agent|evaluate_script|cookies/);
+    expect(read("windows-app", "src", "app", "mod.rs")).not.toMatch(/cookies|initialization_script/);
+  });
+
+  it("keeps the pane's sign-in where lu-minal's own tools treat it as a secret store", () => {
+    // %LOCALAPPDATA%\lu-minal\WebView2 holds the claude.ai cookies: agents ask before reading it.
+    expect(read("windows-app", "src", "app", "win.rs")).toContain('local.join("lu-minal")');
+    expect(read("windows-app", "src", "app", "mod.rs")).toContain('WebContext::new(Some(data.join("WebView2")))');
+    expect(read("src", "tools", "sensitive.ts")).toContain('api.join(local, "lu-minal", "WebView2")');
+  });
+
+  it("pins its crates and commits the lock file", () => {
+    const deps = cargo.slice(cargo.indexOf("[dependencies]"), cargo.indexOf("[profile.release]"));
+    for (const [, name, version] of deps.matchAll(/^([a-z0-9_-]+) = (?:\{ version = )?"([^"]+)"/gm)) {
+      expect(version, name).toMatch(/^=\d+\.\d+\.\d+$/);
+    }
+    for (const name of ["tao", "wry", "portable-pty", "webview2-com"]) expect(deps).toMatch(new RegExp(`^${name} = `, "m"));
+    expect(fs.existsSync(path.join(ROOT, "windows-app", "Cargo.lock"))).toBe(true);
+    expect(cargo).toContain('version = "0.0.0"');
+    expect(build).toContain('json["version"]');
+  });
+
+  it("is built, tested and smoke-tested in CI, and goes into both setups of a release", () => {
+    expect(ci).toContain("node scripts/windows-app-assets.mjs");
+    expect(ci).toContain("cargo build --manifest-path windows-app/Cargo.toml --locked --release --target x86_64-pc-windows-msvc");
+    expect(ci).toContain("cargo test --manifest-path windows-app/Cargo.toml --locked");
+    expect(ci).toContain("foreach ($kind in 'smoke', 'smoke-osc')");
+    expect(ci).toContain("Copy-Item dist-bin\\lu-minal-windows-x64.exe (Join-Path $dir 'lu-minal.exe')");
+    expect(ci).toContain("Swatinem/rust-cache@v2");
+    // The ISCC step comes after the app is built.
+    expect(ci.indexOf("Build the window app")).toBeLessThan(ci.indexOf("& $env:ISCC"));
+    expect(release).toContain("rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc");
+    expect(release).toContain("@(@('x64', 'x86_64-pc-windows-msvc'), @('arm64', 'aarch64-pc-windows-msvc'))");
+    expect(release).toContain('Copy-Item "windows-app\\target\\$triple\\release\\lu-minal-window.exe" "dist-window\\lu-minal-window-$arch.exe"');
+    expect(release.indexOf("The window app (lu-minal-window.exe")).toBeLessThan(release.indexOf("foreach ($arch in 'x64', 'arm64')"));
+    // It ships only in the setups: not a release file of its own.
+    const check = /for f in ([\s\S]*?); do/.exec(release)?.[1] ?? "";
+    expect(check.split(/\s+/).filter((f) => f.startsWith("lu-minal-window-") || f.startsWith("lu-minal-window."))).toEqual([]);
+    expect(release).toMatch(/name: release-windows\n {10}path: dist-bin\/lu-minal-\*\n/);
   });
 });
 
@@ -422,7 +647,7 @@ describe("the install instructions", () => {
 
 describe("the docs", () => {
   it("link only to files that exist", () => {
-    const docs = ["README.md", "macos/README.md", ...fs.readdirSync(path.join(ROOT, "docs")).filter((n) => n.endsWith(".md")).map((n) => `docs/${n}`)];
+    const docs = ["README.md", "macos/README.md", "windows-app/README.md", ...fs.readdirSync(path.join(ROOT, "docs")).filter((n) => n.endsWith(".md")).map((n) => `docs/${n}`)];
     for (const doc of docs) {
       for (const [, target] of read(doc).matchAll(/\]\(([^)\s]+)\)/g)) {
         if (/^[a-z]+:/i.test(target) || target.startsWith("#")) continue;

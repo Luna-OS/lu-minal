@@ -9,11 +9,14 @@
 //             can't yet ("Attaching to an existing cloud session is not enabled for your account.").
 // The CLI has no command that lists cloud sessions, so lu-minal remembers the ones it started.
 // lu-minal never reads Claude Code's tokens or calls claude.ai itself: everything goes through the CLI.
+// The website itself opens in the browser, or beside the terminal in a lu-minal window with a web
+// pane (src/platform/web-pane.ts), which only displays it.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { samePath } from "../platform/paths.js";
 import { findProgram, runProgram } from "../platform/process.js";
+import { WEB_PANE_HOME } from "../platform/web-pane.js";
 
 export interface CloudSession {
   /** "session_…" or "cse_…". */
@@ -251,5 +254,5 @@ export async function cloudReadiness(cwd: string, run: typeof runProgram = runPr
   return notes.length ? `The cloud clones the pushed branch - ${notes.join(", ")} won't be there.` : null;
 }
 
-/** Where cloud sessions are listed in the browser. */
-export const CLOUD_HOME = "https://claude.ai/code";
+/** Where cloud sessions are listed on the web: in the browser, or the web pane beside the terminal. */
+export const CLOUD_HOME = WEB_PANE_HOME;

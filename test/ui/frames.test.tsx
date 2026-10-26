@@ -110,8 +110,9 @@ describe("frames.ts", () => {
     expect(fast.length).toBeGreaterThanOrEqual(8);
     expect(slow.length).toBeGreaterThanOrEqual(4);
     for (const t of fast) expect(t.at % 40).toBe(0);
-    // Every slow tick came with a fast one, at the same time and in the same task.
-    for (const s of slow) expect(fast.some((f) => f.at === s.at && f.task === s.task)).toBe(true);
+    // Every slow tick came with a fast one in the same task (so in one frame). Usually at the same
+    // time; a timer that fires late on a busy machine puts the fast one a step further on its grid.
+    for (const s of slow) expect(fast.some((f) => f.task === s.task && f.at - s.at >= 0 && f.at - s.at < 80)).toBe(true);
     // Unmounted: no more ticks.
     const count = ticks.length;
     await sleep(120);

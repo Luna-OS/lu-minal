@@ -1,0 +1,217 @@
+/* lu-minal's window: the terminal on the left, the cloud pane's header and frame on the right
+   (the pane's web view lies over #pane-hole). Moon palette tokens, as in src/themes/builtin.ts. */
+:root {
+  --night-950: #0b0920;
+  --night-900: #141030;
+  --night-800: #1d1742;
+  --lavender-400: #b9aefb;
+  --lavender-300: #d6cffd;
+  --mint-400: #7fe3c6;
+  --cream-100: #fbf7f0;
+  /* lavender-400 at 18 % over night-900, cream at 62 % / 40 % (the theme's border, muted, faint). */
+  --border: #322c55;
+  --muted: #a39fa7;
+  --faint: #706c7d;
+  /* windows-app/src/layout.rs: HEADER_HEIGHT, DIVIDER_WIDTH. */
+  --header-height: 34px;
+  --divider-width: 6px;
+  --rail-width: 12px;
+  --pane-width: 520px;
+  --ui-font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--night-950);
+  color: var(--cream-100);
+}
+
+#app {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+}
+
+#terminal-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 2px 4px 8px;
+}
+
+#terminal {
+  width: 100%;
+  height: 100%;
+}
+
+#toast {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  max-width: min(420px, 80%);
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--mint-400);
+  border-radius: 8px;
+  background: var(--night-800);
+  color: var(--cream-100);
+  font: 12.5px/1.4 var(--ui-font);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.45);
+}
+
+/* The divider: a slim grip between the terminal and the pane, or a rail at the right edge that
+   opens the pane when it is closed. */
+#divider {
+  position: relative;
+  flex: 0 0 var(--divider-width);
+  box-sizing: border-box;
+  background: var(--night-900);
+  border-left: 1px solid var(--border);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+#divider:hover,
+#app.dragging #divider {
+  background: var(--night-800);
+}
+
+#divider .grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: none;
+  place-items: center;
+  width: 10px;
+  height: 28px;
+  margin: -14px 0 0 -5px;
+  border-radius: 5px;
+  color: var(--lavender-300);
+}
+
+#app.pane-closed #divider {
+  flex-basis: var(--rail-width);
+  cursor: pointer;
+}
+
+#app.pane-closed #divider .grip {
+  display: grid;
+}
+
+#app.pane-closed #divider:hover .grip {
+  color: var(--mint-400);
+}
+
+#pane {
+  display: flex;
+  flex: 0 0 var(--pane-width);
+  flex-direction: column;
+  min-width: 0;
+  background: var(--night-950);
+}
+
+#app.pane-closed #pane {
+  display: none;
+}
+
+#pane-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  height: var(--header-height);
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--night-900);
+}
+
+.url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font: 12px/1 var(--ui-font);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+
+button.icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--lavender-300);
+  cursor: pointer;
+}
+
+button.icon.small {
+  width: 20px;
+  height: 20px;
+}
+
+button.icon:hover:not(:disabled) {
+  background: var(--night-800);
+  color: var(--mint-400);
+}
+
+button.icon:focus-visible {
+  outline: 1px solid var(--lavender-400);
+  outline-offset: -1px;
+}
+
+button.icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+#pane-notice {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--mint-400);
+  background: var(--night-800);
+  color: var(--cream-100);
+  font: 12.5px/1.45 var(--ui-font);
+}
+
+#pane-notice-text {
+  flex: 1 1 auto;
+}
+
+#pane-hole {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Seen only while the pane's web view steps aside (dragging the divider) or loads. */
+.placeholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--faint);
+  font: 13px var(--ui-font);
+  letter-spacing: 0.04em;
+  user-select: none;
+}

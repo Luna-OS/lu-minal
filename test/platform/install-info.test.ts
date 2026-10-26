@@ -222,6 +222,11 @@ describe("detectTerminal", () => {
     expect(detectTerminal({ TERM_PROGRAM: "lu-minal", LU_MINAL_APP: "1" }, "darwin", "22.0.0")).toEqual({ name: "lu-minal-app", truecolor: true, hint: null });
   });
 
+  it("knows the Windows window app, and doesn't send its users to Windows Terminal", () => {
+    const env = { TERM_PROGRAM: "lu-minal-window", LU_MINAL_WEB_PANE: "1", TERM: "xterm-256color", COLORTERM: "truecolor" };
+    expect(detectTerminal(env, "win32", "10.0.19045")).toEqual({ name: "lu-minal-window", truecolor: true, hint: null });
+  });
+
   it("says Terminal.app before macOS 26 has 256 colours only", () => {
     const old = detectTerminal({ TERM_PROGRAM: "Apple_Terminal" }, "darwin", "24.6.0");
     expect(old.truecolor).toBe(false);

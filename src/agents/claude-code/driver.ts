@@ -22,6 +22,8 @@ import { isWindows } from "../../platform/paths.js";
 import { killTree, spawnProgram } from "../../platform/process.js";
 import type { ToolDisplay } from "../../tools/types.js";
 import {
+  askAnswer,
+  askArgs,
   chatArgs,
   claudeEnv,
   claudePermissionMode,
@@ -392,6 +394,50 @@ export class ClaudeCodeDriver implements AgentDriver {
     } catch {
       return null;
     }
+  }
+
+  /** A side question (/btw): its own short `claude -p` on a fork of the session (see askArgs). */
+  ask(question: string, signal: AbortSignal): Promise<string> {
+    const { agent, project, exe } = this.deps;
+    const args = askArgs({ model: agent.model.model, resume: agent.sessionId, trusted: project.trusted });
+    return new Promise<string>((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      let child: ChildProcess;
+      try {
+        child = (this.deps.spawnImpl ?? spawnProgram)(exe, args, {
+          cwd: project.cwd,
+          env: claudeEnv(this.deps.env ?? process.env, exe),
+          stdio: ["pipe", "pipe", "pipe"],
+          detached: !isWindows,
+          windowsHide: true,
+        });
+      } catch (err) {
+        return reject(err);
+      }
+      let out = "";
+      let err = "";
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (d: string) => void (out += d));
+      child.stderr?.on("data", (d: string) => void (err = (err + d).slice(-2000)));
+      const onAbort = () => killTree(child);
+      signal.addEventListener("abort", onAbort, { once: true });
+      child.on("error", (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      });
+      child.on("close", () => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) return reject(signal.reason);
+        try {
+          resolve(askAnswer(out));
+        } catch (e) {
+          reject(err.trim() && !out.trim() ? new Error(firstLine(err.trim())) : e);
+        }
+      });
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(`${question}\n`);
+    });
   }
 
   private spawn(): Run {

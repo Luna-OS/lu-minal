@@ -526,6 +526,14 @@ export class Hub implements ProjectRuntime {
     void this.refreshNews(true);
   }
 
+  /** A side question (/btw) to an agent; rejects with a sentence for the user when it can't take one. */
+  async askAside(agent: Agent, question: string, signal: AbortSignal): Promise<string> {
+    const driver = agent.driver;
+    if (!driver) throw new Error(`${agent.name} isn't running yet - send it a message first.`);
+    if (!driver.ask) throw new Error(`/btw works with lu-minal's own agents and Claude Code, not with ${agent.modelLabel}.`);
+    return driver.ask(question, signal);
+  }
+
   // ---- ProjectRuntime --------------------------------------------------------------------------
 
   async launch(project: Project, agent: Agent): Promise<void> {

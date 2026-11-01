@@ -189,6 +189,41 @@ export function chatArgs(opts: ChatArgsOptions = {}): string[] {
   return args;
 }
 
+/**
+ * The arguments for a side question (/btw): one answer in JSON, the question on stdin. With a
+ * session it is resumed as a fork (`--fork-session`, never saved), so the question sees the
+ * conversation but the agent's own session stays as it was. No tools, not even MCP ones.
+ */
+export function askArgs(opts: { model?: string; resume?: string | null; trusted: boolean }): string[] {
+  const args = ["-p", "--output-format", "json", "--max-turns", "1", "--no-session-persistence", "--tools", "", "--disallowedTools", "mcp__*"];
+  const model = opts.model?.trim();
+  if (model && model !== "default") args.push("--model", model);
+  if (opts.resume?.trim()) args.push("--resume", opts.resume.trim(), "--fork-session");
+  // As in chatArgs: in a project nobody trusted, only the user's own settings.
+  if (!opts.trusted) args.push("--setting-sources", "user", "--strict-mcp-config");
+  return args;
+}
+
+/** The answer in `claude -p --output-format json`'s result, or throws its error. */
+export function askAnswer(stdout: string): string {
+  type Result = { result?: unknown; is_error?: unknown; subtype?: unknown };
+  let result = null as Result | null;
+  for (const line of stdout.split(/\r?\n/).reverse()) {
+    const t = line.trim();
+    if (!t.startsWith("{")) continue;
+    try {
+      result = JSON.parse(t) as Result;
+      break;
+    } catch {
+      // not the result line
+    }
+  }
+  if (!result) throw new Error("Claude Code gave no answer.");
+  const text = typeof result.result === "string" ? result.result.trim() : "";
+  if (result.is_error === true) throw new Error(text || `Claude Code: ${String(result.subtype ?? "error")}`);
+  return text || "(no answer)";
+}
+
 /** One user message as Claude Code's stream-json input expects it. */
 /** One user message for stream-json input: plain text, or content blocks (text and images). */
 export function userMessageLine(content: string | Array<Record<string, unknown>>): string {

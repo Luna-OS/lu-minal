@@ -43,6 +43,11 @@ export interface AgentDriver {
   snapshot?(): unknown;
   /** Puts a saved conversation back before the first turn. */
   restore?(state: unknown): void;
+  /**
+   * A side question (/btw): answered with the conversation as context, without tools, and neither
+   * the question nor the answer joins the conversation. Works while a turn runs.
+   */
+  ask?(question: string, signal: AbortSignal): Promise<string>;
 }
 
 /** What the session file keeps of an agent. */

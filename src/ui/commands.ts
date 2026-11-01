@@ -8,6 +8,7 @@ import type { Project } from "../core/project.js";
 import { PERMISSION_MODES, type PermissionMode } from "../core/types.js";
 import { cloudUrlFromInput, WEB_PANE_HOME } from "../platform/web-pane.js";
 import { parseModelRef } from "../providers/models.js";
+import { openBtwDialog } from "./dialogs/btw.js";
 import { mouseReportingUseful, SELECT_HINT } from "./mouse.js";
 import type { UiServices } from "./store.js";
 import { resolvePath } from "../tools/fs.js";
@@ -136,6 +137,20 @@ export const COMMANDS: Command[] = [
       if (!p) return ctx.dialogs.attach();
       const base = ctx.project?.cwd ?? process.cwd();
       ctx.attach([resolvePath(base, p)]);
+    },
+  },
+  {
+    name: "btw",
+    aliases: ["aside"],
+    args: "<question>",
+    description: "A quick side question to the focused agent: answered from its conversation, without tools, and not added to it",
+    run: (ctx, args) => {
+      const p = needProject(ctx);
+      const agent = ctx.agent;
+      if (!p || !agent) return;
+      const question = args.trim();
+      if (!question) return ctx.hub.toast("Usage: /btw <question> - a side question the agent answers without tools, outside the conversation.", "warning");
+      openBtwDialog(ctx.hub, ctx.ui, agent, question);
     },
   },
   { name: "tasks", aliases: ["board"], description: "The project's shared task board", run: (ctx) => ctx.dialogs.tasks() },

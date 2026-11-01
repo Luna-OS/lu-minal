@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { NativeDriver, type NativeDriverDeps } from "../../src/agents/native/driver.js";
+import { askContext, BTW_NOTE, NativeDriver, type NativeDriverDeps } from "../../src/agents/native/driver.js";
 import { REMOVED_OUTPUT } from "../../src/agents/native/context.js";
 import { Agent } from "../../src/core/agent.js";
 import { attachmentFromPath, type Attachment } from "../../src/core/attachments.js";
@@ -629,5 +629,35 @@ describe("NativeDriver", () => {
     expect(fs.readFileSync(path.join(dir, "src", "room.ts"), "utf8")).toBe("export const room = 1;\n");
     expect(agent.linesAdded).toBe(1);
     expect(entries(agent, "tool")[0]).toMatchObject({ verb: "new", status: "ok", added: 1 });
+  });
+});
+
+describe("/btw", () => {
+  it("answers from the conversation without changing it, even with tools still running", async () => {
+    const { agent, client, driver } = await setup({ steps: [reply("The moon app."), reply("Port 5173.", { usage: usage(900, 12) })] });
+    agent.deliver({ from: "you", text: "what is this?" });
+    await driver.idle();
+    const before = structuredClone(driver.conversation);
+
+    const answer = await driver.ask("which port?", new AbortController().signal);
+    expect(answer).toBe("Port 5173.");
+    expect(driver.conversation).toEqual(before);
+    const sent = client.requests[1].messages;
+    expect(sent.slice(0, -1)).toEqual(before);
+    expect(sent[sent.length - 1]).toEqual({ role: "user", content: `${BTW_NOTE} which port?` });
+    // Its tokens count, but it is no turn and no log entry.
+    expect(agent.tokensIn).toBeGreaterThanOrEqual(900);
+    expect(agent.log.some((e) => JSON.stringify(e).includes("Port 5173"))).toBe(false);
+  });
+
+  it("leaves out a tool call that has no result yet", () => {
+    const call = { id: "c1", name: "read_file", arguments: {} };
+    const done = [
+      { role: "user" as const, content: "go" },
+      { role: "assistant" as const, content: "", toolCalls: [call] },
+      { role: "tool" as const, toolCallId: "c1", name: "read_file", content: "a" },
+    ];
+    expect(askContext(done)).toEqual(done);
+    expect(askContext(done.slice(0, 2))).toEqual(done.slice(0, 1));
   });
 });

@@ -49,6 +49,27 @@ export interface NativeDriverDeps {
 
 const INTERRUPTED = "[interrupted by the user]";
 
+/** What goes in front of a /btw question. */
+export const BTW_NOTE =
+  "[A quick side question from the user (/btw), not part of the task: answer it briefly from what you already know, without using any tools.]";
+
+/**
+ * The conversation for a side question: up to the last assistant message whose tool calls all have
+ * their results (a turn in the middle of running tools has calls without results, which every API
+ * refuses).
+ */
+export function askContext(messages: readonly ChatMessage[]): ChatMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || !m.toolCalls?.length) continue;
+    const answered = new Set<string>();
+    for (let j = i + 1; j < messages.length && messages[j].role === "tool"; j++) answered.add((messages[j] as ToolResultMessage).toolCallId);
+    if (m.toolCalls.every((c) => answered.has(c.id))) break;
+    return messages.slice(0, i);
+  }
+  return [...messages];
+}
+
 /** Iterates `source`, giving up as soon as `signal` aborts (even when the source ignores it). */
 async function* abortable<T>(source: AsyncGenerator<T, void, void>, signal: AbortSignal): AsyncGenerator<T, void, void> {
   let onAbort: (() => void) | null = null;
@@ -213,6 +234,36 @@ export class NativeDriver implements AgentDriver {
     if (this.running) return;
     const messages = loadConversation(state);
     if (messages) this.messages = messages;
+  }
+
+  async ask(question: string, signal: AbortSignal): Promise<string> {
+    const resolved = this.deps.resolveModel();
+    const client = this.deps.createClient(resolved);
+    const messages = [...askContext(this.messages), { role: "user" as const, content: `${BTW_NOTE} ${question}` }];
+    const request: ChatRequest = {
+      model: resolved.model.id || resolved.ref.model,
+      system: this.deps.systemPrompt(),
+      messages,
+      // The same tools as the conversation (its tool calls need them, and the prompt cache matches);
+      // the note asks not to use them, and calls are ignored.
+      tools: this.specs,
+      maxTokens: Math.min(resolved.model.maxOutput ?? 16_384, 4096),
+      signal,
+    };
+    let text = "";
+    let final: AssistantMessage | null = null;
+    for await (const ev of abortable(streamWithRetry(client, request, { ...this.deps.retry, signal }), signal)) {
+      if (ev.type === "text") text += ev.text;
+      else if (ev.type === "done") final = ev.message;
+      else if (ev.type === "usage") {
+        // It costs like any request, but isn't a turn of the conversation.
+        this.deps.agent.addUsage({ input: ev.inputTokens, output: ev.outputTokens, costUsd: costOf(ev, resolved.model.cost) });
+      }
+    }
+    if (signal.aborted) throw abortError();
+    const answer = (final?.content || text).trim();
+    if (answer) return answer;
+    return final?.toolCalls?.length ? "(The model only wanted to use a tool; /btw answers without tools. Ask the agent directly.)" : "(no answer)";
   }
 
   /** Resolves when no turn is running any more (the next queued turn included). */

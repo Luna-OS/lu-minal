@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  askAnswer,
+  askArgs,
   chatArgs,
   claudeEnv,
   claudePermissionMode,
@@ -273,5 +275,24 @@ describe("login", () => {
     expect(claudeLoginArgs()).toEqual(["auth", "login"]);
     expect(claudeLogoutArgs()).toEqual(["auth", "logout"]);
     expect(CLAUDE_DOCS_URL).toMatch(/^https:\/\//);
+  });
+});
+
+describe("/btw for Claude Code", () => {
+  it("forks the session without saving it, with no tools at all", () => {
+    const args = askArgs({ model: "opus", resume: "sess-1", trusted: true });
+    expect(args).toEqual(["-p", "--output-format", "json", "--max-turns", "1", "--no-session-persistence", "--tools", "", "--disallowedTools", "mcp__*", "--model", "opus", "--resume", "sess-1", "--fork-session"]);
+    // No session yet: a plain question. An untrusted project: only the user's settings.
+    const fresh = askArgs({ model: "default", resume: null, trusted: false });
+    expect(fresh).not.toContain("--resume");
+    expect(fresh).not.toContain("--model");
+    expect(fresh.slice(-3)).toEqual(["--setting-sources", "user", "--strict-mcp-config"]);
+  });
+
+  it("reads the answer and the errors of the JSON result", () => {
+    const line = JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "  Port 5173.\nOn localhost. " });
+    expect(askAnswer(`some warning\n${line}\n`)).toBe("Port 5173.\nOn localhost.");
+    expect(() => askAnswer('{"type":"result","subtype":"error_max_turns","is_error":true}')).toThrow("error_max_turns");
+    expect(() => askAnswer("Not logged in")).toThrow("no answer");
   });
 });

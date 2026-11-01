@@ -265,6 +265,10 @@ export class MouseStdin extends EventEmitter {
   }
 
   setRawMode(mode: boolean): this {
+    // Raw mode goes off when Ink hands the terminal to a program (a sign-in): stop reading first.
+    // Ink only takes its listener away, and a stdin that keeps reading takes the program's keys
+    // (on Windows the console gives each key to one reader). Ink's next listener reads again.
+    if (!mode) this.source.pause?.();
     this.source.setRawMode(mode);
     this.raw = mode;
     if (!mode) {

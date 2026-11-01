@@ -1,6 +1,7 @@
 // News for the home screen: the newest models in the catalog (Claude first), Claude's own release
 // notes (model launches, offers; src/core/claude-news.ts), what's new in Claude Code (npm's newest
-// version and the top of its changelog) and Anthropic's status page. The downloads run in parallel when the hub isn't offline, each answer is kept for an hour in
+// version and the top of its changelog), Anthropic's status page and, with a key, Artificial
+// Analysis's independent benchmark scores for the new models. The downloads run in parallel when the hub isn't offline, each answer is kept for an hour in
 // <cacheDir>/news.json, and a source that can't be loaded is null (the home screen says so).
 // Nothing here throws.
 import fs from "node:fs";
@@ -16,6 +17,17 @@ export const CLAUDE_CODE_NPM_URL = "https://registry.npmjs.org/@anthropic-ai/cla
 export const CLAUDE_CODE_CHANGELOG_URL = "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md";
 /** Anthropic's status page (Atlassian Statuspage's summary). */
 export const ANTHROPIC_STATUS_URL = "https://status.anthropic.com/api/v2/summary.json";
+/** Artificial Analysis's free data API: every LLM with its benchmark scores (needs a key). */
+export const AA_MODELS_URL = "https://artificialanalysis.ai/api/v2/data/llms/models";
+/** Where the scores come from; their terms ask for this attribution wherever they are shown. */
+export const AA_ATTRIBUTION = "artificialanalysis.ai";
+/** The auth.json entry and the environment variable for the Artificial Analysis key. */
+export const AA_AUTH_ID = "artificialanalysis";
+export const AA_KEY_ENV = ["ARTIFICIAL_ANALYSIS_API_KEY"];
+/** Where to get a key. */
+export const AA_KEY_URL = "https://artificialanalysis.ai/login";
+/** The scores move slowly and the free API allows 1,000 requests a day: asked for every 6 hours. */
+export const AA_MAX_AGE_MS = 6 * 60 * 60_000;
 /** The cache file's name inside the cache dir. */
 export const NEWS_CACHE_FILE = "news.json";
 /** How long an answer is used before it is asked for again. */
@@ -56,6 +68,8 @@ export interface News {
   status: ServiceStatus | null;
   /** Claude's release notes (apps and platform), newest first; null when neither page loaded. */
   claude: ClaudeNewsItem[] | null;
+  /** Artificial Analysis's scores; null without a key or when they couldn't be loaded. */
+  scores?: ModelScore[] | null;
   /** When the oldest of these answers was fetched (the time of loading when none was). */
   fetchedAt: number;
   /** When loadNews put this together. */
@@ -130,6 +144,81 @@ export function parseStatus(json: unknown): ServiceStatus | null {
 export function parseNpmLatest(json: unknown): string | null {
   const version = isObject(json) ? str(json.version) : null;
   return version && /^\d+\.\d+\.\d+/.test(version) ? version : null;
+}
+
+// ---- Artificial Analysis -----------------------------------------------------------------------
+
+/** One model's scores at Artificial Analysis. */
+export interface ModelScore {
+  name: string;
+  /** "Anthropic", "OpenAI", ... */
+  creator: string | null;
+  /** The Artificial Analysis Intelligence Index (0-100). */
+  intelligence: number | null;
+  /** Its Coding Index (0-100). */
+  coding: number | null;
+  /** Output tokens a second (median). */
+  speed: number | null;
+}
+
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** The LLMs endpoint's answer ({ data: [...] }) as scores; models without any score are left out. */
+export function parseAaModels(json: unknown): ModelScore[] | null {
+  if (!isObject(json) || !Array.isArray(json.data)) return null;
+  const out: ModelScore[] = [];
+  for (const m of json.data) {
+    if (!isObject(m)) continue;
+    const name = str(m.name);
+    const ev = isObject(m.evaluations) ? m.evaluations : {};
+    const score: ModelScore = {
+      name: name ?? "",
+      creator: isObject(m.model_creator) ? str(m.model_creator.name) : null,
+      intelligence: num(ev.artificial_analysis_intelligence_index),
+      coding: num(ev.artificial_analysis_coding_index),
+      speed: num(m.median_output_tokens_per_second),
+    };
+    if (name && (score.intelligence !== null || score.coding !== null)) out.push(score);
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * "Claude Opus 5.5 (Reasoning)", "Claude 5.5 Opus" -> the words "5_5 claude opus": names that
+ * differ in order only meet. A version stays one word, so Opus 5.5 never meets Opus 5.
+ */
+function nameWords(name: string): string {
+  const words = name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/(\d)[.,](?=\d)/g, "$1_")
+    .replace(/[^a-z0-9_]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean);
+  return [...new Set(words)].sort().join(" ");
+}
+
+/**
+ * Artificial Analysis's scores for a model by its name. They test a model in several modes
+ * ("(Reasoning)", "(high)"): the best of them counts. Undefined when they haven't tested it.
+ */
+export function scoreFor(scores: ModelScore[] | null | undefined, name: string): ModelScore | undefined {
+  if (!scores?.length) return undefined;
+  const key = nameWords(name);
+  if (!key) return undefined;
+  let best: ModelScore | undefined;
+  for (const s of scores) {
+    if (nameWords(s.name) !== key) continue;
+    if (!best || (s.intelligence ?? -1) > (best.intelligence ?? -1)) best = s;
+  }
+  return best;
+}
+
+function asScores(v: unknown): ModelScore[] | null {
+  if (!Array.isArray(v)) return null;
+  const items = v.filter((i): i is ModelScore => isObject(i) && typeof i.name === "string");
+  return items.length ? items : null;
 }
 
 // ---- new models ---------------------------------------------------------------------------------
@@ -249,7 +338,7 @@ export function newestModels(source: ModelSource, now: number, opts: { days?: nu
 
 // ---- loading ------------------------------------------------------------------------------------
 
-type SourceId = "npm" | "changelog" | "status" | "claude";
+type SourceId = "npm" | "changelog" | "status" | "claude" | "aa";
 
 interface CachedAnswer {
   at: number;
@@ -268,6 +357,8 @@ export interface LoadNewsOptions {
   force?: boolean;
   /** Per-request timeout (default 10 s). */
   timeoutMs?: number;
+  /** The Artificial Analysis key; without one there are no scores. */
+  aaKey?: string | null;
 }
 
 function readCache(file: string): NewsCache {
@@ -275,7 +366,7 @@ function readCache(file: string): NewsCache {
     const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
     if (!isObject(raw) || !isObject(raw.sources)) return {};
     const out: NewsCache = {};
-    for (const id of ["npm", "changelog", "status", "claude"] as const) {
+    for (const id of ["npm", "changelog", "status", "claude", "aa"] as const) {
       const entry = raw.sources[id];
       if (isObject(entry) && typeof entry.at === "number" && entry.value != null) out[id] = { at: entry.at, value: entry.value };
     }
@@ -340,7 +431,7 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
     const hit = cache[id];
     if (!hit || opts.force) return null;
     const age = now - hit.at;
-    return age >= 0 && age < NEWS_MAX_AGE_MS ? hit : null;
+    return age >= 0 && age < (id === "aa" ? AA_MAX_AGE_MS : NEWS_MAX_AGE_MS) ? hit : null;
   };
   let wrote = false;
   const get = async <T>(id: SourceId, load: (fetchImpl: FetchLike) => Promise<T | null>, revive: (v: unknown) => T | null): Promise<{ value: T | null; at: number }> => {
@@ -355,7 +446,8 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
     return { value, at: now };
   };
 
-  const [npm, changelog, status, claude] = await Promise.all([
+  const aaKey = opts.aaKey?.trim() || null;
+  const [npm, changelog, status, claude, scores] = await Promise.all([
     get(
       "npm",
       async (f) => parseNpmLatest(parseJson(await download(f, CLAUDE_CODE_NPM_URL, { accept: "application/json" }, timeoutMs))),
@@ -378,6 +470,9 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
       },
       asClaudeNews,
     ),
+    aaKey
+      ? get("aa", async (f) => parseAaModels(parseJson(await download(f, AA_MODELS_URL, { accept: "application/json", "x-api-key": aaKey }, timeoutMs))), asScores)
+      : Promise.resolve({ value: null, at: now }),
   ]);
 
   if (wrote) {
@@ -394,6 +489,7 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
     changelog: changelog.value,
     status: status.value,
     claude: claude.value,
+    ...(aaKey ? { scores: scores.value } : {}),
     fetchedAt: loaded.length ? Math.min(...loaded.map((s) => s.at)) : now,
     loadedAt: now,
   };

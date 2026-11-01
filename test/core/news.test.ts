@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  AA_MAX_AGE_MS,
+  AA_MODELS_URL,
   ANTHROPIC_STATUS_URL,
   CLAUDE_CODE_CHANGELOG_URL,
   CLAUDE_CODE_NPM_URL,
@@ -15,10 +17,12 @@ import {
   NEWS_RETRY_MS,
   newestModels,
   newsStale,
+  parseAaModels,
   parseChangelog,
   parseNpmLatest,
   parseStatus,
   releaseTime,
+  scoreFor,
   type ModelSource,
   type News,
 } from "../../src/core/news.js";
@@ -356,6 +360,72 @@ describe("loadNews", () => {
     fs.writeFileSync(path.join(dir, NEWS_CACHE_FILE), JSON.stringify({ version: 1, sources: { npm: { at: NOW, value: 42 }, status: { at: NOW, value: { indicator: 1 } } } }));
     const again = await loadNews({ cacheDir: dir, fetchImpl, now: NOW + 1000 });
     expect(again).toMatchObject({ claudeCodeLatest: "2.1.320", status: { indicator: "minor" } });
+  });
+});
+
+// A trimmed answer of Artificial Analysis's LLMs endpoint.
+const AA = {
+  status: 200,
+  prompt_options: { parallel_queries: 1, prompt_length: "medium" },
+  data: [
+    {
+      id: "a1",
+      name: "Claude 5.5 Opus (Reasoning)",
+      slug: "claude-5-5-opus-reasoning",
+      model_creator: { id: "c1", name: "Anthropic", slug: "anthropic" },
+      evaluations: { artificial_analysis_intelligence_index: 74.6, artificial_analysis_coding_index: 70.2, mmlu_pro: 0.9 },
+      pricing: { price_1m_input_tokens: 5, price_1m_output_tokens: 25 },
+      median_output_tokens_per_second: 61.5,
+    },
+    {
+      id: "a2",
+      name: "Claude 5.5 Opus (Non-reasoning)",
+      model_creator: { id: "c1", name: "Anthropic" },
+      evaluations: { artificial_analysis_intelligence_index: 63.1, artificial_analysis_coding_index: 60 },
+      median_output_tokens_per_second: 70,
+    },
+    { id: "a3", name: "Claude Opus 5", model_creator: { name: "Anthropic" }, evaluations: { artificial_analysis_intelligence_index: 66 } },
+    { id: "a4", name: "Not tested yet", evaluations: { artificial_analysis_intelligence_index: null } },
+    "junk",
+  ],
+};
+
+describe("Artificial Analysis", () => {
+  it("reads the scores, leaving out the models without any", () => {
+    const scores = parseAaModels(AA);
+    expect(scores).toHaveLength(3);
+    expect(scores?.[0]).toEqual({ name: "Claude 5.5 Opus (Reasoning)", creator: "Anthropic", intelligence: 74.6, coding: 70.2, speed: 61.5 });
+    expect(parseAaModels({ data: [] })).toBeNull();
+    expect(parseAaModels("<html>")).toBeNull();
+  });
+
+  it("finds a model under another word order, the best mode counting, and never another version", () => {
+    const scores = parseAaModels(AA);
+    expect(scoreFor(scores, "Claude Opus 5.5")?.intelligence).toBe(74.6);
+    expect(scoreFor(scores, "Claude Opus 5")?.intelligence).toBe(66);
+    expect(scoreFor(scores, "Claude Opus 5.1")).toBeUndefined();
+    expect(scoreFor(null, "Claude Opus 5.5")).toBeUndefined();
+  });
+
+  it("asks for the scores only with a key, sends it, and keeps them for 6 hours", async () => {
+    const NOW = Date.UTC(2026, 10, 1, 12);
+    const fetchImpl = fakeFetch((url) => (url === AA_MODELS_URL ? Response.json(AA) : new Response("not found", { status: 404 })));
+    const without = await loadNews({ cacheDir: dir, fetchImpl, now: NOW });
+    expect(without.scores).toBeUndefined();
+    expect(fetchImpl.calls.some((c) => c.url === AA_MODELS_URL)).toBe(false);
+
+    const news = await loadNews({ cacheDir: dir, fetchImpl, now: NOW, aaKey: "aa-secret" });
+    expect(news.scores).toHaveLength(3);
+    const call = fetchImpl.calls.find((c) => c.url === AA_MODELS_URL)!;
+    expect((call.init?.headers as Record<string, string>)["x-api-key"]).toBe("aa-secret");
+
+    const asked = () => fetchImpl.calls.filter((c) => c.url === AA_MODELS_URL).length;
+    await loadNews({ cacheDir: dir, fetchImpl, now: NOW + AA_MAX_AGE_MS - 1, aaKey: "aa-secret" });
+    expect(asked()).toBe(1);
+    await loadNews({ cacheDir: dir, fetchImpl, now: NOW + AA_MAX_AGE_MS, aaKey: "aa-secret" });
+    expect(asked()).toBe(2);
+    // Without the key the cached scores aren't shown either.
+    expect((await loadNews({ cacheDir: dir, fetchImpl, now: NOW + AA_MAX_AGE_MS })).scores).toBeUndefined();
   });
 });
 

@@ -1,7 +1,7 @@
 // The change notifier coalesces: one notification after a quiet spell goes out at once, a stream of
 // changes (agents streaming text) at most every NOTIFY_INTERVAL_MS, and user input skips the wait.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Notifier, NOTIFY_INTERVAL_MS } from "../../src/core/emitter.js";
+import { BACKGROUND_INTERVAL_MS, Notifier, NOTIFY_INTERVAL_MS } from "../../src/core/emitter.js";
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate", "Date"] });
@@ -47,6 +47,26 @@ describe("Notifier", () => {
     // Nothing is lost: the last notification saw the last change.
     expect(seen.calls.at(-1)).toBe(n.snapshot);
     expect(n.pending).toBe(false);
+  });
+
+  it("notifies less while the window is in the background, and as before when it is back", async () => {
+    const n = new Notifier();
+    const seen = counted(n);
+    const stream = async (ms: number) => {
+      for (let t = 0; t < ms; t += 2) {
+        n.changed();
+        await vi.advanceTimersByTimeAsync(2);
+      }
+    };
+    n.setBackground(true);
+    await stream(2000);
+    expect(seen.calls.length).toBeLessThanOrEqual(2000 / BACKGROUND_INTERVAL_MS + 1);
+    expect(seen.calls.length).toBeGreaterThanOrEqual(2000 / BACKGROUND_INTERVAL_MS - 1);
+    n.setBackground(false);
+    await vi.advanceTimersByTimeAsync(BACKGROUND_INTERVAL_MS);
+    const before = seen.calls.length;
+    await stream(1000);
+    expect(seen.calls.length - before).toBeGreaterThanOrEqual(1000 / NOTIFY_INTERVAL_MS - 1);
   });
 
   it("lets user input skip the wait", async () => {

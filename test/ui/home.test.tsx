@@ -84,8 +84,8 @@ function setup() {
   return { ...t, ...tab, folders };
 }
 
-function show(t: ReturnType<typeof setup>, size: { columns: number; rows: number }) {
-  const r = renderAt(<App hub={t.hub} onExit={() => undefined} />, size);
+function show(t: ReturnType<typeof setup>, size: { columns: number; rows: number }, spareRow = false) {
+  const r = renderAt(<App hub={t.hub} onExit={() => undefined} spareRow={spareRow} />, size);
   cleanups.push(r.unmount);
   return r;
 }
@@ -150,6 +150,29 @@ describe("the home screen", () => {
     await r.waitFor((s) => s.includes("Message luna"), "the tab again");
     expect(r.screen()).not.toContain("hello");
     expect(t.hub.showHome).toBe(false);
+  });
+
+  it("shows Artificial Analysis's index beside the new models it has tested, with their name", async () => {
+    const t = setup();
+    t.hub.news = { ...NEWS, scores: [{ name: "Claude 5.5 Haiku (Reasoning)", creator: "Anthropic", intelligence: 58.4, coding: 51, speed: 140 }] };
+    const r = show(t, { columns: 120, rows: 40 });
+    await r.waitFor((s) => s.includes("Message luna"), "the project");
+    await r.press("/home");
+    await r.press(KEYS.enter);
+    await r.waitFor((s) => s.includes("◆ New models"), "home");
+    const screen = r.screen();
+    const haiku = screen.split("\n").find((row) => row.includes("● Claude Haiku 5.5"));
+    expect(haiku?.replace(/\s+/g, " ")).toMatch(/● Claude Haiku 5\.5 58 claude-code/);
+    // An untested model keeps its row, without a number.
+    expect(screen.split("\n").find((row) => row.includes("GPT-6.1 Sol"))?.replace(/\s+/g, " ")).toMatch(/GPT-6\.1 Sol openai/);
+    expect(screen).toContain("index: Intelligence Index by artificialanalysis.ai");
+  });
+
+  it("leaves the last row free with spareRow (Windows), so Ink draws only the lines that change", async () => {
+    const t = setup();
+    const r = show(t, { columns: 80, rows: 24 }, true);
+    await r.waitFor((s) => s.includes("Message luna"), "the project");
+    expect(r.screen().split("\n")).toHaveLength(23);
   });
 
   it("stands in for an empty window, where esc stays and ? opens the help", async () => {

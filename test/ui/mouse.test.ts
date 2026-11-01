@@ -4,7 +4,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 import { defaultConfig, mergeConfig } from "../../src/core/config.js";
-import { decodeMouse, MOUSE_OFF, MOUSE_ON, MouseFilter, mouseReportingUseful, MouseStdin, panelAt, type MouseEvent } from "../../src/ui/mouse.js";
+import { decodeMouse, FOCUS_OFF, FOCUS_ON, MOUSE_OFF, MOUSE_ON, MouseFilter, mouseReportingUseful, MouseStdin, panelAt, type MouseEvent } from "../../src/ui/mouse.js";
 import { sleep } from "./ink-helpers.js";
 
 const wheelUp = (x: number, y: number) => `\u001b[<64;${x};${y}M`;
@@ -147,10 +147,10 @@ class FakeSource extends EventEmitter {
   }
 }
 
-function setup(holdMs = 20) {
+function setup(holdMs = 20, focusReports = false) {
   const source = new FakeSource();
   const written: string[] = [];
-  const input = new MouseStdin(source as unknown as NodeJS.ReadStream, { write: (s) => void written.push(s) }, holdMs);
+  const input = new MouseStdin(source as unknown as NodeJS.ReadStream, { write: (s) => void written.push(s) }, holdMs, focusReports);
   const events: MouseEvent[] = [];
   input.on("mouse", (e: MouseEvent) => events.push(e));
   /** What Ink would read: everything until read() says null, on each "readable". */
@@ -222,6 +222,46 @@ describe("MouseStdin", () => {
     // Button events with the wheel, in SGR coordinates; no motion reports.
     expect(MOUSE_ON).toBe("\u001b[?1000h\u001b[?1006h");
     expect(MOUSE_OFF).toBe("\u001b[?1006l\u001b[?1000l");
+  });
+});
+
+describe("focus reports", () => {
+  it("takes the window's focus out of the keys, the last report of a chunk counting, a cut one held", () => {
+    const f = new MouseFilter();
+    expect(f.push("a[Ob")).toEqual({ text: "ab", events: [], focus: false });
+    expect(f.push("[O[I")).toEqual({ text: "", events: [], focus: true });
+    expect(f.push("x[")).toEqual({ text: "x", events: [] });
+    expect(f.push("Oy")).toEqual({ text: "y", events: [], focus: false });
+    // Keys that look alike stay keys: F1 (ESC O P), Alt+O (ESC O).
+    expect(f.push("OPO")).toEqual({ text: "OPO", events: [] });
+  });
+
+  it("asks for them only while Ink reads the keys, says when the focus changes, and stops at the end", () => {
+    const { source, input, written, reader } = setup(20, true);
+    const focus: boolean[] = [];
+    input.on("focus", (f: boolean) => focus.push(f));
+    input.on("readable", reader);
+    expect(written).toEqual([]);
+    input.setRawMode(true);
+    expect(written).toEqual([FOCUS_ON]);
+    source.feed("[O", "[O", "[I", "[O");
+    expect(focus).toEqual([false, true, false]);
+    expect(input.focused).toBe(false);
+    // Another program gets the terminal: no reports, and nobody says the window went away.
+    input.setRawMode(false);
+    expect(written).toEqual([FOCUS_ON, FOCUS_OFF]);
+    expect(focus).toEqual([false, true, false, true]);
+    input.setRawMode(true);
+    input.dispose();
+    expect(written).toEqual([FOCUS_ON, FOCUS_OFF, FOCUS_ON, FOCUS_OFF]);
+    expect(FOCUS_ON).toBe("[?1004h");
+  });
+
+  it("are not asked for unless wanted", () => {
+    const { input, written } = setup();
+    input.setRawMode(true);
+    input.dispose();
+    expect(written).toEqual([]);
   });
 });
 

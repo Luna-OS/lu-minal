@@ -11,6 +11,8 @@ export type Listener = () => void;
 
 /** While changes keep coming (agents streaming), at most one notification this often: 10 a second. */
 export const NOTIFY_INTERVAL_MS = 100;
+/** While the terminal's window is in the background: at most two a second. */
+export const BACKGROUND_INTERVAL_MS = 500;
 
 export class Notifier {
   private listeners = new Set<Listener>();
@@ -19,9 +21,19 @@ export class Notifier {
   private immediate: NodeJS.Immediate | null = null;
   private timer: NodeJS.Timeout | null = null;
   private lastDeliveryAt = Number.NEGATIVE_INFINITY;
+  private background = false;
 
   /** `intervalMs`: the least time between two notifications while changes keep coming (0: none). */
   constructor(readonly intervalMs: number = NOTIFY_INTERVAL_MS) {}
+
+  /** Nobody looks (the terminal's window is in the background): fewer frames while changes keep coming. */
+  setBackground(background: boolean): void {
+    this.background = background;
+  }
+
+  private get gapMs(): number {
+    return this.background ? Math.max(this.intervalMs, BACKGROUND_INTERVAL_MS) : this.intervalMs;
+  }
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -44,7 +56,8 @@ export class Notifier {
     this.version++;
     if (this.pending) return;
     // Clamped, so a clock set back can't hold the screen for longer than one interval.
-    const wait = Math.min(this.intervalMs, this.lastDeliveryAt + this.intervalMs - Date.now());
+    const gap = this.gapMs;
+    const wait = Math.min(gap, this.lastDeliveryAt + gap - Date.now());
     if (wait <= 0) this.immediate = setImmediate(this.deliver);
     else this.timer = setTimeout(this.deliver, wait);
   }

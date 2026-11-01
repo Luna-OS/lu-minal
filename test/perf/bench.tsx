@@ -6,6 +6,8 @@
 //
 //   npx tsx test/perf/bench.tsx [busy|idle|both] [seconds]       (NODE_ENV=production as in the binaries)
 //   node --cpu-prof --import tsx test/perf/bench.tsx busy 10    (a .cpuprofile for the hot spots)
+//   FORCE_COLOR=3 for the colours a real terminal gets (piped, chalk draws none and frames cost less);
+//   BENCH_SKY_FPS=n for another sky rate, BENCH_BACKGROUND=1 for a window in the background.
 //
 // test/perf/render.test.tsx runs it under Vitest when PERF=1. Nothing here touches the network or
 // starts a program: the agents' drivers are fakes and the Hub runs offline.
@@ -32,7 +34,7 @@ import type { DiffLine, LogEntry, PlanUsage } from "../../src/core/types.js";
 import { AuthStore } from "../../src/providers/auth.js";
 import { ThemeManager } from "../../src/themes/manager.js";
 import { App } from "../../src/ui/App.js";
-import { RENDER_OPTIONS } from "../../src/ui/render-options.js";
+import { RENDER_OPTIONS, spareRowFor } from "../../src/ui/render-options.js";
 
 export interface BenchOptions {
   mode: "busy" | "idle";
@@ -229,6 +231,7 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
   // The real look: the animated sky (8 fps) and Axo; BENCH_SKY=0 / BENCH_AXO=0 leave them out.
   if (process.env.BENCH_SKY === "0") config.sky.enabled = false;
   if (process.env.BENCH_AXO === "0") config.axo = false;
+  if (process.env.BENCH_SKY_FPS) config.sky.fps = Number(process.env.BENCH_SKY_FPS);
   const hub = new Hub({
     config,
     configPath: null,
@@ -263,6 +266,8 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
     hub.projects.push(project);
   }
   hub.activeIndex = 0;
+  // BENCH_BACKGROUND=1: the terminal window in the background (a focus report said so).
+  if (process.env.BENCH_BACKGROUND === "1") hub.setTerminalFocused(false);
   // The clocks the running app has (the 1 s tick while agents work, the limits' 30 s tick); the
   // network ones find nothing to do offline.
   (hub as unknown as { startPollers(): void }).startPollers();
@@ -271,7 +276,7 @@ export async function runBench(opts: BenchOptions): Promise<BenchResult> {
   let frames = 0;
   let notifications = 0;
   const unsubscribe = hub.notifier.subscribe(() => notifications++);
-  const instance = render(<App hub={hub} onExit={() => undefined} />, {
+  const instance = render(<App hub={hub} onExit={() => undefined} spareRow={spareRowFor()} />, {
     ...RENDER_OPTIONS,
     stdout: stdout as unknown as NodeJS.WriteStream,
     stderr: new FakeStdout(columns, rows) as unknown as NodeJS.WriteStream,

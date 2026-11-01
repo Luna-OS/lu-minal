@@ -1,8 +1,10 @@
 // Sign-ins: Claude through Claude Code (no API key), OpenRouter in the browser, OpenCode Zen's free
 // models without anything, API keys for every other provider, other coding agents (OpenCode, Gemini
-// CLI over ACP) through their own CLIs, and GitHub / Forgejo for repositories.
+// CLI over ACP) through their own CLIs, GitHub / Forgejo for repositories, and Artificial Analysis for
+// the new models' benchmark scores on the home screen.
 import React from "react";
 import type { Hub } from "../../core/hub.js";
+import { AA_AUTH_ID, AA_KEY_ENV, AA_KEY_URL } from "../../core/news.js";
 import { openExternal } from "../../platform/process.js";
 import type { ProviderInfo } from "../../providers/models.js";
 import { normalizeInstanceUrl, forgejoTokenUrl } from "../../git/forgejo.js";
@@ -82,6 +84,7 @@ function LoginDialog({ hub, ui, close, preselect }: { hub: Hub; ui: UiServices; 
       badge: hub.auth.secretFor(`forgejo:${hostOf(f.url)}`) ? { text: "✓ token", color: c.success } : undefined,
     })),
     { id: "git:forgejo-add", label: "Add a Forgejo / Gitea instance…", group: "Repositories" },
+    aaItem(hub),
   ];
   return (
     <ListDialog
@@ -107,6 +110,46 @@ function LoginDialog({ hub, ui, close, preselect }: { hub: Hub; ui: UiServices; 
   );
 }
 
+function aaItem(hub: Hub): ListItem {
+  const c = hub.theme.colors;
+  const saved = Boolean(hub.auth.secretFor(AA_AUTH_ID));
+  const env = AA_KEY_ENV.find((e) => process.env[e]);
+  return {
+    id: "data:aa",
+    label: "Artificial Analysis",
+    hint: env && !saved ? `from ${env}` : "benchmark scores for the new models on home · free key",
+    group: "Model data",
+    badge: saved || env ? { text: saved ? "✓ key" : "✓ env", color: c.success } : { text: "add key", color: c.faint },
+  };
+}
+
+function askAaKey(hub: Hub, ui: UiServices): void {
+  ui.openDialog({
+    id: "key-aa",
+    render: (close) => (
+      <InputDialog
+        theme={hub.theme}
+        title="Artificial Analysis API key"
+        lines={[
+          "The new models on the home screen get Artificial Analysis's independent scores (Intelligence Index).",
+          "Create a free account and an API key on their site. The key is saved in lu-minal's auth.json.",
+          `You can also set ${AA_KEY_ENV.join(" or ")} instead.`,
+          `Get a key: ${AA_KEY_URL}`,
+        ]}
+        mask
+        placeholder="your key"
+        onCancel={close}
+        onOpen={() => void openExternal(AA_KEY_URL)}
+        openHint="open the key page"
+        onSubmit={(key) => {
+          close();
+          hub.setAaKey(key);
+        }}
+      />
+    ),
+  });
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).hostname;
@@ -116,6 +159,7 @@ function hostOf(url: string): string {
 }
 
 async function signOut(hub: Hub, ui: UiServices, id: string): Promise<void> {
+  if (id === "data:aa") return hub.setAaKey(null);
   if (id === "provider:claude-code") return hub.logoutClaude(ui.runInTerminal);
   if (id.startsWith("provider:") && hub.registry.provider(id.slice("provider:".length))?.kind === "acp") {
     hub.toast("This agent signs out in its own CLI (e.g. opencode auth logout).", "info");
@@ -134,6 +178,7 @@ async function signOut(hub: Hub, ui: UiServices, id: string): Promise<void> {
 }
 
 async function signIn(hub: Hub, ui: UiServices, id: string): Promise<void> {
+  if (id === "data:aa") return askAaKey(hub, ui);
   if (id === "provider:claude-code") {
     await hub.loginClaude(ui.runInTerminal);
     return;

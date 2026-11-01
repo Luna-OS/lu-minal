@@ -55,7 +55,7 @@ import { Agent, type SavedAgentState } from "./agent.js";
 import { attachmentsDir, pruneAttachments } from "./attachments.js";
 import { distrusted, rememberRecent, rememberTrust, saveConfig, type Config } from "./config.js";
 import { newId, Notifier } from "./emitter.js";
-import { loadNews, newsStale, NEWS_MAX_AGE_MS, type News } from "./news.js";
+import { AA_AUTH_ID, AA_KEY_ENV, loadNews, newsStale, NEWS_MAX_AGE_MS, type News } from "./news.js";
 import { Project, type ProjectRuntime } from "./project.js";
 import { StatsStore } from "./stats.js";
 import { UsageSchedule } from "./usage-schedule.js";
@@ -179,6 +179,8 @@ export class Hub implements ProjectRuntime {
    * Without tabs home is all there is (see homeShown).
    */
   showHome = false;
+  /** Whether the terminal's window has the focus (terminals with focus reports say when it hasn't). */
+  terminalFocused = true;
   /** Claude Code's newest version and changelog and Anthropic's status, for the home screen. */
   news: News | null = null;
 
@@ -493,7 +495,7 @@ export class Hub implements ProjectRuntime {
   /** Loads the home screen's news in the background (never offline; one load at a time). */
   refreshNews(force = false): Promise<void> {
     if (this.opts.offline || this.disposed) return Promise.resolve();
-    this.newsInFlight ??= loadNews({ cacheDir: this.opts.cacheDir, fetchImpl: this.opts.fetchImpl, force })
+    this.newsInFlight ??= loadNews({ cacheDir: this.opts.cacheDir, fetchImpl: this.opts.fetchImpl, force, aaKey: this.aaKey() })
       .then((news) => {
         this.news = news;
         this.notifier.changed();
@@ -503,6 +505,25 @@ export class Hub implements ProjectRuntime {
         this.newsInFlight = null;
       });
     return this.newsInFlight;
+  }
+
+  /** The Artificial Analysis key (auth.json or ARTIFICIAL_ANALYSIS_API_KEY), for the new models' scores. */
+  aaKey(): string | null {
+    return keyFor(AA_AUTH_ID, AA_KEY_ENV, this.auth)?.key ?? null;
+  }
+
+  /** Saves (or with null removes) the Artificial Analysis key and loads the scores with it. */
+  setAaKey(key: string | null): void {
+    if (key?.trim()) {
+      this.auth.set(AA_AUTH_ID, { type: "api", key: key.trim() });
+      this.toast("Saved the Artificial Analysis key: the new models get their scores.", "success");
+    } else {
+      this.auth.remove(AA_AUTH_ID);
+      if (this.news) this.news = { ...this.news, scores: null };
+      this.toast("Removed the Artificial Analysis key.", "info");
+    }
+    this.notifier.changed();
+    void this.refreshNews(true);
   }
 
   // ---- ProjectRuntime --------------------------------------------------------------------------
@@ -1023,6 +1044,14 @@ export class Hub implements ProjectRuntime {
 
   get theme(): Theme {
     return this.themes.current;
+  }
+
+  /** The terminal's window got or lost the focus: in the background the screen rests (still sky, fewer frames). */
+  setTerminalFocused(focused: boolean): void {
+    if (focused === this.terminalFocused) return;
+    this.terminalFocused = focused;
+    this.notifier.setBackground(!focused);
+    this.notifier.changed();
   }
 
   setTheme(name: string): boolean {

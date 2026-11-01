@@ -33,6 +33,8 @@ import { animationClock, BUSY_FRAME_MS, IDLE_FRAME_MS, spinnerFrame, usePulse, u
 import { computeLayout, type Layout } from "./layout.js";
 import type { Row } from "./log-lines.js";
 import { addPaste, deleteChipBefore, expandPastes, isLongPaste, keepReferenced, noPastes, type Pastes } from "./paste.js";
+import { useTerminalFocus } from "./mouse.js";
+import { frameRows } from "./render-options.js";
 import { HubContext, UiContext, useHub, type DialogSpec, type UiServices } from "./store.js";
 import type { AxoMood } from "./axo/frames.js";
 
@@ -45,19 +47,22 @@ interface HistoryEntry {
 export interface AppProps {
   hub: Hub;
   onExit: () => void;
+  /** Leave the terminal's last row free (Windows: see spareRowFor in render-options.ts). */
+  spareRow?: boolean;
 }
 
 export function App(props: AppProps) {
   return (
     <HubContext value={props.hub}>
-      <Screen onExit={props.onExit} />
+      <Screen onExit={props.onExit} spareRow={props.spareRow ?? false} />
     </HubContext>
   );
 }
 
-function Screen({ onExit }: { onExit: () => void }) {
+function Screen({ onExit, spareRow }: { onExit: () => void; spareRow: boolean }) {
   const hub = useHub();
-  const { columns, rows } = useWindowSize();
+  const { columns, rows: terminalRows } = useWindowSize();
+  const rows = frameRows(terminalRows, spareRow);
   const { exit, suspendTerminal } = useApp();
   const theme = hub.theme;
   const c = theme.colors;
@@ -90,8 +95,12 @@ function Screen({ onExit }: { onExit: () => void }) {
   // While agents work, the spinners, the sky and Axo move by the clock with the frames the agents'
   // text draws anyway, and a pulse fills the gaps (see frames.ts). While idle, the sky and Axo tick
   // on their own, and a slow tick moves the header clock on and turns "Done!" back into "Ready".
-  usePulse(anyBusy ? BUSY_FRAME_MS : null);
-  useTicking(!anyBusy && project ? IDLE_FRAME_MS : null);
+  // With the terminal's window in the background the screen rests: no animation, no ticks of its
+  // own, and the agents' changes at most twice a second (Notifier.setBackground).
+  useTerminalFocus(hub);
+  const resting = !hub.terminalFocused;
+  usePulse(anyBusy && !resting ? BUSY_FRAME_MS : null);
+  useTicking(!anyBusy && project && !resting ? IDLE_FRAME_MS : null);
   useUrgentInput(hub.notifier);
   const now = Date.now();
   const frame = spinnerFrame();
@@ -477,7 +486,7 @@ function Screen({ onExit }: { onExit: () => void }) {
   return (
     <UiContext value={ui}>
       <Box width={columns} height={rows}>
-        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0} clock={clock} enabled={hub.config.sky.enabled} moonAt={shown ? null : undefined} />
+        <Sky width={columns} height={rows} theme={theme} glass={glass} fps={hub.config.sky.fps} animate={hub.config.sky.enabled && hub.config.sky.fps > 0 && !resting} clock={clock} enabled={hub.config.sky.enabled} moonAt={shown ? null : undefined} />
         <TabBar hub={hub} rect={layout.tabBar} frame={frame} />
         {shown ? <Header hub={hub} project={shown} rect={layout.header} now={now} /> : null}
         {shown ? (
@@ -528,7 +537,7 @@ function Screen({ onExit }: { onExit: () => void }) {
               bg={leadAgent.id === focused?.id ? c.surfaceFocus : c.surface}
               caption={leadBusy ? `${(shown.agents.find((a) => a.status === "working")?.activity ?? "Working")}…` : mood === "done" ? "Done!" : "Ready when you are."}
               captionColor={leadBusy ? c.accent2 : c.muted}
-              animate={hub.config.sky.enabled}
+              animate={hub.config.sky.enabled && !resting}
               clock={clock}
             />
             {layout.axo.height >= 13 ? (

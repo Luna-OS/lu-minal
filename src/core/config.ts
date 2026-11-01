@@ -92,7 +92,7 @@ export function defaultConfig(): Config {
     leadModel: null,
     workerModel: null,
     permissionMode: "auto-edit",
-    sky: { enabled: true, fps: 8 },
+    sky: { enabled: true, fps: 4 },
     axo: true,
     mouse: true,
     github: { owner: null },

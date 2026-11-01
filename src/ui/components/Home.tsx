@@ -9,7 +9,7 @@ import { Box } from "ink";
 import React from "react";
 import type { ClaudeNewsKind } from "../../core/claude-news.js";
 import type { Hub } from "../../core/hub.js";
-import { NEW_MODEL_DAYS, newestModels, type NewModel } from "../../core/news.js";
+import { AA_ATTRIBUTION, NEW_MODEL_DAYS, newestModels, scoreFor, type NewModel } from "../../core/news.js";
 import { samePath, tildify } from "../../platform/paths.js";
 import { compareVersions } from "../../platform/update.js";
 import type { ThemeColors } from "../../themes/types.js";
@@ -310,12 +310,18 @@ function newsBlocks(hub: Hub, w: number, models: NewModel[], now: number): HomeB
   // What a source shows before the news came in.
   const pending = hub.offline ? "offline" : "loading…";
 
-  // A table: "● name  provider  date", as narrow as the names allow; the providers go when the
-  // column is tight.
+  // A table: "● name  index  provider  date", as narrow as the names allow; the providers go when
+  // the column is tight. The index is Artificial Analysis's Intelligence Index (with a key).
+  const scores = models.map((m) => {
+    const v = scoreFor(news?.scores, m.name)?.intelligence;
+    return v === undefined || v === null ? null : String(Math.round(v));
+  });
+  const scoreW = Math.max(0, ...scores.map((t) => (t === null ? 0 : textWidth(t))));
+  const scoreCol = scoreW ? scoreW + 2 : 0;
   const provW = Math.min(12, Math.max(0, ...models.map((m) => textWidth(m.provider))));
-  const withProvider = w - 2 - 2 - provW - 2 - DATE_W >= 14;
-  const nameW = Math.min(Math.max(0, ...models.map((m) => textWidth(m.name))), w - 2 - 2 - DATE_W - (withProvider ? provW + 2 : 0));
-  const modelRows = models.map((m): HomeRow => {
+  const withProvider = w - 2 - 2 - scoreCol - provW - 2 - DATE_W >= 14;
+  const nameW = Math.min(Math.max(0, ...models.map((m) => textWidth(m.name))), w - 2 - 2 - scoreCol - DATE_W - (withProvider ? provW + 2 : 0));
+  const modelRows = models.map((m, i): HomeRow => {
     const date = shortDate(m.releaseDate);
     const pieces = [
       piece(0, 2 + nameW, [
@@ -323,11 +329,17 @@ function newsBlocks(hub: Hub, w: number, models: NewModel[], now: number): HomeB
         { text: m.name, color: c.text },
       ]),
     ];
-    if (withProvider) pieces.push(piece(2 + nameW + 2, provW, [{ text: m.provider, color: c.muted }]));
-    const end = 2 + nameW + 2 + (withProvider ? provW + 2 : 0) + DATE_W;
+    const text = scores[i];
+    if (text !== null) {
+      pieces.push(piece(2 + nameW + 2 + scoreW - textWidth(text), textWidth(text), [{ text, color: c.accent2 }]));
+    }
+    if (withProvider) pieces.push(piece(2 + nameW + 2 + scoreCol, provW, [{ text: m.provider, color: c.muted }]));
+    const end = 2 + nameW + 2 + scoreCol + (withProvider ? provW + 2 : 0) + DATE_W;
     pieces.push(piece(end - textWidth(date), textWidth(date), [{ text: date, color: c.faint }]));
     return { pieces };
   });
+  // Their terms ask for the source wherever the scores are shown.
+  if (scoreW) modelRows.push(line(w, [{ text: `index: Intelligence Index by ${AA_ATTRIBUTION}`, color: c.faint }], 1));
 
   const acc = hub.claudeAccount;
   const installed = acc?.installed ? acc.version : null;

@@ -9,6 +9,7 @@ import { Project } from "../../src/core/project.js";
 import { dayKey, StatsStore } from "../../src/core/stats.js";
 import { AuthStore } from "../../src/providers/auth.js";
 import { ThemeManager } from "../../src/themes/manager.js";
+import { usageRows } from "../../src/ui/dialogs/usage.js";
 import { sparkline } from "../../src/ui/format.js";
 
 const DAY = 86_400_000;
@@ -69,6 +70,27 @@ describe("StatsStore", () => {
     expect(b.summary().allTime.input).toBe(0);
   });
 
+  it("sums one provider by period and model, most spent first", () => {
+    const stats = new StatsStore(null);
+    const now = new Date(2026, 10, 1, 12).getTime();
+    const api = (at: number, model: string, costUsd: number) => stats.record({ at, provider: "anthropic", model, project, input: 1000, output: 100, costUsd });
+    api(now, "claude-sonnet-5-5", 0.5);
+    api(now - 3 * DAY, "claude-fable-5-1", 2);
+    api(now - 40 * DAY, "claude-fable-5-1", 4);
+    stats.record({ at: now, provider: "openrouter", model: "anthropic/claude-fable-5-1", project, input: 9, output: 9, costUsd: 9 });
+
+    const s = stats.providerSummary("anthropic", now);
+    expect(s.today.costUsd).toBe(0.5);
+    expect(s.week.costUsd).toBe(2.5);
+    expect(s.month.costUsd).toBe(2.5);
+    expect(s.allTime).toEqual({ input: 3000, output: 300, costUsd: 6.5, turns: 3 });
+    expect(s.models.map((m) => [m.model, m.costUsd, m.month.costUsd])).toEqual([
+      ["claude-fable-5-1", 6, 2],
+      ["claude-sonnet-5-5", 0.5, 0.5],
+    ]);
+    expect(stats.providerSummary("minimax", now).allTime.turns).toBe(0);
+  });
+
   it("starts empty from a broken file", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lu-stats-"));
     const file = path.join(dir, "stats.json");
@@ -97,6 +119,35 @@ describe("the Hub's statistics", () => {
     agent.addUsage({ output: 12 });
     agent.addUsage({ costUsd: 0.01 });
     expect(hub.stats.summary().allTime).toEqual({ input: 4151, output: 12, costUsd: 0.01, turns: 1 });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("the Usage view's Anthropic API section", () => {
+  it("shows what the key spent, per model, and keeps the API models out of the other providers", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lu-stats-"));
+    const hub = new Hub({
+      config: defaultConfig(),
+      configPath: null,
+      auth: new AuthStore(path.join(dir, "auth.json")),
+      themes: new ThemeManager({ dir: path.join(dir, "themes") }),
+      cacheDir: dir,
+      stateDir: dir,
+      offline: true,
+      servers: false,
+    });
+    const text = (rows: ReturnType<typeof usageRows>) => rows.map((r) => r.segs.map((s) => s.text).join("")).join("\n");
+    const now = Date.now();
+    hub.stats.record({ at: now, provider: "anthropic", model: "claude-fable-5-1", project, input: 20_000, output: 2_000, costUsd: 1.25 });
+    const p = new Project({ cwd: dir, name: "demo" }, hub.notifier, hub);
+    p.agents.push(new Agent({ name: "luna", role: "lead", model: { provider: "anthropic", model: "claude-fable-5-1" } }, hub.notifier, "auto-edit"));
+    hub.projects.push(p);
+    const shown = text(usageRows(hub, 60, now));
+    expect(shown).toContain("Anthropic API");
+    expect(shown).toContain("today $1.25");
+    expect(shown).toContain("all time $1.25");
+    expect(shown).toMatch(/Claude Fable 5\.1 +\$1\.25 · 22\.0k tokens/);
+    expect(shown).not.toContain("Other models in use");
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

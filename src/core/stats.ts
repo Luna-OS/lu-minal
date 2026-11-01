@@ -56,6 +56,15 @@ export interface StatsSummary {
   since: string | null;
 }
 
+export interface ProviderSummary {
+  today: UsageAmount;
+  week: UsageAmount;
+  month: UsageAmount;
+  allTime: UsageAmount;
+  /** All time per model, with the last 30 days. */
+  models: Array<{ model: string; month: UsageAmount } & UsageAmount>;
+}
+
 const zero = (): UsageAmount => ({ input: 0, output: 0, costUsd: 0, turns: 0 });
 
 function bucket(map: Map<string, UsageAmount>, key: string): UsageAmount {
@@ -190,6 +199,36 @@ export class StatsStore {
       lines: { ...this.data.lines },
       since: this.data.since,
     };
+  }
+
+  /** One provider's usage: today, the last 7 and 30 days, all time, and its models (most spent first). */
+  providerSummary(provider: string, now = Date.now()): ProviderSummary {
+    const out: ProviderSummary = { today: zero(), week: zero(), month: zero(), allTime: zero(), models: [] };
+    const models = new Map<string, UsageAmount & { month: UsageAmount }>();
+    const todayKey = dayKey(now);
+    const weekStart = dayKey(now - 6 * 86_400_000);
+    const monthStart = dayKey(now - 29 * 86_400_000);
+    const prefix = `${provider}/`;
+    for (const [day, byModel] of Object.entries(this.data.days)) {
+      for (const [key, u] of Object.entries(byModel)) {
+        if (!key.startsWith(prefix)) continue;
+        add(out.allTime, u);
+        if (day === todayKey) add(out.today, u);
+        if (day >= weekStart) add(out.week, u);
+        const model = key.slice(prefix.length);
+        let m = models.get(model);
+        if (!m) models.set(model, (m = { ...zero(), month: zero() }));
+        add(m, u);
+        if (day >= monthStart) {
+          add(out.month, u);
+          add(m.month, u);
+        }
+      }
+    }
+    out.models = [...models]
+      .map(([model, m]) => ({ model, ...m }))
+      .sort((a, b) => b.costUsd - a.costUsd || b.input + b.output - (a.input + a.output));
+    return out;
   }
 
   reset(): void {

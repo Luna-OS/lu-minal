@@ -167,11 +167,55 @@ export function usageRows(hub: Hub, width: number, now = Date.now()): Row[] {
     }
   }
 
+  // ---- the Anthropic API (a key, billed per token) ---------------------------------------------
+  // Anthropic tells a key's spending only to an organisation's Admin API, so these are the amounts
+  // lu-minal counted itself (every turn of an agent on the key, priced from the catalog).
+  const api = hub.stats.providerSummary("anthropic", now);
+  if (hub.registry.isConnected("anthropic") || api.allTime.turns > 0) {
+    rows.push(heading("api", "Anthropic API", theme, "your API key · counted by lu-minal"));
+    if (!api.allTime.turns) {
+      rows.push({ key: "api:none", segs: [{ text: "Nothing used on the key yet.", color: c.faint }] });
+    } else {
+      const spent = (label: string, u: { costUsd: number }, color = c.muted): Seg[] => [
+        { text: `${label} `, color: c.faint },
+        { text: formatCost(u.costUsd), color },
+      ];
+      rows.push({
+        key: "api:r",
+        segs: [
+          ...spent("today", api.today),
+          { text: " · ", color: c.faint },
+          ...spent("7 days", api.week),
+          { text: " · ", color: c.faint },
+          ...spent("30 days", api.month),
+          { text: " · ", color: c.faint },
+          ...spent("all time", api.allTime, c.text),
+        ],
+      });
+      for (const m of api.models) {
+        const name = hub.registry.model({ provider: "anthropic", model: m.model })?.name ?? m.model;
+        const right = `${formatCost(m.costUsd)} · ${formatTokens(m.input + m.output)} tokens`;
+        const gap = Math.max(1, width - 2 - name.length - right.length);
+        rows.push({
+          key: `api:m:${m.model}`,
+          segs: [
+            { text: `  ${name}`, color: c.text, bold: true },
+            { text: " ".repeat(gap) },
+            { text: right, color: c.muted },
+          ],
+        });
+        rows.push({ key: `api:m:${m.model}:c`, segs: [{ text: `  30 days ${formatCost(m.month.costUsd)} · ${m.turns} turns`, color: c.faint }] });
+      }
+    }
+    rows.push({ key: "api:src", segs: [{ text: "Anthropic's own bill: platform.claude.com/cost", color: c.faint }] }, { key: "api:s", segs: [] });
+  }
+
   // ---- other providers in use ------------------------------------------------------------------
   const stats = hub.stats.summary(now);
   const others = new Map<string, Agent[]>();
   for (const { a } of agents) {
-    if (a.model.provider === "claude-code") continue;
+    // Claude Code has the plan above, the Anthropic API its own section.
+    if (a.model.provider === "claude-code" || a.model.provider === "anthropic") continue;
     const key = `${a.model.provider}/${a.model.model}`;
     others.set(key, [...(others.get(key) ?? []), a]);
   }

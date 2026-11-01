@@ -19,6 +19,15 @@ import type { Layout, PanelSlot } from "./layout.js";
 export const MOUSE_ON = "\u001b[?1000h\u001b[?1006h";
 export const MOUSE_OFF = "\u001b[?1006l\u001b[?1000l";
 
+/**
+ * Focus reports (1004): the terminal says ESC [ I when its window gets the focus and ESC [ O when
+ * it loses it, so lu-minal can rest (a still sky, fewer frames) while it is in the background.
+ */
+export const FOCUS_ON = "\u001b[?1004h";
+export const FOCUS_OFF = "\u001b[?1004l";
+const FOCUS_IN = "\u001b[I";
+const FOCUS_OUT = "\u001b[O";
+
 /** How to select text while the mouse is reported. */
 export const SELECT_HINT = "To select text, hold Shift while dragging (Option in iTerm2, fn in Terminal.app), or /mouse off.";
 
@@ -89,11 +98,13 @@ export class MouseFilter {
   private tail = "";
   private lastReportAt = -Infinity;
 
-  push(chunk: string, now = Date.now()): { text: string; events: MouseEvent[] } {
+  /** `focus`: the terminal window's focus, when the chunk had a focus report (the last one counts). */
+  push(chunk: string, now = Date.now()): { text: string; events: MouseEvent[]; focus?: boolean } {
     const s = this.held + chunk;
     this.held = "";
     let text = "";
     const events: MouseEvent[] = [];
+    let focus: boolean | undefined;
     let i = 0;
     while (i < s.length) {
       if (this.inPaste) {
@@ -132,6 +143,11 @@ export class MouseFilter {
         i = esc + 6;
         continue;
       }
+      if (s.startsWith(FOCUS_IN, esc) || s.startsWith(FOCUS_OUT, esc)) {
+        focus = s[esc + 2] === "I";
+        i = esc + FOCUS_IN.length;
+        continue;
+      }
       if (s.startsWith(PASTE_START, esc)) {
         text += PASTE_START;
         i = esc + PASTE_START.length;
@@ -157,7 +173,7 @@ export class MouseFilter {
       text += ESC;
       i = esc + 1;
     }
-    return { text, events };
+    return focus === undefined ? { text, events } : { text, events, focus };
   }
 
   /** Whether reports came in just now (a turning wheel): a cut one is worth waiting for longer. */
@@ -198,7 +214,8 @@ type Source = Pick<NodeJS.ReadStream, "read" | "on" | "off" | "setRawMode" | "se
  * The terminal's input as Ink reads it (`render(<App />, { stdin })`), minus the mouse reports,
  * which come out as "mouse" events. Ink reads with `read()` on "readable" and switches raw mode;
  * both reach the real stdin. It also turns the terminal's mouse reporting on and off: on while it
- * is wanted (`setMouse`) and Ink is in raw mode.
+ * is wanted (`setMouse`) and Ink is in raw mode, and with `focusReports` the window's focus
+ * reports likewise (as "focus" events with true or false).
  */
 export class MouseStdin extends EventEmitter {
   private readonly filter = new MouseFilter();
@@ -207,12 +224,18 @@ export class MouseStdin extends EventEmitter {
   private wanted = false;
   private raw = false;
   private reportingOn = false;
+  private focusOn = false;
+  private disposed = false;
+  /** The window's focus as the terminal last reported it (true until it says otherwise). */
+  focused = true;
 
   constructor(
     readonly source: Source,
     private readonly out: { write(data: string): unknown },
     /** How long an ESC at the end of the input waits for the rest of a report (10x while the wheel turns). */
     private readonly holdMs = 20,
+    /** Ask the terminal for focus reports while Ink reads the keys. */
+    private readonly focusReports = false,
   ) {
     super();
     // Reading starts and stops with Ink's own interest in the input.
@@ -292,25 +315,44 @@ export class MouseStdin extends EventEmitter {
         return null;
       }
       this.clearTimer();
-      const { text, events } = this.filter.push(typeof chunk === "string" ? chunk : String(chunk));
+      const { text, events, focus } = this.filter.push(typeof chunk === "string" ? chunk : String(chunk));
       for (const e of events) this.emit("mouse", e);
+      if (focus !== undefined) this.setFocused(focus);
       if (text) return text;
     }
   }
 
   /** Mouse reporting off for good (lu-minal is ending). */
   dispose(): void {
+    this.disposed = true;
     this.wanted = false;
     this.sync();
     this.clearTimer();
   }
 
   private sync(): void {
+    const focusOn = this.focusReports && this.raw && !this.disposed;
+    if (focusOn !== this.focusOn) {
+      this.focusOn = focusOn;
+      this.write(focusOn ? FOCUS_ON : FOCUS_OFF);
+      // Without reports nobody says when the window is in the background.
+      if (!focusOn) this.setFocused(true);
+    }
     const on = this.wanted && this.raw;
     if (on === this.reportingOn) return;
     this.reportingOn = on;
+    this.write(on ? MOUSE_ON : MOUSE_OFF);
+  }
+
+  private setFocused(focused: boolean): void {
+    if (focused === this.focused) return;
+    this.focused = focused;
+    this.emit("focus", focused);
+  }
+
+  private write(data: string): void {
     try {
-      this.out.write(on ? MOUSE_ON : MOUSE_OFF);
+      this.out.write(data);
     } catch {
       // the terminal is gone
     }
@@ -360,6 +402,20 @@ export function useMouse(handler: (e: MouseEvent) => void, opts: { isActive?: bo
       stdin.off("mouse", on);
     };
   }, [stdin, active]);
+}
+
+/** Keeps hub.terminalFocused with the terminal's focus reports (when Ink reads through a MouseStdin). */
+export function useTerminalFocus(hub: { setTerminalFocused(focused: boolean): void }): void {
+  const { stdin } = useStdin();
+  useEffect(() => {
+    if (!(stdin instanceof MouseStdin)) return;
+    const on = (focused: boolean) => hub.setTerminalFocused(focused);
+    hub.setTerminalFocused(stdin.focused);
+    stdin.on("focus", on);
+    return () => {
+      stdin.off("focus", on);
+    };
+  }, [stdin, hub]);
 }
 
 /** The MouseStdin Ink reads from, if it does. */

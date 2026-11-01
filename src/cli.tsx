@@ -30,7 +30,7 @@ import { installPlugin, robloxPluginsDir } from "./roblox/install.js";
 import { bridgeToken } from "./roblox/token.js";
 import { startThemes, ThemeManager } from "./themes/manager.js";
 import { App } from "./ui/App.js";
-import { RENDER_OPTIONS } from "./ui/render-options.js";
+import { RENDER_OPTIONS, spareRowFor } from "./ui/render-options.js";
 import { MouseStdin } from "./ui/mouse.js";
 import { titleSequence } from "./ui/text.js";
 import { VERSION } from "./version.js";
@@ -345,11 +345,12 @@ async function main(): Promise<void> {
     // Let Ink restore the screen first.
     setTimeout(() => process.exit(0), 50);
   };
-  // Ink reads the keys through this: it takes the mouse reports out (the App turns them on).
-  const input = new MouseStdin(process.stdin, process.stdout);
-  // However lu-minal ends, the shell gets a terminal without mouse reports.
+  // Ink reads the keys through this: it takes the mouse reports out (the App turns them on) and the
+  // focus reports, so the screen rests while the window is in the background.
+  const input = new MouseStdin(process.stdin, process.stdout, undefined, true);
+  // However lu-minal ends, the shell gets a terminal without mouse or focus reports.
   process.once("exit", () => input.dispose());
-  const instance = render(React.createElement(App, { hub, onExit: done }), { ...RENDER_OPTIONS, stdin: input as unknown as NodeJS.ReadStream });
+  const instance = render(React.createElement(App, { hub, onExit: done, spareRow: spareRowFor() }), { ...RENDER_OPTIONS, stdin: input as unknown as NodeJS.ReadStream });
   for (const signal of ["SIGTERM", "SIGHUP"] as const) {
     process.on(signal, () => {
       void hub.dispose().finally(() => {

@@ -168,6 +168,18 @@ describe("the home screen", () => {
     expect(screen).toContain("index: Intelligence Index by artificialanalysis.ai");
   });
 
+  it("says why the index column is empty when there is a key", async () => {
+    const t = setup();
+    t.hub.aaKey = () => "aa-secret";
+    t.hub.news = { ...NEWS, scores: null, scoresError: "HTTP 401" };
+    const r = show(t, { columns: 120, rows: 40 });
+    await r.waitFor((s) => s.includes("Message luna"), "the project");
+    await r.press("/home");
+    await r.press(KEYS.enter);
+    await r.waitFor((s) => s.includes("◆ New models"), "home");
+    expect(r.screen()).toContain("index: couldn't load from artificialanalysis.ai (HTTP 401)");
+  });
+
   it("leaves the last row free with spareRow (Windows), so Ink draws only the lines that change", async () => {
     const t = setup();
     const r = show(t, { columns: 80, rows: 24 }, true);

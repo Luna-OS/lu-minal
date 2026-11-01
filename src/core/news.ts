@@ -72,8 +72,16 @@ export interface News {
   status: ServiceStatus | null;
   /** Claude's release notes (apps and platform), newest first; null when neither page loaded. */
   claude: ClaudeNewsItem[] | null;
-  /** Artificial Analysis's scores; null without a key or when they couldn't be loaded. */
+  /**
+   * Artificial Analysis's scores; null without a key or when they couldn't be loaded (and none
+   * were in the cache).
+   */
   scores?: ModelScore[] | null;
+  /**
+   * Why the scores couldn't be loaded this time ("HTTP 401", "timed out", ...); the scores may still
+   * be the cache's older ones.
+   */
+  scoresError?: string | null;
   /** When the oldest of these answers was fetched (the time of loading when none was). */
   fetchedAt: number;
   /** When loadNews put this together. */
@@ -382,12 +390,23 @@ function readCache(file: string): NewsCache {
 
 /** Text from `url`, or null for any failure (status, network, timeout). */
 async function download(fetchImpl: FetchLike, url: string, headers: Record<string, string>, timeoutMs: number): Promise<string | null> {
+  return (await fetchText(fetchImpl, url, headers, timeoutMs)).text;
+}
+
+/** Text from `url`, or why there is none ("HTTP 429", "timed out", "network error"). */
+async function fetchText(
+  fetchImpl: FetchLike,
+  url: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<{ text: string; error: null } | { text: null; error: string }> {
   try {
     const res = await fetchImpl(url, { headers: { "user-agent": "lu-minal", ...headers }, signal: AbortSignal.timeout(timeoutMs) });
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
+    if (!res.ok) return { text: null, error: `HTTP ${res.status}` };
+    return { text: await res.text(), error: null };
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    return { text: null, error: name === "TimeoutError" || name === "AbortError" ? "timed out" : "network error" };
   }
 }
 
@@ -422,8 +441,10 @@ function asStatus(v: unknown): ServiceStatus | null {
 
 /**
  * The news: each source from the cache while its answer is less than an hour old (unless `force`),
- * else downloaded (all at once, 10 s each). Answers that came in are written back to the cache; a
- * source that fails is null. Never throws.
+ * else downloaded (all at once, 10 s each). Answers that came in are written back to the cache. A
+ * source that fails keeps its last answer from the cache, however old (one failed download would
+ * otherwise wipe what was there); only the status is null then, as an old status would mislead.
+ * Never throws.
  */
 export async function loadNews(opts: LoadNewsOptions): Promise<News> {
   const now = opts.now ?? Date.now();
@@ -446,11 +467,25 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
     if (value !== null) {
       cache[id] = { at: now, value };
       wrote = true;
+      return { value, at: now };
     }
-    return { value, at: now };
+    const old = id === "status" ? undefined : cache[id];
+    const stale = old ? revive(old.value) : null;
+    return stale !== null && old ? { value: stale, at: old.at } : { value: null, at: now };
   };
 
   const aaKey = opts.aaKey?.trim() || null;
+  let aaError: string | null = null;
+  const loadScores = async (f: FetchLike): Promise<ModelScore[] | null> => {
+    const got = await fetchText(f, AA_MODELS_URL, { accept: "application/json", "x-api-key": aaKey! }, timeoutMs);
+    if (got.error !== null) {
+      aaError = got.error;
+      return null;
+    }
+    const parsed = parseAaModels(parseJson(got.text));
+    if (!parsed) aaError = "an answer lu-minal can't read";
+    return parsed;
+  };
   const [npm, changelog, status, claude, scores] = await Promise.all([
     get(
       "npm",
@@ -474,9 +509,7 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
       },
       asClaudeNews,
     ),
-    aaKey
-      ? get("aa", async (f) => parseAaModels(parseJson(await download(f, AA_MODELS_URL, { accept: "application/json", "x-api-key": aaKey }, timeoutMs))), asScores)
-      : Promise.resolve({ value: null, at: now }),
+    aaKey ? get("aa", loadScores, asScores) : Promise.resolve({ value: null, at: now }),
   ]);
 
   if (wrote) {
@@ -493,7 +526,8 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
     changelog: changelog.value,
     status: status.value,
     claude: claude.value,
-    ...(aaKey ? { scores: scores.value } : {}),
+    // The error also when the cache filled in: an old list shouldn't hide that the key stopped working.
+    ...(aaKey ? { scores: scores.value, scoresError: aaError ?? (scores.value === null ? "no answer" : null) } : {}),
     fetchedAt: loaded.length ? Math.min(...loaded.map((s) => s.at)) : now,
     loadedAt: now,
   };

@@ -338,8 +338,16 @@ function newsBlocks(hub: Hub, w: number, models: NewModel[], now: number): HomeB
     pieces.push(piece(end - textWidth(date), textWidth(date), [{ text: date, color: c.faint }]));
     return { pieces };
   });
-  // Their terms ask for the source wherever the scores are shown.
-  if (scoreW) modelRows.push(line(w, [{ text: `index: Intelligence Index by ${AA_ATTRIBUTION}`, color: c.faint }], 1));
+  // Their terms ask for the source wherever the scores are shown. With a key there is always a
+  // line, so an empty column says why.
+  const failed = news?.scoresError ? `couldn't load from ${AA_ATTRIBUTION} (${news.scoresError})` : null;
+  if (scoreW) {
+    const note = news?.scoresError ? ` · couldn't refresh (${news.scoresError})` : "";
+    modelRows.push(line(w, [{ text: `index: Intelligence Index by ${AA_ATTRIBUTION}${note}`, color: c.faint }], 1));
+  } else if (news && hub.aaKey()) {
+    const text = news.scores ? `index: ${AA_ATTRIBUTION} hasn't tested these yet` : `index: ${failed ?? `couldn't load from ${AA_ATTRIBUTION}`}`;
+    modelRows.push(line(w, [{ text, color: news.scores ? c.faint : c.warning }], 1));
+  }
 
   const acc = hub.claudeAccount;
   const installed = acc?.installed ? acc.version : null;

@@ -429,6 +429,31 @@ describe("Artificial Analysis", () => {
     // Without the key the cached scores aren't shown either.
     expect((await loadNews({ cacheDir: dir, fetchImpl, now: NOW + AA_MAX_AGE_MS })).scores).toBeUndefined();
   });
+
+  it("keeps the last scores when a download fails, and says why", async () => {
+    const NOW = Date.UTC(2026, 10, 1, 12);
+    let aa = () => Response.json(AA);
+    const fetchImpl = fakeFetch((url) => (url === AA_MODELS_URL ? aa() : new Response("not found", { status: 404 })));
+    const first = await loadNews({ cacheDir: dir, fetchImpl, now: NOW, aaKey: "aa-secret" });
+    expect(first.scores).toHaveLength(3);
+    expect(first.scoresError).toBeNull();
+
+    // A forced reload (a new key) that fails: the old list stays, with the reason.
+    aa = () => new Response("slow down", { status: 429 });
+    const failed = await loadNews({ cacheDir: dir, fetchImpl, now: NOW + 60_000, aaKey: "aa-secret", force: true });
+    expect(failed.scores).toHaveLength(3);
+    expect(failed.scoresError).toBe("HTTP 429");
+
+    // With nothing in the cache the reason is all there is.
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "lu-news-empty-"));
+    try {
+      const none = await loadNews({ cacheDir: empty, fetchImpl, now: NOW, aaKey: "aa-secret" });
+      expect(none.scores).toBeNull();
+      expect(none.scoresError).toBe("HTTP 429");
+    } finally {
+      fs.rmSync(empty, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("newsStale", () => {

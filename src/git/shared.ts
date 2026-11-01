@@ -96,12 +96,11 @@ export function str(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
-/** The "message" (or "error", or nrzGit's "error.message") an API put in an error body. */
+/** The "message" (or "error") an API put in an error body. */
 export function bodyMessage(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
   const b = body as { message?: unknown; error?: unknown };
-  const nested = b.error && typeof b.error === "object" ? (b.error as { message?: unknown }).message : null;
-  return str(b.message)?.trim() || str(b.error)?.trim() || str(nested)?.trim() || null;
+  return str(b.message)?.trim() || str(b.error)?.trim() || null;
 }
 
 /** Options for `createJsonGetter`. */

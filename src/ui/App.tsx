@@ -1,7 +1,7 @@
 // The root component: lays out the sky, the tab bar, the agents' panels and the dialogs, and routes
 // every key. State lives in the Hub; what lives here is purely about the screen (prompts, scroll,
 // open dialogs).
-import { Box, Text, useApp, useInput, usePaste, useStdout, useWindowSize, type Key } from "ink";
+import { Box, Text, useApp, useInput, usePaste, useStdin, useStdout, useWindowSize, type Key } from "ink";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import type { Agent } from "../core/agent.js";
 import {
@@ -33,7 +33,7 @@ import { animationClock, BUSY_FRAME_MS, IDLE_FRAME_MS, spinnerFrame, usePulse, u
 import { computeLayout, type Layout } from "./layout.js";
 import type { Row } from "./log-lines.js";
 import { addPaste, deleteChipBefore, expandPastes, isLongPaste, keepReferenced, noPastes, type Pastes } from "./paste.js";
-import { useTerminalFocus } from "./mouse.js";
+import { MouseStdin, useTerminalFocus } from "./mouse.js";
 import { frameRows } from "./render-options.js";
 import { HubContext, UiContext, useHub, type DialogSpec, type UiServices } from "./store.js";
 import type { AxoMood } from "./axo/frames.js";
@@ -64,6 +64,7 @@ function Screen({ onExit, spareRow }: { onExit: () => void; spareRow: boolean })
   const { columns, rows: terminalRows } = useWindowSize();
   const rows = frameRows(terminalRows, spareRow);
   const { exit, suspendTerminal } = useApp();
+  const { stdin } = useStdin();
   const theme = hub.theme;
   const c = theme.colors;
 
@@ -123,9 +124,12 @@ function Screen({ onExit, spareRow }: { onExit: () => void; spareRow: boolean })
       const ignoreSigint = () => undefined;
       process.on("SIGINT", ignoreSigint);
       try {
-        await suspendTerminal(
-          () =>
-            new Promise<void>((resolve) => {
+        await suspendTerminal(async () => {
+          // Ink let the terminal go; the input closes too, or it keeps taking the program's keys.
+          const input = stdin instanceof MouseStdin ? stdin : null;
+          input?.release();
+          try {
+            await new Promise<void>((resolve) => {
               let child: ReturnType<typeof spawnProgram>;
               try {
                 child = spawnProgram(exe, args, { stdio: "inherit", cwd: opts?.cwd ?? process.cwd(), env: opts?.env ?? process.env });
@@ -139,14 +143,17 @@ function Screen({ onExit, spareRow }: { onExit: () => void; spareRow: boolean })
                 code = exitCode;
                 resolve();
               });
-            }),
-        );
+            });
+          } finally {
+            input?.reclaim();
+          }
+        });
       } finally {
         process.off("SIGINT", ignoreSigint);
       }
       return code;
     },
-    [suspendTerminal],
+    [suspendTerminal, stdin],
   );
 
   const ui: UiServices = useMemo(

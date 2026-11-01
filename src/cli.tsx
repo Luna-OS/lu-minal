@@ -7,6 +7,7 @@ import { restoreNodeEnv } from "./production.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import tty from "node:tty";
 import { render } from "ink";
 import React from "react";
 import { forgetAcpModels } from "./agents/acp/models.js";
@@ -347,7 +348,10 @@ async function main(): Promise<void> {
   };
   // Ink reads the keys through this: it takes the mouse reports out (the App turns them on) and the
   // focus reports, so the screen rests while the window is in the background.
-  const input = new MouseStdin(process.stdin, process.stdout, undefined, true);
+  // On Windows the input is closed while a program has the terminal and opened anew after it
+  // (MouseStdin.release); elsewhere stdin stays (closing fd 0 there could end it for good).
+  const reopenInput = process.platform === "win32" ? () => new tty.ReadStream(0) : null;
+  const input = new MouseStdin(process.stdin, process.stdout, undefined, true, reopenInput);
   // However lu-minal ends, the shell gets a terminal without mouse or focus reports.
   process.once("exit", () => input.dispose());
   const instance = render(React.createElement(App, { hub, onExit: done, spareRow: spareRowFor() }), { ...RENDER_OPTIONS, stdin: input as unknown as NodeJS.ReadStream });

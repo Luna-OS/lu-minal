@@ -162,6 +162,53 @@ function setup(holdMs = 20, focusReports = false) {
 }
 
 describe("MouseStdin", () => {
+  it("closes the input while a program has the terminal and reads a new one after (release / reclaim)", () => {
+    const first = Object.assign(new FakeSource(), { destroyed: false, destroy() { this.destroyed = true; } });
+    const second = Object.assign(new FakeSource(), { destroyed: false, destroy() { this.destroyed = true; } });
+    const opened: FakeSource[] = [];
+    const input = new MouseStdin(first as unknown as NodeJS.ReadStream, { write: () => undefined }, 20, false, () => {
+      opened.push(second);
+      return second as unknown as NodeJS.ReadStream;
+    });
+    const typed: string[] = [];
+    const reader = () => {
+      for (let t = input.read(); t !== null; t = input.read()) typed.push(t);
+    };
+    input.on("readable", reader);
+    input.setRawMode(true);
+    first.feed("a");
+
+    // Ink's suspendTerminal: its listener goes, raw mode goes off; then the input is closed.
+    input.off("readable", reader);
+    input.setRawMode(false);
+    input.release();
+    expect(first.destroyed).toBe(true);
+    expect(first.listenerCount("readable")).toBe(0);
+    // Nothing touches the closed stream until reclaim().
+    first.feed("stolen?");
+    expect(input.read()).toBeNull();
+    input.setRawMode(true);
+    expect(first.raw).toEqual([true, false]);
+
+    input.reclaim();
+    expect(opened).toEqual([second]);
+    input.setRawMode(true);
+    input.on("readable", reader);
+    expect(second.listenerCount("readable")).toBe(1);
+    second.feed("b");
+    expect(typed).toEqual(["a", "b"]);
+    expect(second.raw).toEqual([true]);
+  });
+
+  it("keeps the input when it can't open a new one", () => {
+    const { source, input, typed, reader } = setup();
+    input.on("readable", reader);
+    input.release();
+    input.reclaim();
+    source.feed("x");
+    expect(typed).toEqual(["x"]);
+  });
+
   it("reads the real stdin only while Ink listens, and forwards its modes", () => {
     const { source, input, reader } = setup();
     expect(input.isTTY).toBe(true);

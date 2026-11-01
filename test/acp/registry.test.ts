@@ -129,7 +129,8 @@ describe("ACP providers", () => {
         catalog: buildCatalog(loadFixture(), "cache", 1),
         auth: new AuthStore(path.join(t.dir, "auth.json")),
         config: defaultConfig(),
-        env: { PATH: "" },
+        // Not the machine's npm folders either (where a real `gemini` may be installed).
+        env: { PATH: "", APPDATA: t.dir, LOCALAPPDATA: t.dir },
         claudeAccount: () => null,
       });
       expect(real.isConnected("gemini-cli")).toBe(false);

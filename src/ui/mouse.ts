@@ -229,22 +229,66 @@ export class MouseStdin extends EventEmitter {
   /** The window's focus as the terminal last reported it (true until it says otherwise). */
   focused = true;
 
+  /** The terminal's input now (a new one after reclaim()). */
+  private source: Source;
+  /** Set between release() and reclaim(): the input is closed, a program has the terminal. */
+  private released = false;
+
   constructor(
-    readonly source: Source,
+    source: Source,
     private readonly out: { write(data: string): unknown },
     /** How long an ESC at the end of the input waits for the rest of a report (10x while the wheel turns). */
     private readonly holdMs = 20,
     /** Ask the terminal for focus reports while Ink reads the keys. */
     private readonly focusReports = false,
+    /**
+     * Opens the terminal's input anew, for release() / reclaim(). Without it release() does nothing
+     * (tests, and the platforms where stopping the input isn't needed).
+     */
+    private readonly reopen: (() => Source & { destroy(): unknown }) | null = null,
   ) {
     super();
+    this.source = source;
     // Reading starts and stops with Ink's own interest in the input.
     this.on("newListener", (event: string | symbol) => {
-      if (event === "readable" && this.listenerCount("readable") === 0) source.on("readable", this.forward);
+      if (event === "readable" && this.listenerCount("readable") === 0 && !this.released) this.source.on("readable", this.forward);
     });
     this.on("removeListener", (event: string | symbol) => {
-      if (event === "readable" && this.listenerCount("readable") === 0) source.off("readable", this.forward);
+      if (event === "readable" && this.listenerCount("readable") === 0) this.source.off("readable", this.forward);
     });
+  }
+
+  /**
+   * Closes the terminal's input while a program runs in the terminal (a sign-in): call it after Ink
+   * let the terminal go. A stream that stays open keeps reading the console in the background even
+   * paused, so on Windows the program never gets the keys (tried on a real console, Node and Bun:
+   * only closing the stream helps). reclaim() opens it again.
+   */
+  release(): void {
+    if (!this.reopen || this.released) return;
+    this.released = true;
+    this.source.off("readable", this.forward);
+    this.filter.reset();
+    this.ready = "";
+    this.clearTimer();
+    try {
+      (this.source as { destroy?: () => unknown }).destroy?.();
+    } catch {
+      // already closed
+    }
+  }
+
+  /** Opens the terminal's input again after release() (before Ink takes the terminal back). */
+  reclaim(): void {
+    if (!this.reopen || !this.released) return;
+    this.released = false;
+    try {
+      this.source = this.reopen();
+    } catch {
+      // No terminal any more: lu-minal can't read keys either way.
+      return;
+    }
+    if (this.listenerCount("readable") > 0) this.source.on("readable", this.forward);
   }
 
   private readonly forward = () => this.emit("readable");
@@ -265,10 +309,11 @@ export class MouseStdin extends EventEmitter {
   }
 
   setRawMode(mode: boolean): this {
-    // Raw mode goes off when Ink hands the terminal to a program (a sign-in): stop reading first.
-    // Ink only takes its listener away, and a stdin that keeps reading takes the program's keys
-    // (on Windows the console gives each key to one reader). Ink's next listener reads again.
-    if (!mode) this.source.pause?.();
+    if (this.released) {
+      // Closed for a program in the terminal; reclaim() comes first.
+      this.raw = mode;
+      return this;
+    }
     this.source.setRawMode(mode);
     this.raw = mode;
     if (!mode) {
@@ -312,6 +357,7 @@ export class MouseStdin extends EventEmitter {
       this.ready = "";
       return t;
     }
+    if (this.released) return null;
     for (;;) {
       const chunk: unknown = this.source.read();
       if (chunk === null || chunk === undefined) {

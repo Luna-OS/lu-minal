@@ -151,6 +151,39 @@ describe("the sign-in dialog's coding agents", () => {
     expect(gemini).toContain("npm install -g @google/gemini-cli");
     expect(opencode).toContain("npm install -g opencode-ai (or: curl -fsSL");
   });
+
+  it("sets up Google Antigravity in a window that shows each step", async () => {
+    const t = setup();
+    vi.spyOn(t.hub.registry, "acpProgram").mockReturnValue(null);
+    let finish: (ok: boolean) => void = () => undefined;
+    const setupSpy = vi.spyOn(t.hub, "setupAcpAgent").mockImplementation((_id, onStatus) => {
+      onStatus("Downloading Google Antigravity 1.4.5: 10%");
+      onStatus("Downloading Google Antigravity 1.4.5: 60%");
+      onStatus("Sign in with your Google account in the browser window that opens (lu-minal waits up to 10 minutes).");
+      return new Promise<boolean>((resolve) => (finish = resolve));
+    });
+    t.launchers.login();
+    const r = show(t.ui, { columns: 120, rows: 36 });
+    await r.waitFor((s) => s.includes("Sign in"), "the dialog");
+    await r.press("antigravity");
+    await r.waitFor((s) => s.includes("Google Antigravity"), "the row");
+    const row = r.screen().split("\n").find((l) => l.includes("Google Antigravity"))!;
+    expect(row).toContain("not installed");
+    expect(row).toContain("about 100 MB");
+
+    await r.press(KEYS.enter);
+    // The setup window starts the work once it is on the screen.
+    const steps = show(t.ui, { columns: 120, rows: 36 });
+    await steps.waitFor((s) => s.includes("browser window that opens"), "the sign-in step");
+    expect(setupSpy).toHaveBeenCalledWith("antigravity", expect.any(Function), expect.any(AbortSignal));
+    const screen = steps.screen();
+    // The download's progress replaced itself: one line, at its last value.
+    expect(screen).toContain("✓ Downloading Google Antigravity 1.4.5: 60%");
+    expect(screen).not.toContain("10%");
+    expect(screen).toContain("esc cancel");
+    finish(true);
+    await steps.waitFor((s) => s.includes("enter / esc close"), "done");
+  });
 });
 
 describe("the help", () => {

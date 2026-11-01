@@ -10,6 +10,7 @@ import {
   detectAcpAgents,
   findAcpAgent,
   findAcpProgram,
+  ANTIGRAVITY_ID,
   GEMINI_CLI_ID,
   OPENCODE_CLI_ID,
   openCodeLogError,
@@ -117,7 +118,7 @@ describe("config.json acpAgents", () => {
       },
     });
     const presets = acpPresets(config);
-    expect(presets.map((p) => p.id)).toEqual([OPENCODE_CLI_ID, GEMINI_CLI_ID, "goose"]);
+    expect(presets.map((p) => p.id)).toEqual([OPENCODE_CLI_ID, GEMINI_CLI_ID, ANTIGRAVITY_ID, "goose"]);
     const goose = findAcpAgent("goose", config)!;
     expect(goose).toMatchObject({ name: "Goose", command: "goose", args: ["acp"], env: { GOOSE_MODE: "auto" }, toolPrefix: "luminal__", builtin: false, models: "static" });
     expect(goose.staticModels).toEqual([{ id: "gpt-6", name: "gpt-6" }]);
@@ -125,8 +126,8 @@ describe("config.json acpAgents", () => {
     expect(goose.signIn).toContain("Goose");
     expect(findAcpAgent("no-command", config)).toBeNull();
     expect(findAcpAgent("nope", config)).toBeNull();
-    expect(acpPresets(defaultConfig()).map((p) => p.id)).toEqual([OPENCODE_CLI_ID, GEMINI_CLI_ID]);
-    expect(acpPresets(null)).toHaveLength(2);
+    expect(acpPresets(defaultConfig()).map((p) => p.id)).toEqual([OPENCODE_CLI_ID, GEMINI_CLI_ID, ANTIGRAVITY_ID]);
+    expect(acpPresets(null)).toHaveLength(3);
   });
 
   it("lets an entry with a builtin id change that agent", () => {
@@ -194,9 +195,12 @@ describe("detection", () => {
   it("lists every agent with where it is installed", () => {
     const config = mergeConfig({ acpAgents: { goose: { command: "goose", args: ["acp"] } } });
     const { find } = fakeFinder({ opencode: "/usr/bin/opencode", goose: "/usr/local/bin/goose" });
-    expect(detectAcpAgents(config, { find, home: "/home/luna", platform: "linux" }).map((d) => [d.preset.id, d.exe])).toEqual([
+    // Antigravity is found where lu-minal downloaded it: not in this empty home.
+    const env = { PATH: "", LU_MINAL_HOME: path.join(os.tmpdir(), "lu-minal-no-such-home") };
+    expect(detectAcpAgents(config, { find, home: "/home/luna", platform: "linux", env }).map((d) => [d.preset.id, d.exe])).toEqual([
       [OPENCODE_CLI_ID, "/usr/bin/opencode"],
       [GEMINI_CLI_ID, null],
+      [ANTIGRAVITY_ID, null],
       ["goose", "/usr/local/bin/goose"],
     ]);
   });

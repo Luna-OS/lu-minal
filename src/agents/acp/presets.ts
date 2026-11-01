@@ -1,12 +1,16 @@
 // The coding-agent CLIs lu-minal can run over the Agent Client Protocol: OpenCode (`opencode acp`),
-// Gemini CLI (`gemini --experimental-acp`) and any ACP command the user adds under `acpAgents` in
+// Gemini CLI (`gemini --experimental-acp`), Google Antigravity (its ACP server, which lu-minal
+// downloads from the ACP registry) and any ACP command the user adds under `acpAgents` in
 // config.json. A preset says how to start the agent, how it names lu-minal's MCP tools, how it
 // signs in and how a model is chosen when the protocol can't do it.
 import os from "node:os";
 import path from "node:path";
+import fs from "node:fs";
 import type { AcpAgentConfig, Config } from "../../core/config.js";
-import { expandHome } from "../../platform/paths.js";
+import { expandHome, stateDir } from "../../platform/paths.js";
 import { findProgram } from "../../platform/process.js";
+import { writeFileAtomicSync } from "../../platform/files.js";
+import { acpAgentsDir, installedAcp } from "./download.js";
 
 /** An auth method as an agent lists it in its initialize answer. */
 export interface AcpAuthMethod {
@@ -48,8 +52,11 @@ export interface AcpPreset {
    * Gemini CLI uses the bare name. The team prompt names the tools this way.
    */
   toolPrefix: string;
-  /** Where the model list comes from: `opencode models`, a static list, or nothing. */
-  models: "opencode" | "static" | "none";
+  /**
+   * Where the model list comes from: `opencode models`, a static list, nothing, or a session the
+   * agent opens (its model option, read after the sign-in; Antigravity).
+   */
+  models: "opencode" | "static" | "none" | "session";
   staticModels: AcpStaticModel[];
   /**
    * Extra command-line arguments that pick a model, for agents whose ACP side can't (Gemini CLI's
@@ -67,6 +74,17 @@ export interface AcpPreset {
   autoAuth: ((methods: AcpAuthMethod[], env: NodeJS.ProcessEnv) => string | null) | null;
   /** Install places besides the PATH (apps started from a launcher may not see the shell's PATH). */
   locations: (home: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform) => string[];
+  /**
+   * The agent's program comes from the ACP registry (download.ts) instead of the PATH: its id
+   * there. lu-minal downloads it in /login.
+   */
+  download?: { registryId: string; size: string } | null;
+  /**
+   * Signing in happens over ACP itself (`authenticate` with this method; the agent opens the
+   * browser), not in a terminal. lu-minal remembers it (acpSignedIn) and signs in the same way
+   * whenever the agent asks.
+   */
+  acpSignIn?: { methodId: string; label: string } | null;
   /** Built in (false: from config.json). */
   builtin: boolean;
 }
@@ -76,6 +94,56 @@ export type { AcpAgentConfig } from "../../core/config.js";
 
 export const OPENCODE_CLI_ID = "opencode-cli";
 export const GEMINI_CLI_ID = "gemini-cli";
+export const ANTIGRAVITY_ID = "antigravity";
+/** Antigravity's ACP server in the ACP registry. */
+export const ANTIGRAVITY_REGISTRY_ID = "antigravity-acp";
+
+// ---- sign-ins over ACP ----------------------------------------------------------------------------
+
+/** Where lu-minal notes which agents were signed in over ACP (and how). */
+function signInFile(env: NodeJS.ProcessEnv): string {
+  return path.join(stateDir(env), "acp-signin.json");
+}
+
+function readSignIns(env: NodeJS.ProcessEnv): Record<string, string> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(signInFile(env), "utf8")) as unknown;
+    const out: Record<string, string> = {};
+    if (isObj(parsed)) for (const [k, v] of Object.entries(parsed)) if (typeof v === "string") out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** The auth method an agent was signed in with over ACP (by lu-minal), or null. */
+export function acpSignedIn(presetId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  return readSignIns(env)[presetId] ?? null;
+}
+
+/** Notes (or with null forgets) that an agent was signed in over ACP with `methodId`. */
+export function setAcpSignedIn(presetId: string, methodId: string | null, env: NodeJS.ProcessEnv = process.env): void {
+  const all = readSignIns(env);
+  if (methodId) all[presetId] = methodId;
+  else delete all[presetId];
+  const file = signInFile(env);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomicSync(file, `${JSON.stringify(all, null, 2)}\n`);
+}
+
+/** Whether an agent that signs in over ACP can run without asking: a key in the environment, or an earlier sign-in. */
+export function acpReady(preset: AcpPreset, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!preset.acpSignIn) return true;
+  return preset.autoAuth?.([...ANTIGRAVITY_AUTH_METHODS], env) != null;
+}
+
+/** The auth methods Antigravity's ACP server offers (its initialize answer, 1.4.5). */
+const ANTIGRAVITY_AUTH_METHODS: AcpAuthMethod[] = [
+  { id: "oauth-personal", name: "Log in with Google" },
+  { id: "oauth-business", name: "Log in with Gemini Enterprise" },
+  { id: "gemini-api-key", name: "Gemini API key" },
+  { id: "agent-platform", name: "Gemini Enterprise Agent Platform" },
+];
 
 /** The model id that leaves the choice to the agent (its own configured default). */
 export const ACP_DEFAULT_MODEL = "default";
@@ -213,6 +281,34 @@ export function builtinAcpPresets(): AcpPreset[] {
         platform === "win32" ? windowsPlaces(home, env, "gemini") : posixPlaces(home, "gemini"),
       builtin: true,
     },
+    {
+      id: ANTIGRAVITY_ID,
+      name: "Google Antigravity",
+      // The program is the one download.ts installed (findAcpProgram); this name is only shown.
+      command: "agy_acp_server",
+      args: [],
+      env: {},
+      docs: "https://antigravity.google/docs/ide/extensions",
+      signIn: "Open /login and pick Google Antigravity: you sign in with your Google account in the browser (or set GEMINI_API_KEY).",
+      login: null,
+      install: "lu-minal downloads it in /login (Google Antigravity)",
+      toolPrefix: "",
+      models: "session",
+      staticModels: [],
+      modelArgs: null,
+      prepareEnv: null,
+      stderrError: null,
+      autoAuth: (methods, env) => {
+        const has = (id: string) => methods.some((m) => m.id === id);
+        if (env.GEMINI_API_KEY && has("gemini-api-key")) return "gemini-api-key";
+        const signedIn = acpSignedIn(ANTIGRAVITY_ID, env);
+        return signedIn && has(signedIn) ? signedIn : null;
+      },
+      locations: () => [],
+      download: { registryId: ANTIGRAVITY_REGISTRY_ID, size: "about 100 MB" },
+      acpSignIn: { methodId: "oauth-personal", label: "Google account" },
+      builtin: true,
+    },
   ];
 }
 
@@ -324,6 +420,8 @@ export function findAcpProgram(preset: AcpPreset, opts: FindAcpOptions = {}): st
   const env = opts.env ?? process.env;
   const home = opts.home ?? os.homedir();
   const platform = opts.platform ?? process.platform;
+  // A downloaded agent is wherever download.ts put it (unless config.json names a program).
+  if (preset.download && preset.command === "agy_acp_server") return installedAcp(preset.download.registryId, acpAgentsDir(env))?.exe ?? null;
   const command = expandHome(preset.command);
   // A path (not a bare name) is used as it is.
   if (/[\\/]/.test(command)) return find(path.basename(command), { configured: command, extra: [], env: { ...env, PATH: "", Path: "" } });
@@ -339,8 +437,10 @@ export function detectAcpAgents(
 }
 
 /** The command line for an agent on `model` ("default" or empty: the agent's own choice). */
-export function acpCommandArgs(preset: AcpPreset, model: string | null | undefined, opts: { modelArgs?: boolean } = {}): string[] {
-  const args = [...preset.args];
+export function acpCommandArgs(preset: AcpPreset, model: string | null | undefined, opts: { modelArgs?: boolean; env?: NodeJS.ProcessEnv } = {}): string[] {
+  // A downloaded agent's own arguments from the registry (Antigravity on Linux: --uid=) come first.
+  const installed = preset.download ? (installedAcp(preset.download.registryId, acpAgentsDir(opts.env ?? process.env))?.args ?? []) : [];
+  const args = [...installed, ...preset.args];
   const m = model?.trim();
   if (opts.modelArgs !== false && preset.modelArgs && m && m !== ACP_DEFAULT_MODEL) args.push(...preset.modelArgs(m));
   return args;

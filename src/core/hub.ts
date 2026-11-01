@@ -5,8 +5,10 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { AcpDriver } from "../agents/acp/driver.js";
-import { listAcpModels } from "../agents/acp/models.js";
-import { acpEnv } from "../agents/acp/presets.js";
+import { acpAgentsDir, installAcp } from "../agents/acp/download.js";
+import { listAcpModels, saveAcpModels } from "../agents/acp/models.js";
+import { acpEnv, acpReady, setAcpSignedIn } from "../agents/acp/presets.js";
+import { probeAcpModels, signInAcp } from "../agents/acp/signin.js";
 import { readClaudeAccount } from "../agents/claude-code/account.js";
 import { claudeEnv as claudeProcessEnv, findClaude } from "../agents/claude-code/cli.js";
 import { ClaudeCodeDriver } from "../agents/claude-code/driver.js";
@@ -953,10 +955,12 @@ export class Hub implements ProjectRuntime {
       // OpenCode's own model list (`opencode models`, cached for a day); the others list static models.
       await Promise.all(
         this.registry.acpPresets().map(async (preset) => {
-          if (preset.models !== "opencode") return;
+          if (preset.models !== "opencode" && preset.models !== "session") return;
           const exe = this.registry.acpProgram(preset.id);
           if (!exe) return;
-          const list = await listAcpModels(preset, { exe, cacheDir: this.opts.cacheDir, refresh: opts.refreshAcp === preset.id }).catch(() => []);
+          // A session lists the models only once signed in (Antigravity); before that, the last list.
+          const probe = preset.models === "session" && acpReady(preset) ? () => probeAcpModels(preset, { exe }) : undefined;
+          const list = await listAcpModels(preset, { exe, cacheDir: this.opts.cacheDir, refresh: opts.refreshAcp === preset.id, probe }).catch(() => []);
           if (list.length) this.registry.setLocalModels(preset.id, list);
         }),
       );
@@ -997,6 +1001,60 @@ export class Hub implements ProjectRuntime {
   }
 
   // ---- other providers -------------------------------------------------------------------------
+
+  /**
+   * Sets up an agent lu-minal downloads and signs in over ACP (Google Antigravity): downloads or
+   * updates its program, then signs in (the agent opens the browser) and takes the account's models.
+   * `onStatus` gets a line for each step. Resolves whether it is ready; rejects with a sentence.
+   */
+  async setupAcpAgent(providerId: string, onStatus: (line: string) => void, signal: AbortSignal): Promise<boolean> {
+    const preset = this.registry.acpPreset(providerId);
+    if (!preset?.download) return false;
+    let exe = this.registry.acpProgram(preset.id);
+    if (this.opts.offline && !exe) throw new Error(`lu-minal runs offline: ${preset.name} can't be downloaded.`);
+    if (!this.opts.offline) {
+      try {
+        if (!exe) onStatus(`Downloading ${preset.name} (${preset.download.size}) from Google…`);
+        const installed = await installAcp(preset.download.registryId, acpAgentsDir(), { fetchImpl: this.opts.fetchImpl, onStatus });
+        exe = installed.exe;
+        this.registry.refreshAcp();
+      } catch (err) {
+        // An installed copy keeps working when the update check fails.
+        if (!exe) throw err;
+        onStatus(`Couldn't look for a newer ${preset.name} (${errText(err)}); using the installed one.`);
+      }
+    }
+    if (signal.aborted || !exe) return false;
+    const sign = preset.acpSignIn;
+    let models: Awaited<ReturnType<typeof signInAcp>> = [];
+    if (sign && !process.env.GEMINI_API_KEY) {
+      onStatus(`Sign in with your ${sign.label} in the browser window that opens (lu-minal waits up to 10 minutes).`);
+      models = await signInAcp(preset, { exe, methodId: sign.methodId, signal });
+      setAcpSignedIn(preset.id, sign.methodId);
+    } else {
+      onStatus(sign ? "Using GEMINI_API_KEY from the environment." : "Checking its models…");
+      models = await probeAcpModels(preset, { exe, signal }).catch(() => []);
+    }
+    if (models.length) saveAcpModels(preset, this.opts.cacheDir, models);
+    const list = await listAcpModels(preset, { exe, cacheDir: this.opts.cacheDir }).catch(() => []);
+    if (list.length) this.registry.setLocalModels(preset.id, list);
+    this.notifier.changed();
+    onStatus(
+      models.length
+        ? `Ready: ${models.length} model${models.length === 1 ? "" : "s"} (${models.slice(0, 4).map((m) => m.name).join(", ")}${models.length > 4 ? ", …" : ""}). Pick one with /model.`
+        : `Ready. ${preset.name} didn't list its models; /model offers its default.`,
+    );
+    return true;
+  }
+
+  /** Forgets an ACP sign-in lu-minal made (Antigravity asks again next time). */
+  signOutAcp(providerId: string): void {
+    const preset = this.registry.acpPreset(providerId);
+    if (!preset?.acpSignIn) return;
+    setAcpSignedIn(preset.id, null);
+    this.notifier.changed();
+    this.toast(`Signed out of ${preset.name} in lu-minal; it asks for a sign-in next time.`, "info");
+  }
 
   /** Signs in to an ACP agent's own CLI (`opencode auth login`) in the real terminal. */
   async loginAcp(providerId: string, run: TerminalRunner): Promise<boolean> {

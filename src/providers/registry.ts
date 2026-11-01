@@ -3,7 +3,7 @@
 // model" (endpoint, key, headers, wire). Pure lookups over the data it is given; the only I/O is
 // reading auth.json through the AuthStore and looking for ACP agents' programs (kept a minute).
 import { staticAcpModels } from "../agents/acp/models.js";
-import { acpPresets, findAcpProgram, type AcpPreset } from "../agents/acp/presets.js";
+import { acpPresets, acpReady, findAcpProgram, type AcpPreset } from "../agents/acp/presets.js";
 import type { Config, ProviderOverride } from "../core/config.js";
 import type { ClaudeAccount } from "../core/types.js";
 import { keyFor, readEnv, type AuthStore } from "./auth.js";
@@ -472,8 +472,12 @@ export class ProviderRegistry {
       const account = this.deps.claudeAccount();
       return Boolean(account?.installed && account.loggedIn);
     }
-    // An ACP agent keeps its own sign-in: installed is as much as lu-minal can tell.
-    if (p.kind === "acp") return this.acpProgram(p.id) !== null;
+    // An ACP agent keeps its own sign-in: installed is as much as lu-minal can tell, except for the
+    // ones that sign in over ACP (Antigravity), which lu-minal signed in itself.
+    if (p.kind === "acp") {
+      const preset = this.acpPreset(p.id);
+      return this.acpProgram(p.id) !== null && (!preset || acpReady(preset, this.env));
+    }
     if (p.kind === "local" || p.auth === "none" || p.auth === "optional") return true;
     return this.keyOf(p) !== null && this.missingVars(p.baseURL).length === 0;
   }
@@ -491,6 +495,7 @@ export class ProviderRegistry {
       const preset = this.acpPreset(p.id);
       if (!preset) return `Add ${p.id} under acpAgents in config.json.`;
       if (this.acpProgram(p.id)) return preset.signIn;
+      if (preset.download) return `Open /login and pick ${preset.name}: lu-minal downloads it (${preset.download.size}) and you sign in.`;
       if (!preset.builtin) return `${preset.name} isn't installed: \`${preset.command}\` was not found (acpAgents.${preset.id}.command in config.json).`;
       return `Install ${preset.name}${preset.install ? ` (${preset.install})` : ""}. ${preset.signIn}`;
     }

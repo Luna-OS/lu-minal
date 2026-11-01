@@ -40,9 +40,10 @@ describe("ACP providers", () => {
     expect(acpBuiltinProviders()).toEqual([
       { id: "opencode-cli", name: "OpenCode (CLI)", kind: "acp", auth: "cli", wire: null, baseURL: null, env: [], doc: "https://opencode.ai/docs/acp/", supported: true, featured: false },
       { id: "gemini-cli", name: "Gemini CLI", kind: "acp", auth: "cli", wire: null, baseURL: null, env: [], doc: "https://github.com/google-gemini/gemini-cli", supported: true, featured: false },
+      { id: "antigravity", name: "Google Antigravity", kind: "acp", auth: "cli", wire: null, baseURL: null, env: [], doc: "https://antigravity.google/docs/ide/extensions", supported: true, featured: false },
     ]);
     const models = acpBuiltinModels();
-    expect(models.filter((m) => m.id === "default").map((m) => m.provider)).toEqual(["opencode-cli", "gemini-cli"]);
+    expect(models.filter((m) => m.id === "default").map((m) => m.provider)).toEqual(["opencode-cli", "gemini-cli", "antigravity"]);
     expect(models.some((m) => m.provider === "gemini-cli" && m.id === "gemini-3.8-flash")).toBe(true);
   });
 

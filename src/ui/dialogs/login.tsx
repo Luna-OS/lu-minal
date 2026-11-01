@@ -2,8 +2,10 @@
 // models without anything, API keys for every other provider, other coding agents (OpenCode, Gemini
 // CLI over ACP) through their own CLIs, GitHub / Forgejo for repositories, and Artificial Analysis for
 // the new models' benchmark scores on the home screen.
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { acpReady } from "../../agents/acp/presets.js";
 import type { Hub } from "../../core/hub.js";
+import { errText } from "../../core/hub.js";
 import { AA_AUTH_ID, AA_KEY_ENV, AA_KEY_URL } from "../../core/news.js";
 import { openExternal } from "../../platform/process.js";
 import type { ProviderInfo } from "../../providers/models.js";
@@ -36,6 +38,13 @@ function providerItem(hub: Hub, p: ProviderInfo, group: string): ListItem {
       hint = [acc.email, acc.plan].filter(Boolean).join(" · ") || "signed in";
       badge = { text: "✓ signed in", color: c.success };
     }
+  } else if (p.kind === "acp" && hub.registry.acpPreset(p.id)?.download) {
+    // Downloaded and signed in by lu-minal (Antigravity).
+    const preset = hub.registry.acpPreset(p.id)!;
+    const installed = hub.registry.acpProgram(p.id) !== null;
+    const ready = installed && acpReady(preset);
+    hint = ready ? "signed in - enter signs in again" : `downloads it (${preset.download!.size}), then sign in with your ${preset.acpSignIn?.label ?? "account"}`;
+    badge = ready ? { text: "✓ signed in", color: c.success } : installed ? { text: "sign in", color: c.warning } : { text: "not installed", color: c.faint };
   } else if (p.kind === "acp") {
     const preset = hub.registry.acpPreset(p.id);
     // The badge says whether it is installed; the hint is what to do about it.
@@ -161,6 +170,9 @@ function hostOf(url: string): string {
 async function signOut(hub: Hub, ui: UiServices, id: string): Promise<void> {
   if (id === "data:aa") return hub.setAaKey(null);
   if (id === "provider:claude-code") return hub.logoutClaude(ui.runInTerminal);
+  if (id.startsWith("provider:") && hub.registry.acpPreset(id.slice("provider:".length))?.acpSignIn) {
+    return hub.signOutAcp(id.slice("provider:".length));
+  }
   if (id.startsWith("provider:") && hub.registry.provider(id.slice("provider:".length))?.kind === "acp") {
     hub.toast("This agent signs out in its own CLI (e.g. opencode auth logout).", "info");
     return;
@@ -187,6 +199,7 @@ async function signIn(hub: Hub, ui: UiServices, id: string): Promise<void> {
   if (id.startsWith("provider:")) {
     const p = hub.registry.provider(id.slice("provider:".length));
     if (!p) return;
+    if (p.kind === "acp" && hub.registry.acpPreset(p.id)?.download) return openAcpSetup(hub, ui, p.id);
     if (p.kind === "acp") {
       await hub.loginAcp(p.id, ui.runInTerminal);
       return;
@@ -204,6 +217,49 @@ async function signIn(hub: Hub, ui: UiServices, id: string): Promise<void> {
     const url = id.slice("git:forgejo:".length);
     return askForgejoToken(hub, ui, url);
   }
+}
+
+/** Downloading and signing in to an agent lu-minal sets up itself (Antigravity), step by step. */
+function openAcpSetup(hub: Hub, ui: UiServices, providerId: string): void {
+  ui.openDialog({ id: "acp-setup", render: (close) => <AcpSetupDialog hub={hub} providerId={providerId} close={close} /> });
+}
+
+function AcpSetupDialog({ hub, providerId, close }: { hub: Hub; providerId: string; close: () => void }) {
+  const c = hub.theme.colors;
+  const name = hub.registry.acpPreset(providerId)?.name ?? providerId;
+  const [lines, setLines] = useState<string[]>([]);
+  const [state, setState] = useState<"working" | "done" | "failed">("working");
+  useEffect(() => {
+    const controller = new AbortController();
+    // Progress lines of the same kind ("Downloading …: 40%") replace each other.
+    const add = (line: string) =>
+      setLines((list) => {
+        const key = line.replace(/\d+%$/, "");
+        return list.length && list[list.length - 1].replace(/\d+%$/, "") === key ? [...list.slice(0, -1), line] : [...list, line];
+      });
+    hub.setupAcpAgent(providerId, add, controller.signal).then(
+      (ok) => setState(ok ? "done" : "failed"),
+      (err: unknown) => {
+        if (controller.signal.aborted) return;
+        add(errText(err));
+        setState("failed");
+      },
+    );
+    return () => controller.abort();
+  }, [hub, providerId]);
+  const shown = lines.map((text, i) => ({
+    text: `${i === lines.length - 1 && state === "working" ? "…" : state === "failed" && i === lines.length - 1 ? "✗" : "✓"} ${text}`,
+    color: state === "failed" && i === lines.length - 1 ? c.error : i === lines.length - 1 ? c.text : c.muted,
+  }));
+  return (
+    <MessageDialog
+      theme={hub.theme}
+      title={name}
+      lines={shown.length ? shown : [{ text: "Starting…", color: c.faint }]}
+      hints={state === "working" ? "esc cancel" : "enter / esc close"}
+      onClose={close}
+    />
+  );
 }
 
 function askKey(hub: Hub, ui: UiServices, p: ProviderInfo): void {

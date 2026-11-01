@@ -141,6 +141,8 @@ export interface ListAcpModelsOptions {
   timeoutMs?: number;
   /** Runs the CLI (tests); defaults to runProgram. */
   run?: (exe: string, args: string[], opts: { env: NodeJS.ProcessEnv; timeoutMs: number }) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  /** For agents whose models come from a session (models: "session"): asks the agent for them. */
+  probe?: () => Promise<ModelInfo[]>;
   now?: () => number;
 }
 
@@ -177,6 +179,11 @@ function writeModelCache(file: string, at: number, models: ModelInfo[]): void {
   }
 }
 
+/** Keeps a list the agent gave another way (the sign-in's session) as the cached one. */
+export function saveAcpModels(preset: AcpPreset, cacheDir: string, models: ModelInfo[], now: number = Date.now()): void {
+  if (models.length) writeModelCache(cacheFile(cacheDir, preset), now, models);
+}
+
 /** Drops the cached list, so the next listAcpModels asks the CLI (a sign-in may add providers). */
 export function forgetAcpModels(preset: AcpPreset, cacheDir: string): void {
   try {
@@ -188,13 +195,14 @@ export function forgetAcpModels(preset: AcpPreset, cacheDir: string): void {
 
 /**
  * The models to offer for an ACP agent: "default", then OpenCode's own list (`opencode models
- * --verbose`, cached for a day in `cacheDir`) or the preset's static list. Never throws; when the
+ * --verbose`) or the one a session offers (`probe`, Antigravity), each cached for a day in
+ * `cacheDir`, or the preset's static list. Never throws; when the
  * CLI can't be asked, a stale cache or the static list is used. The Hub hands the result to
  * `registry.setLocalModels(preset.id, models)`.
  */
 export async function listAcpModels(preset: AcpPreset, opts: ListAcpModelsOptions): Promise<ModelInfo[]> {
   const base = staticAcpModels(preset);
-  if (preset.models !== "opencode" || !opts.exe) return base;
+  if ((preset.models !== "opencode" && preset.models !== "session") || !opts.exe) return base;
   const now = opts.now ?? Date.now;
   const file = opts.cacheDir ? cacheFile(opts.cacheDir, preset) : null;
   const cached = file ? readModelCache(file) : null;
@@ -204,6 +212,16 @@ export async function listAcpModels(preset: AcpPreset, opts: ListAcpModelsOption
     return [...base, ...models.filter((m) => !ids.has(m.id)).map((m) => ({ ...m, provider: preset.id }))];
   };
   if (cached && fresh && !opts.refresh) return merge(cached.models);
+  if (preset.models === "session") {
+    // Without a way to ask (not signed in yet), the list from the last sign-in or probe.
+    if (!opts.probe || (cached && fresh && !opts.refresh)) return cached ? merge(cached.models) : base;
+    const models = await opts.probe().catch(() => []);
+    if (models.length) {
+      if (file) writeModelCache(file, now(), models);
+      return merge(models);
+    }
+    return cached ? merge(cached.models) : base;
+  }
   const run =
     opts.run ??
     ((exe: string, args: string[], o: { env: NodeJS.ProcessEnv; timeoutMs: number }) => runProgram(exe, args, { env: o.env, timeoutMs: o.timeoutMs }));

@@ -23,6 +23,7 @@ import type { Tool, ToolResult, ToolServices } from "../../tools/types.js";
 import {
   contextLimit,
   costOf,
+  dropThinking,
   userMessageFor,
   loadConversation,
   saveConversation,
@@ -114,6 +115,15 @@ export function describeError(err: unknown): string {
   }
   if (err instanceof Error) return err.message || err.name;
   return String(err);
+}
+
+/**
+ * Claude refused a thinking block sent back: its signature is bound to what came before it, and
+ * that changed (a session saved without its pictures, say). Anthropic's advice: send the request
+ * again without the thinking blocks. The wording is matched up to "block" only, as their docs ask.
+ */
+export function isThinkingBindingError(err: unknown): boolean {
+  return err instanceof ProviderError && err.status === 400 && /invalid `?signature`? in `?thinking`? block/i.test(err.message);
 }
 
 /** "429 rate limited" / "network error" for retry rows. */
@@ -270,8 +280,17 @@ export class NativeDriver implements AgentDriver {
         this.manageContext(resolved);
         phase = "stream";
         partial = "";
-        const { message, stopReason } = await this.streamStep(client, resolved, signal, (t) => {
-          partial += t;
+        const ask = () =>
+          this.streamStep(client, resolved, signal, (t) => {
+            partial += t;
+          });
+        const { message, stopReason } = await ask().catch((err: unknown) => {
+          // Once, and only when there was thinking to take out: the conversation itself keeps the
+          // change, so the next requests go through too.
+          if (signal.aborted || !isThinkingBindingError(err) || !dropThinking(this.messages)) throw err;
+          agent.info("Claude no longer accepted its earlier reasoning (the conversation changed since); sent again without it.");
+          partial = "";
+          return ask();
         });
         this.messages.push(message);
         partial = "";

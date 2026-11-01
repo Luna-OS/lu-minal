@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { claudeContent } from "../../src/agents/claude-code/driver.js";
-import { MAX_IMAGE_CHARS, MAX_IMAGES, saveConversation, trimImages, userMessageFor } from "../../src/agents/native/context.js";
+import { MAX_IMAGE_CHARS, MAX_IMAGES, saveConversation, trimImages, trimToolResults, userMessageFor } from "../../src/agents/native/context.js";
 import { attachmentFromPath, type Attachment } from "../../src/core/attachments.js";
 import type { ChatMessage, ImagePart } from "../../src/providers/types.js";
 import { buildAnthropicBody } from "../../src/providers/wire/anthropic.js";
@@ -98,5 +98,51 @@ describe("pictures for Claude Code agents", () => {
     const blocks = claudeContent("what is this?", [shot]) as Array<Record<string, unknown>>;
     expect(blocks[0]).toMatchObject({ type: "text" });
     expect(blocks[1]).toEqual({ type: "image", source: { type: "base64", media_type: "image/png", data: PNG.toString("base64") } });
+  });
+});
+
+describe("thinking after a changed message", () => {
+  // Claude binds a thinking block to everything before it: once that changes, the block must go.
+  const thought = (text: string): ChatMessage => ({
+    role: "assistant",
+    content: text,
+    raw: { wire: "anthropic", data: [{ type: "thinking", thinking: "", signature: "sig" }, { type: "text", text }] },
+  });
+  const kept = (m: ChatMessage) => (m.role === "assistant" ? (m.raw?.data as Array<{ type: string }> | undefined)?.map((b) => b.type) : undefined);
+
+  it("goes from the saved session after the first picture left out, and only from there", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "hi" },
+      thought("before"),
+      { role: "user", content: "look", images: [{ mediaType: "image/png", data: "x" }] },
+      thought("after"),
+    ];
+    const saved = saveConversation(messages).messages;
+    expect(kept(saved[1])).toEqual(["thinking", "text"]);
+    expect(kept(saved[3])).toEqual(["text"]);
+    // The running conversation keeps its pictures, and so its thinking.
+    expect(kept(messages[3])).toEqual(["thinking", "text"]);
+  });
+
+  it("goes after a picture trimImages took out", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "look", images: [{ mediaType: "image/png", data: "x".repeat(20) }] },
+      thought("a moon"),
+      { role: "user", content: "and this", images: [{ mediaType: "image/png", data: "x".repeat(20) }] },
+    ];
+    expect(trimImages(messages, 30, 20)).toBe(1);
+    expect(kept(messages[1])).toEqual(["text"]);
+  });
+
+  it("goes after old tool output trimToolResults removed, and an answer of thinking only goes back as text", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "read_file", arguments: {} }], raw: { wire: "anthropic", data: [{ type: "thinking", thinking: "", signature: "s" }, { type: "tool_use", id: "c1", name: "read_file", input: {} }] } },
+      { role: "tool", toolCallId: "c1", name: "read_file", content: "a long file ".repeat(20) },
+      { role: "assistant", content: "done", raw: { wire: "anthropic", data: [{ type: "thinking", thinking: "", signature: "s2" }] } },
+    ];
+    expect(trimToolResults(messages, 0)).toBe(1);
+    expect(kept(messages[1])).toEqual(["thinking", "tool_use"]);
+    expect(messages[3]).toEqual({ role: "assistant", content: "done" });
   });
 });

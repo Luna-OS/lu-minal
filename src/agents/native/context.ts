@@ -71,12 +71,39 @@ export function contextLimit(model: ModelInfo): number {
 export function trimToolResults(messages: ChatMessage[], keep = KEEP_TOOL_RESULTS): number {
   const results = messages.filter((m): m is ToolResultMessage => m.role === "tool");
   let trimmed = 0;
+  let first = -1;
   for (const m of results.slice(0, Math.max(0, results.length - keep))) {
     if (m.content === REMOVED_OUTPUT || m.content.length <= REMOVED_OUTPUT.length) continue;
     m.content = REMOVED_OUTPUT;
+    if (first === -1) first = messages.indexOf(m);
     trimmed++;
   }
+  if (first !== -1) dropThinking(messages, first + 1);
   return trimmed;
+}
+
+const THINKING_BLOCKS = new Set(["thinking", "redacted_thinking"]);
+
+/**
+ * Takes Anthropic's thinking blocks out of the assistant messages from `from` on (in place),
+ * leaving their other blocks. Claude binds a thinking block's signature to everything before it,
+ * so once something earlier changes (a picture or old tool output taken out) the blocks after it
+ * are refused ("The block is bound to a different conversation"). Returns how many messages changed.
+ */
+export function dropThinking(messages: ChatMessage[], from = 0): number {
+  let changed = 0;
+  for (let i = Math.max(0, from); i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== "assistant" || m.raw?.wire !== "anthropic" || !Array.isArray(m.raw.data)) continue;
+    const data = m.raw.data as unknown[];
+    const blocks = data.filter((b) => !(b && typeof b === "object" && THINKING_BLOCKS.has(String((b as { type?: unknown }).type))));
+    if (blocks.length === data.length) continue;
+    // Nothing left: the message goes back built from its text and tool calls.
+    if (blocks.length) m.raw = { ...m.raw, data: blocks };
+    else delete m.raw;
+    changed++;
+  }
+  return changed;
 }
 
 /**
@@ -88,6 +115,8 @@ export function trimImages(messages: ChatMessage[], maxChars = MAX_IMAGE_CHARS, 
   let count = 0;
   let full = false;
   let dropped = 0;
+  /** The earliest message changed (the loop goes from the newest back). */
+  let first = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "user" || !m.images?.length) continue;
@@ -108,7 +137,9 @@ export function trimImages(messages: ChatMessage[], maxChars = MAX_IMAGE_CHARS, 
     const { images: _images, ...rest } = m;
     messages[i] = { ...rest, content: `${m.content}\n${note}`, ...(keep.length ? { images: keep } : {}) };
     dropped += left;
+    first = i;
   }
+  if (first !== -1) dropThinking(messages, first + 1);
   return dropped;
 }
 
@@ -126,17 +157,23 @@ export function saveConversation(messages: ChatMessage[]): SavedConversation {
   let start = Math.max(0, messages.length - SAVED_MESSAGES);
   while (start > 0 && start < messages.length && messages[start].role !== "user") start++;
   if (start >= messages.length) start = Math.max(0, messages.length - SAVED_MESSAGES);
-  const out = messages.slice(start).map((m): ChatMessage => {
+  // Where the thinking has to go (see dropThinking): after the first message changed here, or from
+  // the start when the beginning is left out (then no thinking block's prefix is whole).
+  let thinkingFrom: number | null = start > 0 ? 0 : null;
+  const out = messages.slice(start).map((m, i): ChatMessage => {
     // Pictures stay out of the session file (they can be megabytes); the text keeps their paths.
     if (m.role === "user" && m.images?.length) {
+      thinkingFrom ??= i + 1;
       const { images: _images, ...rest } = m;
       return { ...rest, content: `${m.content}\n[${m.images.length} picture(s) not kept after the restart]` };
     }
     if (m.role === "tool" && m.content.length > SAVED_TOOL_CHARS) {
+      thinkingFrom ??= i + 1;
       return { ...m, content: `${m.content.slice(0, SAVED_TOOL_CHARS)}\n[cut when the session was saved]` };
     }
     return JSON.parse(JSON.stringify(m)) as ChatMessage;
   });
+  if (thinkingFrom !== null) dropThinking(out, thinkingFrom);
   return { version: 1, messages: out };
 }
 

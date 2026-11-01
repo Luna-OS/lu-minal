@@ -296,6 +296,8 @@ describe("loadNews", () => {
     // Only the top of the changelog, with a deadline for every request.
     const changelog = fetchImpl.calls.find((c) => c.url === CLAUDE_CODE_CHANGELOG_URL)!;
     expect((changelog.init?.headers as Record<string, string>).range).toBe("bytes=0-65535");
+    // Uncompressed: a range cut out of a gzip stream breaks Bun's fetch (the release binaries).
+    expect((changelog.init?.headers as Record<string, string>)["accept-encoding"]).toBe("identity");
     expect(fetchImpl.calls.every((c) => c.init?.signal instanceof AbortSignal)).toBe(true);
     expect(fs.existsSync(path.join(dir, NEWS_CACHE_FILE))).toBe(true);
 

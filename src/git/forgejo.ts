@@ -80,14 +80,30 @@ interface ForgejoRepoJson {
   updated_at?: unknown;
   stars_count?: unknown;
   language?: unknown;
+  // nrzGit spells the same fields in camelCase, with times in Unix seconds.
+  fullName?: unknown;
+  cloneUrl?: unknown;
+  htmlUrl?: unknown;
+  defaultBranch?: unknown;
+  updatedAt?: unknown;
+  stars?: unknown;
 }
 
-/** A Forgejo / Gitea API repository object as a RepoInfo, or null when it lacks the essentials. */
+/** An ISO time from an ISO string or Unix seconds, or null. */
+function isoTime(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value * 1000).toISOString();
+  return str(value);
+}
+
+/**
+ * A Forgejo / Gitea (or nrzGit) API repository object as a RepoInfo, or null when it lacks the
+ * essentials.
+ */
 export function mapForgejoRepo(raw: unknown, instance: string): RepoInfo | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as ForgejoRepoJson;
-  const fullName = str(r.full_name);
-  const cloneUrl = str(r.clone_url);
+  const fullName = str(r.full_name) ?? str(r.fullName);
+  const cloneUrl = str(r.clone_url) ?? str(r.cloneUrl);
   if (!fullName || !cloneUrl) return null;
   const slash = fullName.indexOf("/");
   const owner = str(r.owner?.login) ?? str(r.owner?.username) ?? (slash > 0 ? fullName.slice(0, slash) : "");
@@ -101,10 +117,10 @@ export function mapForgejoRepo(raw: unknown, instance: string): RepoInfo | null 
     private: r.private === true,
     fork: r.fork === true,
     cloneUrl,
-    htmlUrl: str(r.html_url) ?? `${instance}/${fullName}`,
-    defaultBranch: str(r.default_branch),
-    updatedAt: str(r.updated_at),
-    stars: typeof r.stars_count === "number" ? r.stars_count : 0,
+    htmlUrl: str(r.html_url) ?? str(r.htmlUrl) ?? `${instance}/${fullName}`,
+    defaultBranch: str(r.default_branch) ?? str(r.defaultBranch),
+    updatedAt: isoTime(r.updated_at) ?? isoTime(r.updatedAt),
+    stars: typeof r.stars_count === "number" ? r.stars_count : typeof r.stars === "number" ? r.stars : 0,
     language: str(r.language),
   };
 }
@@ -185,6 +201,42 @@ export function createForgejoHost(opts: ForgejoHostOptions): RepoHost {
     return get(`${apiRoot}${pathAndQuery}`, headers, t ?? "");
   }
 
+  /** Set once the instance turned out to be nrzGit (/me, /me/repos, /explore/repos). */
+  let isNrzGit = false;
+
+  /**
+   * GET Forgejo's `forgejoPath`; when that is a 404, try nrzGit's `nrzPath`. Any answer to it other
+   * than a 404 or no answer marks the instance as nrzGit (its errors, e.g. 401, are thrown as they
+   * are); otherwise the Forgejo error stands.
+   */
+  async function call(forgejoPath: string, nrzPath: string, t: string | null): Promise<unknown> {
+    if (isNrzGit) return api(nrzPath, t);
+    try {
+      return await api(forgejoPath, t);
+    } catch (err) {
+      if (!(err instanceof RepoHostError) || err.status !== 404) throw err;
+      try {
+        const body = await api(nrzPath, t);
+        isNrzGit = true;
+        return body;
+      } catch (nrzErr) {
+        if (!(nrzErr instanceof RepoHostError) || nrzErr.status === null || nrzErr.status === 404) throw err;
+        isNrzGit = true;
+        throw nrzErr;
+      }
+    }
+  }
+
+  /** The repository list of a Forgejo (`[...]`, `{data: [...]}`) or nrzGit (`{items: [...]}`) answer. */
+  function listOf(body: unknown): unknown[] | null {
+    if (Array.isArray(body)) return body;
+    if (!body || typeof body !== "object") return null;
+    const b = body as { data?: unknown; items?: unknown };
+    if (Array.isArray(b.data)) return b.data;
+    if (Array.isArray(b.items)) return b.items;
+    return null;
+  }
+
   /** "luna/moon" from a pasted "https://codeberg.org/luna/moon.git"; other text as typed. */
   function stripInstance(text: string): string {
     const trimmed = text.trim();
@@ -226,15 +278,18 @@ export function createForgejoHost(opts: ForgejoHostOptions): RepoHost {
     // The search matches repository names; for "owner/name" ask for "name" and filter below.
     const slash = query.lastIndexOf("/");
     const keyword = slash >= 0 ? query.slice(slash + 1).trim() : query;
-    const body = (await api(
-      `/repos/search?q=${encodeURIComponent(keyword)}&limit=${limit}&page=${page}&sort=updated&order=desc`,
-      t,
-    )) as { ok?: unknown; data?: unknown; error?: unknown } | null;
+    const q = `q=${encodeURIComponent(keyword)}&limit=${limit}&page=${page}`;
+    const body = (await call(`/repos/search?${q}&sort=updated&order=desc`, `/explore/repos?${q}`, t)) as {
+      ok?: unknown;
+      data?: unknown;
+      error?: unknown;
+    } | null;
     if (body && body.ok === false) {
       throw new RepoHostError(`${label} says: ${bodyMessage(body) ?? "the search failed"}`, null);
     }
-    if (!body || !Array.isArray(body.data)) throw unreadable("search results");
-    const found = mapAll(body.data);
+    const list = Array.isArray(body) ? null : listOf(body);
+    if (!list) throw unreadable("search results");
+    const found = mapAll(list);
     return slash >= 0 ? found.filter((r) => matchesQuery(r, query)) : found;
   }
 
@@ -248,7 +303,7 @@ export function createForgejoHost(opts: ForgejoHostOptions): RepoHost {
       if (!t) return { signedIn: false, login: null, via: "anonymous" };
       let user: { login?: unknown; username?: unknown } | null;
       try {
-        user = (await api("/user", t)) as typeof user;
+        user = (await call("/user", "/me", t)) as typeof user;
       } catch (err) {
         if (err instanceof RepoHostError && err.status === 401) return { signedIn: false, login: null, via: "token" };
         throw err;
@@ -272,10 +327,12 @@ export function createForgejoHost(opts: ForgejoHostOptions): RepoHost {
       const limit = clampInt(q.perPage, PAGE_SIZE, 1, PAGE_SIZE);
       const t = token();
       if (!t) return search(query, null, page, limit);
-      const body = await api(`/user/repos?limit=${limit}&page=${page}`, t);
-      if (!Array.isArray(body)) throw unreadable("a repository list");
-      const own = mapAll(body).sort(byUpdated);
-      if (!query) return own;
+      const body = await call(`/user/repos?limit=${limit}&page=${page}`, `/me/repos?limit=${limit}&page=${page}`, t);
+      const list = isNrzGit ? listOf(body) : Array.isArray(body) ? body : null;
+      if (!list) throw unreadable("a repository list");
+      const own = mapAll(list).sort(byUpdated);
+      // nrzGit's own list leaves out repositories shared with the user; its explore list adds them.
+      if (!query && !(isNrzGit && own.length < ENOUGH_MATCHES)) return own;
       const matches = own.filter((r) => matchesQuery(r, query));
       if (matches.length >= ENOUGH_MATCHES) return matches;
       let found: RepoInfo[];

@@ -413,6 +413,40 @@ describe("NativeDriver", () => {
     expect(driver.conversation.map((m) => m.content)).toEqual(["hi", "hi again", "Back again."]);
   });
 
+  it("sends again without the thinking once Claude refuses a thinking block bound to another prefix", async () => {
+    const bound = new ProviderError(
+      'messages.1.content.0: Invalid `signature` in `thinking` block. The block is bound to a different conversation. Remove the block, or set `thinking.block_binding.prefix_mismatch_behavior` to "drop_block".',
+      400,
+    );
+    const { agent, client, driver } = await setup({ steps: [failing(bound), reply("Works again."), failing(bound)] });
+    // A session saved before the fix: the pictures went, the thinking after them stayed.
+    driver.restore({
+      version: 1,
+      messages: [
+        { role: "user", content: "look\n[1 picture(s) not kept after the restart]" },
+        {
+          role: "assistant",
+          content: "A moon.",
+          raw: { wire: "anthropic", data: [{ type: "thinking", thinking: "", signature: "sig" }, { type: "redacted_thinking", data: "x" }, { type: "text", text: "A moon." }] },
+        },
+      ],
+    });
+    agent.deliver({ from: "you", text: "and now?" });
+    await driver.idle();
+    expect(agent.status).toBe("idle");
+    expect(agent.lastError).toBeNull();
+    expect(client.requests).toHaveLength(2);
+    // The second request (and the conversation) keep the text, not the thinking.
+    expect(client.requests[1].messages[1]).toMatchObject({ raw: { wire: "anthropic", data: [{ type: "text", text: "A moon." }] } });
+    expect(entries(agent, "info").some((e) => e.text.includes("earlier reasoning"))).toBe(true);
+
+    // With no thinking left to take out, the error is shown as it is (no endless retries).
+    agent.deliver({ from: "you", text: "again" });
+    await driver.idle();
+    expect(agent.status).toBe("error");
+    expect(client.requests).toHaveLength(3);
+  });
+
   it("retries rate limits with an info row", async () => {
     const { agent, client, driver } = await setup({
       steps: [failing(new ProviderError("Rate limit exceeded", 429, 4000)), reply("Made it.")],

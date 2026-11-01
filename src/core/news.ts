@@ -40,7 +40,11 @@ export const NEW_MODEL_LIMIT = 6;
 
 const DAY_MS = 24 * 60 * 60_000;
 const TIMEOUT_MS = 10_000;
-/** The newest section is at the top: the first 64 KiB of the changelog are plenty. */
+/**
+ * The newest section is at the top: the first 64 KiB of the changelog are plenty. They are asked
+ * for uncompressed: GitHub cuts the range out of its gzip stream, and Bun's fetch (the release
+ * binaries) fails on the cut stream and prints "Decompression error: ZlibError" over the screen.
+ */
 const CHANGELOG_BYTES = 65_536;
 
 /** The newest section of a changelog. */
@@ -456,7 +460,7 @@ export async function loadNews(opts: LoadNewsOptions): Promise<News> {
     get(
       "changelog",
       async (f) => {
-        const text = await download(f, CLAUDE_CODE_CHANGELOG_URL, { accept: "text/plain", range: `bytes=0-${CHANGELOG_BYTES - 1}` }, timeoutMs);
+        const text = await download(f, CLAUDE_CODE_CHANGELOG_URL, { accept: "text/plain", "accept-encoding": "identity", range: `bytes=0-${CHANGELOG_BYTES - 1}` }, timeoutMs);
         return text === null ? null : parseChangelog(text);
       },
       asSection,
